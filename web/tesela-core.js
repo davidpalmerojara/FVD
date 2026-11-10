@@ -69,18 +69,26 @@ export class Core {
     }
   }
 
-  /** Codifica una tesela RGBA de una imagen de w×h. */
-  encodeTile(rgba, tw, th, w, h, quality, effort, tune) {
+  /** Codifica una tesela RGBA con la cabecera de su imagen. */
+  encodeTile(rgba, tw, th, header, quality, effort, tune) {
     const r = this.put(rgba);
+    const h = this.put(header);
     try {
-      return this.take(this.ex.tsl_encode_tile(r[0], tw, th, w, h, quality, effort, tune));
+      return this.take(this.ex.tsl_encode_tile(r[0], tw, th, h[0], h[1], quality, effort, tune));
     } finally {
       this.free(r);
+      this.free(h);
     }
   }
 
-  header(w, h, quality, effort, tune) {
-    return this.take(this.ex.tsl_header(w, h, quality, effort, tune));
+  /** Cabecera para una imagen RGBA completa (decide las herramientas según el contenido). */
+  header(rgba, w, h, quality, effort, tune) {
+    const r = this.put(rgba);
+    try {
+      return this.take(this.ex.tsl_header(r[0], w, h, quality, effort, tune));
+    } finally {
+      this.free(r);
+    }
   }
 
   /** Codifica una imagen RGBA completa (un solo hilo). Devuelve el .tsl. */
@@ -122,10 +130,25 @@ export class Core {
 
 export const TUNES = { balanced: 0, perceptual: 1, psnr: 2 };
 
+export const TOOL_ALPHA = 4;
+export const TOOL_PREVIEW = 8;
+const HEADER = 23;
+
+/**
+ * Si ya han llegado suficientes bytes, devuelve el rango de la vista previa
+ * ({ start, end }), null si el archivo no tiene, o undefined si faltan datos.
+ */
+export function previewRange(bytes) {
+  if (bytes.length < HEADER + 4) return undefined;
+  if (!(bytes[22] & TOOL_PREVIEW)) return null;
+  const len = new DataView(bytes.buffer, bytes.byteOffset).getUint32(HEADER, true);
+  const r = { start: HEADER + 4, end: HEADER + 4 + len };
+  return bytes.length >= r.end ? r : undefined;
+}
+
 /** Lee la cabecera y la tabla de teselas de un archivo .tsl. */
 export function parseTesela(buffer) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const HEADER = 22;
   if (bytes.length < HEADER || String.fromCharCode(...bytes.subarray(0, 4)) !== 'TSL1') {
     throw new Error('no es un archivo Tesela (.tsl)');
   }
@@ -133,20 +156,24 @@ export function parseTesela(buffer) {
   const width = dv.getUint32(4, true);
   const height = dv.getUint32(8, true);
   const tile = dv.getUint16(20, true) * 64;
+  const tools = bytes[22];
   if (!width || !height || !tile) throw new Error('cabecera Tesela no válida');
+  let base = HEADER;
+  if (tools & TOOL_PREVIEW) base += 4 + dv.getUint32(HEADER, true);
   const tiles = [];
   for (let y = 0; y < height; y += tile) {
     for (let x = 0; x < width; x += tile) {
       tiles.push({ x, y, w: Math.min(tile, width - x), h: Math.min(tile, height - y) });
     }
   }
-  let pos = HEADER + 4 * tiles.length;
+  if (bytes.length < base + 4 * tiles.length) throw new Error('archivo Tesela truncado');
+  let pos = base + 4 * tiles.length;
   tiles.forEach((t, i) => {
-    const len = dv.getUint32(HEADER + 4 * i, true);
+    const len = dv.getUint32(base + 4 * i, true);
     t.start = pos;
     t.end = pos + len;
     pos += len;
   });
   if (pos > bytes.length) throw new Error('archivo Tesela truncado');
-  return { width, height, tile, tiles, header: bytes.subarray(0, HEADER), bytes };
+  return { width, height, tile, tools, tiles, header: bytes.subarray(0, HEADER), bytes };
 }

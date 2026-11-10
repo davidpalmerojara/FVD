@@ -10,7 +10,7 @@
 // trabajo), así que una foto grande se decodifica en paralelo sin bloquear la
 // página.
 
-import { parseTesela, TUNES } from './tesela-core.js';
+import { parseTesela, previewRange, TUNES } from './tesela-core.js';
 
 export { parseTesela };
 
@@ -107,7 +107,7 @@ export async function decode(buffer) {
 export async function encode(imageData, { quality = 75, effort = 4, tune = 'balanced' } = {}) {
   const { width: w, height: h, data } = imageData;
   const tn = TUNES[tune] ?? 0;
-  const header = await getPool().run('header', { w, h, quality, effort, tune: tn });
+  const header = await getPool().run('header', { rgba: new Uint8Array(data.buffer, data.byteOffset, data.byteLength), w, h, quality, effort, tune: tn });
   const tile = new DataView(header.buffer, header.byteOffset).getUint16(20, true) * 64;
   const rects = [];
   for (let y = 0; y < h; y += tile) {
@@ -120,7 +120,7 @@ export async function encode(imageData, { quality = 75, effort = 4, tune = 'bala
         const src = ((r.y + y) * w + r.x) * 4;
         rgba.set(data.subarray(src, src + r.w * 4), y * r.w * 4);
       }
-      return getPool().run('encodeTile', { rgba, tw: r.w, th: r.h, w, h, quality, effort, tune: tn }, [rgba.buffer]);
+      return getPool().run('encodeTile', { rgba, tw: r.w, th: r.h, header, quality, effort, tune: tn }, [rgba.buffer]);
     }),
   );
   const total = header.length + 4 * payloads.length + payloads.reduce((s, p) => s + p.length, 0);
@@ -134,6 +134,15 @@ export async function encode(imageData, { quality = 75, effort = 4, tune = 'bala
     pos += p.length;
   });
   return out;
+}
+
+/** Decodifica la vista previa (si el archivo la tiene y ya han llegado sus bytes). */
+export async function decodePreview(bytes) {
+  const r = previewRange(bytes);
+  if (!r) return null;
+  const sub = bytes.slice(r.start, r.end);
+  const d = await getPool().run('decodeFull', { bytes: sub }, [sub.buffer]);
+  return new ImageData(new Uint8ClampedArray(d.rgba.buffer), d.width, d.height);
 }
 
 /** Decodifica y devuelve una URL de objeto PNG, utilizable en cualquier <img>. */
@@ -181,10 +190,34 @@ class TeselaImage extends HTMLElement {
   async load() {
     const src = this.getAttribute('src');
     if (!src) return;
+    this._full = false;
     try {
       const res = await fetch(src);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const img = await decode(await res.arrayBuffer());
+      // Lectura en streaming: si el archivo trae vista previa, se muestra en
+      // cuanto llegan sus bytes, desenfocada, mientras se descarga el resto.
+      const chunks = [];
+      let got = 0;
+      let previewShown = false;
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        if (!previewShown && got >= 27) {
+          const head = concat(chunks, got);
+          const r = previewRange(head);
+          if (r === null) previewShown = true;
+          else if (r) {
+            previewShown = true;
+            this.showPreview(head);
+          }
+        }
+      }
+      const img = await decode(concat(chunks, got));
+      this._full = true;
+      this.canvas.style.filter = '';
       this.canvas.width = img.width;
       this.canvas.height = img.height;
       this.canvas.getContext('2d').putImageData(img, 0, 0);
@@ -201,6 +234,35 @@ class TeselaImage extends HTMLElement {
     }
   }
 }
+
+function concat(chunks, total) {
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of chunks) {
+    out.set(c, p);
+    p += c.length;
+  }
+  return out;
+}
+
+TeselaImage.prototype.showPreview = async function (bytes) {
+  try {
+    const pv = await decodePreview(bytes);
+    if (!pv || this._full) return;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset);
+    const c = this.canvas;
+    c.width = dv.getUint32(4, true);
+    c.height = dv.getUint32(8, true);
+    const tmp = new OffscreenCanvas(pv.width, pv.height);
+    tmp.getContext('2d').putImageData(pv, 0, 0);
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(tmp, 0, 0, c.width, c.height);
+    c.style.filter = 'blur(8px)';
+  } catch {
+    /* la vista previa es opcional */
+  }
+};
 
 if (typeof customElements !== 'undefined' && !customElements.get('tesela-img')) {
   customElements.define('tesela-img', TeselaImage);

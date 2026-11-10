@@ -12,8 +12,9 @@ pub mod metrics;
 pub mod predict;
 pub mod rc;
 pub mod restore;
+pub mod tools;
 
-pub use codec::{Decoded, Encoded, Params, decode, encode};
+pub use codec::{Decoded, Encoded, Params, decode, encode, encode_rgba};
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

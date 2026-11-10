@@ -17,6 +17,8 @@
     .tag { font-weight: 600; }
     .saving { color: var(--good); font-weight: 600; }
     h2 { font-size: 20px; margin: 36px 0 10px; }
+    .checker { padding: 16px; background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; }
+    .checker tesela-img { width: 100%; }
     @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -34,10 +36,15 @@
   <main class="wrap">
     <h1>Imágenes Tesela en una página web</h1>
     <p class="lead">Las imágenes de la izquierda son archivos <code>.tsl</code> decodificados en tu navegador
-      con WebAssembly, en paralelo y fuera del hilo principal. A la derecha, el mismo original en JPEG
+      con WebAssembly, en paralelo y fuera del hilo principal. Incluyen una vista previa
+      diminuta (~300 bytes) que aparece desenfocada mientras se descarga el resto. A la derecha, el mismo original en JPEG
       con calidad 85. Ambos tienen una calidad visual parecida.</p>
 
     <div id="pairs"></div>
+
+    <h2>Transparencia</h2>
+    <p class="muted">Tesela guarda el canal alfa sin pérdida. Debajo, una imagen con un degradado radial de transparencia sobre un fondo de cuadros.</p>
+    <div class="card checker"><tesela-img src="alpha.tsl" alt="Loros con borde transparente"></tesela-img></div>
 
     <h2>Cómo usarlo</h2>
     <pre><code>&lt;script type="module" src="tesela.js"&gt;&lt;/script&gt;

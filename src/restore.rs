@@ -115,59 +115,101 @@ impl RestCtx {
     }
 }
 
-/// Clase de cada bloque 4×4 según actividad y dirección del gradiente.
-fn classify(p: &Plane) -> Vec<u8> {
-    let (w, h) = (p.w, p.h);
-    let (gw, gh) = (w / 4, h / 4);
-    let d = &p.data;
-    let px = |x: isize, y: isize| {
-        d[(y.clamp(0, h as isize - 1) as usize) * w + x.clamp(0, w as isize - 1) as usize] as i32
-    };
-    let mut out = vec![0u8; gw * gh];
-    for by in 0..gh {
-        for bx in 0..gw {
-            let (mut sh, mut sv) = (0i32, 0i32);
-            for y in by * 4..by * 4 + 4 {
-                for x in bx * 4..bx * 4 + 4 {
-                    let (x, y) = (x as isize, y as isize);
-                    let c = 2 * px(x, y);
-                    sh += (c - px(x - 1, y) - px(x + 1, y)).abs();
-                    sv += (c - px(x, y - 1) - px(x, y + 1)).abs();
-                }
-            }
-            let act = (sh + sv) / 16;
-            let a = match act {
-                0..=1 => 0,
-                2..=4 => 1,
-                5..=11 => 2,
-                _ => 3,
-            };
-            let dir = if sh > 2 * sv {
-                1
-            } else if sv > 2 * sh {
-                2
-            } else {
-                0
-            };
-            out[by * gw + bx] = (a * 3 + dir) as u8;
-        }
-    }
-    out
+const PAD: usize = 3;
+
+/// Copia del plano con un borde replicado de 3 píxeles: permite leer los
+/// vecinos del filtro sin recortar coordenadas (mismo resultado que recortar).
+struct Padded {
+    d: Vec<i16>,
+    pw: usize,
+    offs: [isize; NC],
 }
 
-#[inline]
-fn grads(d: &[u8], w: usize, h: usize, x: usize, y: usize) -> (i32, [i32; NC]) {
-    let c = d[y * w + x] as i32;
-    let get = |dx: isize, dy: isize| {
-        let xx = (x as isize + dx).clamp(0, w as isize - 1) as usize;
-        let yy = (y as isize + dy).clamp(0, h as isize - 1) as usize;
-        d[yy * w + xx] as i32
-    };
-    let mut g = [0i32; NC];
-    for (k, &(dx, dy)) in OFFS.iter().enumerate() {
-        g[k] = get(dx, dy) + get(-dx, -dy) - 2 * c;
+impl Padded {
+    fn new(p: &Plane) -> Self {
+        let (w, h) = (p.w, p.h);
+        let pw = w + 2 * PAD;
+        let ph = h + 2 * PAD;
+        let mut d = vec![0i16; pw * ph];
+        for y in 0..ph {
+            let sy = y.saturating_sub(PAD).min(h - 1);
+            let row = &p.data[sy * w..sy * w + w];
+            let out = &mut d[y * pw..y * pw + pw];
+            for (x, o) in out.iter_mut().enumerate() {
+                *o = row[x.saturating_sub(PAD).min(w - 1)] as i16;
+            }
+        }
+        let offs = OFFS.map(|(dx, dy)| dx + dy * pw as isize);
+        Padded { d, pw, offs }
     }
-    (c, g)
+
+    #[inline(always)]
+    fn idx(&self, x: usize, y: usize) -> usize {
+        (y + PAD) * self.pw + x + PAD
+    }
+
+    /// Valor central y las 8 diferencias simétricas (vecino+ + vecino− − 2·centro).
+    #[inline(always)]
+    fn grads(&self, i: usize) -> (i32, [i32; NC]) {
+        let d = &self.d;
+        let c = d[i] as i32;
+        let mut g = [0i32; NC];
+        for k in 0..NC {
+            let o = self.offs[k];
+            g[k] = d[(i as isize + o) as usize] as i32 + d[(i as isize - o) as usize] as i32 - 2 * c;
+        }
+        (c, g)
+    }
+
+    /// Clase del bloque 4×4 (bx, by) según actividad y dirección del gradiente.
+    fn class(&self, bx: usize, by: usize) -> u8 {
+        let (mut sh, mut sv) = (0i32, 0i32);
+        let pw = self.pw;
+        for y in by * 4..by * 4 + 4 {
+            let mut i = self.idx(bx * 4, y);
+            for _ in 0..4 {
+                let c = 2 * self.d[i] as i32;
+                sh += (c - self.d[i - 1] as i32 - self.d[i + 1] as i32).abs();
+                sv += (c - self.d[i - pw] as i32 - self.d[i + pw] as i32).abs();
+                i += 1;
+            }
+        }
+        let act = (sh + sv) / 16;
+        let a = match act {
+            0..=1 => 0,
+            2..=4 => 1,
+            5..=11 => 2,
+            _ => 3,
+        };
+        let dir = if sh > 2 * sv {
+            1
+        } else if sv > 2 * sh {
+            2
+        } else {
+            0
+        };
+        (a * 3 + dir) as u8
+    }
+
+    fn classify_all(&self, w: usize, h: usize) -> Vec<u8> {
+        let (gw, gh) = (w / 4, h / 4);
+        let mut out = vec![0u8; gw * gh];
+        for by in 0..gh {
+            for bx in 0..gw {
+                out[by * gw + bx] = self.class(bx, by);
+            }
+        }
+        out
+    }
+}
+
+#[inline(always)]
+fn filter_px(c: i32, g: &[i32; NC], f: &Filter) -> u8 {
+    let mut s = 0i32;
+    for k in 0..NC {
+        s += f[k] * g[k];
+    }
+    (c + ((s + 64) >> 7)).clamp(0, 255) as u8
 }
 
 /// Aplica el filtro a los superbloques marcados.
@@ -175,32 +217,28 @@ pub fn apply(p: &mut Plane, d: &Decision) {
     if !d.active() {
         return;
     }
-    let (w, h) = (p.w, p.h);
+    let w = p.w;
     let bw = w / BLK;
-    let cls = classify(p);
-    let gw = w / 4;
-    let src = &p.data;
-    let mut out = src.clone();
+    let pad = Padded::new(p);
     for (i, &on) in d.flags.iter().enumerate() {
         if !on {
             continue;
         }
         let (bx, by) = (i % bw, i / bw);
-        for y in by * BLK..(by + 1) * BLK {
-            for x in bx * BLK..(bx + 1) * BLK {
-                let Some(f) = d.filters[cls[(y / 4) * gw + x / 4] as usize] else {
-                    continue;
-                };
-                let (c, g) = grads(src, w, h, x, y);
-                let mut s = 0i32;
-                for k in 0..NC {
-                    s += f[k] * g[k];
+        for gy in by * BLK / 4..(by + 1) * BLK / 4 {
+            for gx in bx * BLK / 4..(bx + 1) * BLK / 4 {
+                let Some(f) = d.filters[pad.class(gx, gy) as usize] else { continue };
+                for y in gy * 4..gy * 4 + 4 {
+                    let mut pi = pad.idx(gx * 4, y);
+                    for x in gx * 4..gx * 4 + 4 {
+                        let (c, g) = pad.grads(pi);
+                        p.data[y * w + x] = filter_px(c, &g, &f);
+                        pi += 1;
+                    }
                 }
-                out[y * w + x] = (c + ((s + 64) >> 7)).clamp(0, 255) as u8;
             }
         }
     }
-    p.data = out;
 }
 
 // ------------------------------------------------------------ Codificador
@@ -236,7 +274,8 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
     let (w, h) = (p.w, p.h);
     let (bw, bh) = (w / BLK, h / BLK);
     let gw = w / 4;
-    let cls = classify(p);
+    let pad = Padded::new(p);
+    let cls = pad.classify_all(w, h);
     let mut mask = vec![true; bw * bh];
     let mut best = Decision {
         filters: vec![None; NCLASS],
@@ -257,7 +296,7 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
                     continue;
                 }
                 let k = cls[(y / 4) * gw + x / 4] as usize;
-                let (c, g) = grads(&p.data, w, h, x, y);
+                let (c, g) = pad.grads(pad.idx(x, y));
                 let r = src[y * w + x] as f64 - c as f64;
                 for i in 0..NC {
                     let gi = g[i] as f64;
@@ -292,12 +331,8 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
             for x in 0..w {
                 let k = cls[(y / 4) * gw + x / 4] as usize;
                 let Some(f) = filters[k] else { continue };
-                let (c, g) = grads(&p.data, w, h, x, y);
-                let mut s = 0i32;
-                for i in 0..NC {
-                    s += f[i] * g[i];
-                }
-                let v = (c + ((s + 64) >> 7)).clamp(0, 255) as f64;
+                let (c, g) = pad.grads(pad.idx(x, y));
+                let v = filter_px(c, &g, &f) as f64;
                 let t = src[y * w + x] as f64;
                 let gain = (c as f64 - t).powi(2) - (v - t).powi(2);
                 blk_gain[(y / BLK) * bw + x / BLK][k] += gain;

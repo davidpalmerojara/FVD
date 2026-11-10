@@ -6,7 +6,7 @@ const USAGE: &str = "\
 tesela - códec de imagen (formato .tsl)
 
 USO:
-  tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--444|--420]
+  tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--444|--420]
              [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F] [--deblock N]
   tesela decode <entrada.tsl> <salida.png>
   tesela compare <original.png> <distorsionada.png>      (imprime JSON)
@@ -19,6 +19,24 @@ fn load_png(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
         .to_rgb8();
     let (w, h) = img.dimensions();
     Ok((img.into_raw(), w as usize, h as usize))
+}
+
+/// Carga RGBA (alfa 255 si la imagen no tiene transparencia).
+fn load_rgba(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
+    let img = image::open(path).map_err(|e| format!("{path}: {e}"))?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Ok((img.into_raw(), w as usize, h as usize))
+}
+
+fn save_decoded(path: &str, d: &tesela::Decoded) -> Result<(), String> {
+    if d.alpha.is_some() {
+        image::RgbaImage::from_raw(d.width as u32, d.height as u32, d.rgba())
+            .ok_or("buffer")?
+            .save(path)
+            .map_err(|e| format!("{path}: {e}"))
+    } else {
+        save_png(path, d.rgb.clone(), d.width, d.height)
+    }
 }
 
 fn save_png(path: &str, rgb: Vec<u8>, w: usize, h: usize) -> Result<(), String> {
@@ -57,6 +75,10 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
                 i += 1;
             }
             "--no-restore" => p.restore = false,
+            "--screen" => p.screen = Some(true),
+            "--lossless" => p.lossless = true,
+            "--preview" => p.preview = true,
+            "--no-screen" => p.screen = Some(false),
             "--444" => p.subsample = Some(false),
             "--420" => p.subsample = Some(true),
             "--aq" => {
@@ -107,10 +129,10 @@ fn metrics_json(a: &[u8], b: &[u8], w: usize, h: usize) -> String {
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("encode") if args.len() >= 3 => {
-            let (rgb, w, h) = load_png(&args[1])?;
+            let (rgba, w, h) = load_rgba(&args[1])?;
             let p = parse_params(&args[3..])?;
             let t = Instant::now();
-            let e = tesela::encode(&rgb, w, h, &p);
+            let e = tesela::encode_rgba(&rgba, w, h, &p);
             std::fs::write(&args[2], &e.bytes).map_err(|e| e.to_string())?;
             eprintln!(
                 "{} bytes, {:.4} bpp, {:.2} s",
@@ -126,7 +148,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 // RGB crudo (para pruebas de determinismo)
                 std::fs::write(&args[2], &d.rgb).map_err(|e| e.to_string())?;
             } else {
-                save_png(&args[2], d.rgb, d.width, d.height)?;
+                save_decoded(&args[2], &d)?;
             }
         }
         Some("compare") if args.len() == 3 => {
@@ -138,15 +160,19 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{{{}}}", metrics_json(&a, &b, w, h));
         }
         Some("roundtrip") if args.len() >= 2 => {
-            let (rgb, w, h) = load_png(&args[1])?;
+            let (rgba, w, h) = load_rgba(&args[1])?;
+            let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
             let p = parse_params(&args[2..])?;
             let t = Instant::now();
-            let e = tesela::encode(&rgb, w, h, &p);
+            let e = tesela::encode_rgba(&rgba, w, h, &p);
             let te = t.elapsed().as_secs_f64();
             let t = Instant::now();
             let d = tesela::decode(&e.bytes)?;
             let td = t.elapsed().as_secs_f64();
-            if d.rgb != e.recon_rgb {
+            if p.lossless && d.rgba() != rgba {
+                return Err("¡el modo sin pérdida no reproduce el original!".into());
+            }
+            if d.rgb != e.recon_rgb || d.alpha != e.recon_alpha {
                 return Err(
                     "¡el decodificador no coincide con la reconstrucción del codificador!".into(),
                 );
@@ -199,8 +225,8 @@ fn train(out: &str, imgs: &[String]) -> Result<(), String> {
                     tile: 4096,
                     ..Params::default()
                 };
-                let hd = make_header(*w, *h, &p);
-                encode_tile_stats(rgb, *w, *h, &hd, &p).2
+                let hd = make_header(rgb, *w, *h, &p);
+                encode_tile_stats(rgb, None, *w, *h, &hd, &p).3
             })
             .collect();
         let n = stats[0].len();

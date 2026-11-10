@@ -12,13 +12,24 @@ use crate::dct::{self, size_index};
 use crate::predict::{self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_VER, Plane};
 use crate::rc::{Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx, Visit};
 use crate::restore;
+use crate::tools::{self, BvCtx, MARK_IBC, MARK_PALETTE, PalCtx, Palette};
 
 pub const HEADER_SIZE: usize = HEADER_LEN;
 pub const MAGIC: &[u8; 4] = b"TSL1";
 const SB: usize = 64;
 /// Granularidad de la cuantización adaptativa (AQ).
 const AQ: usize = 32;
-const HEADER_LEN: usize = 4 + 4 + 4 + 1 + 2 + 1 + 1 + 1 + 1 + 1 + 2;
+const HEADER_LEN: usize = 4 + 4 + 4 + 1 + 2 + 1 + 1 + 1 + 1 + 1 + 2 + 1;
+/// Bit de `Header::tools`: herramientas de contenido sintético (paleta, IBC, transform skip).
+pub const TOOL_SCREEN: u8 = 1;
+/// Modo sin pérdida (planos G, B, R; residuo exacto).
+pub const TOOL_LOSSLESS: u8 = 2;
+/// Canal alfa (plano adicional sin pérdida).
+pub const TOOL_ALPHA: u8 = 4;
+/// Vista previa diminuta al principio del archivo (para mostrar algo mientras llega el resto).
+pub const TOOL_PREVIEW: u8 = 8;
+/// Lado mayor de la vista previa, en píxeles.
+const PREVIEW_SIDE: usize = 48;
 
 /// Parámetros del codificador.
 #[derive(Clone, Debug)]
@@ -44,6 +55,12 @@ pub struct Params {
     pub tile: usize,
     /// Filtro de restauración Wiener.
     pub restore: bool,
+    /// Herramientas de contenido sintético (None = detección automática).
+    pub screen: Option<bool>,
+    /// Compresión sin pérdida.
+    pub lossless: bool,
+    /// Incluir vista previa progresiva.
+    pub preview: bool,
 }
 
 impl Default for Params {
@@ -60,6 +77,9 @@ impl Default for Params {
             deblock: Some(0),
             tile: 1024,
             restore: true,
+            screen: None,
+            lossless: false,
+            preview: false,
         }
     }
 }
@@ -113,6 +133,8 @@ pub struct Header {
     pub deblock: u8,
     /// Tamaño de tesela en unidades de 64 píxeles.
     pub tile: u16,
+    /// Herramientas activadas (bits `TOOL_*`).
+    pub tools: u8,
 }
 
 impl Header {
@@ -132,6 +154,7 @@ impl Header {
         out.push(self.aq as u8);
         out.push(self.deblock);
         out.extend_from_slice(&self.tile.to_le_bytes());
+        out.push(self.tools);
     }
 
     pub fn read(d: &[u8]) -> Result<Header, String> {
@@ -150,6 +173,7 @@ impl Header {
             aq: d[18] != 0,
             deblock: d[19],
             tile: u16::from_le_bytes([d[20], d[21]]),
+            tools: d[22],
         };
         if h.tile == 0 {
             return Err("tamaño de tesela no válido".into());
@@ -176,6 +200,12 @@ struct Ctx {
     cclm: [Model; 5],
     dq: SintCtx,
     rest: restore::RestCtx,
+    coef_ts: CoefCtx,
+    ts: Vec<Model>,
+    special: Vec<Model>,
+    pal_or_ibc: [Model; 2],
+    pal: PalCtx,
+    bv: BvCtx,
 }
 
 impl Visit for Ctx {
@@ -188,6 +218,12 @@ impl Visit for Ctx {
         self.cclm.visit(f);
         self.dq.visit(f);
         self.rest.visit(f);
+        self.coef_ts.visit(f);
+        self.ts.visit(f);
+        self.special.visit(f);
+        self.pal_or_ibc.visit(f);
+        self.pal.visit(f);
+        self.bv.visit(f);
     }
 }
 
@@ -243,6 +279,12 @@ impl Ctx {
             cclm: [Model::new(); 5],
             dq: SintCtx::default(),
             rest: restore::RestCtx::default(),
+            coef_ts: CoefCtx::default(),
+            ts: vec![Model::new(); 2 * 3],
+            special: vec![Model::new(); 2 * 5 * 3],
+            pal_or_ibc: Default::default(),
+            pal: PalCtx::default(),
+            bv: BvCtx::default(),
         }
     }
 }
@@ -396,24 +438,114 @@ impl QMap {
 
 // ----------------------------------------------------------------- Árbol
 
+/// Clase de predicción de una hoja.
+#[derive(Clone, Debug)]
+enum Kind {
+    Intra(u8),
+    Palette(Palette),
+    Ibc((i32, i32)),
+}
+
+impl Kind {
+    /// Valor del mapa de modos (para el contexto de los vecinos).
+    fn mark(&self) -> u8 {
+        match self {
+            Kind::Intra(m) => *m,
+            Kind::Palette(_) => MARK_PALETTE,
+            Kind::Ibc(_) => MARK_IBC,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Leaf {
+    kind: Kind,
+    /// Residuo sin transformar (transform skip).
+    ts: bool,
+    levels: Vec<i32>,
+}
+
 enum Node {
     Split(Box<[Node; 4]>),
-    Leaf { mode: u8, levels: Vec<i32> },
+    Leaf(Box<Leaf>),
 }
 
 const CHILDREN: [(usize, usize); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 
-/// Reconstruye un bloque: descuantiza, IDCT y suma la predicción.
-fn reconstruct(levels: &[i32], pred: &[i32], q: f32, w: &[f32], n: usize, out: &mut [u8]) {
+/// Estado de las herramientas sintéticas compartido por codificador y
+/// decodificador dentro de un plano (última paleta y último vector).
+#[derive(Clone, Default)]
+struct ScState {
+    last_pal: Option<Vec<u8>>,
+    last_bv: (i32, i32),
+}
+
+fn special_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
+    let sp = |v: Option<(u8, u8, bool)>| v.is_some_and(|(m, _, _)| m >= MARK_PALETTE) as usize;
+    sp(p.neighbor(x0, y0, true)) + sp(p.neighbor(x0, y0, false))
+}
+
+/// Sintaxis de la cabecera de una hoja (clase de predicción y transform
+/// skip). Simétrica: el decodificador pasa una hoja ficticia.
+#[allow(clippy::too_many_arguments)]
+fn code_leaf_head<C: Coder>(
+    ctx: &mut Ctx,
+    c: &mut C,
+    p: &Plane,
+    pc: usize,
+    x0: usize,
+    y0: usize,
+    n: usize,
+    screen: bool,
+    lossless: bool,
+    leaf: &Leaf,
+    st: &mut ScState,
+) -> (Kind, bool) {
+    let sz = size_index(n);
+    let mut kind = None;
+    if screen {
+        let special = !matches!(leaf.kind, Kind::Intra(_));
+        if c.bit(&mut ctx.special[(pc * 5 + sz) * 3 + special_ctx(p, x0, y0)], special) {
+            let is_pal = c.bit(&mut ctx.pal_or_ibc[pc], matches!(leaf.kind, Kind::Palette(_)));
+            kind = Some(if is_pal {
+                let dummy = Palette { colors: vec![0, 1], idx: Vec::new() };
+                let pal = match &leaf.kind {
+                    Kind::Palette(pl) => pl,
+                    _ => &dummy,
+                };
+                Kind::Palette(ctx.pal.code(c, pc, n, pal, &mut st.last_pal))
+            } else {
+                let bv = match leaf.kind {
+                    Kind::Ibc(b) => b,
+                    _ => (0, 0),
+                };
+                Kind::Ibc(ctx.bv.code(c, pc, bv, &mut st.last_bv))
+            });
+        }
+    }
+    let kind = kind.unwrap_or_else(|| {
+        let m = match leaf.kind {
+            Kind::Intra(m) => m,
+            _ => MODE_DC,
+        };
+        Kind::Intra(code_mode(ctx, c, pc, n, mpm_list(p, x0, y0), m))
+    });
+    let ts = lossless || (screen && n <= 16 && c.bit(&mut ctx.ts[pc * 3 + sz.min(2)], leaf.ts));
+    (kind, ts)
+}
+
+/// Reconstruye un bloque: descuantiza, transformada inversa (salvo
+/// transform skip) y suma la predicción.
+fn reconstruct(levels: &[i32], pred: &[i32], q: f32, w: &[f32], n: usize, ts: bool, out: &mut [u8]) {
     let mut buf = [0f32; 64 * 64];
     let mut any = false;
     for i in 0..n * n {
         if levels[i] != 0 {
-            buf[i] = levels[i] as f32 * q * w[i];
+            buf[i] = levels[i] as f32 * q * if ts { 1.0 } else { w[i] };
             any = true;
         }
     }
-    if any {
+    if any && !ts {
         dct::inverse(&mut buf[..n * n], n);
     }
     for i in 0..n * n {
@@ -469,12 +601,40 @@ fn predict_mode(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn predict_leaf(
+    p: &Plane,
+    refs: &predict::Refs,
+    lref: Option<&LumaRef>,
+    kind: &Kind,
+    x0: usize,
+    y0: usize,
+    n: usize,
+    out: &mut [i32],
+) {
+    match kind {
+        Kind::Intra(m) => predict_mode(p, refs, lref, *m, x0, y0, n, out),
+        Kind::Palette(pal) => tools::predict_palette(pal, out),
+        Kind::Ibc(bv) => {
+            if tools::bv_valid(p, x0, y0, n, *bv) {
+                tools::predict_ibc(p, x0, y0, n, *bv, out)
+            } else {
+                out[..n * n].fill(128)
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------- Codificador
 
 struct PlaneEnc<'a> {
     src: &'a [f32],
     plane: Plane,
     pc: usize,
+    /// Índice hash para la búsqueda de IBC (solo con herramientas sintéticas).
+    hash: Option<tools::HashIndex>,
+    /// Estado sintético aproximado durante el RDO.
+    sc: ScState,
 }
 
 struct EncState {
@@ -482,9 +642,80 @@ struct EncState {
     qt: QuantTables,
     lambda_k: f32,
     topk: usize,
+    screen: bool,
+    lossless: bool,
+}
+
+/// Resultado de evaluar una hoja.
+struct LeafEval {
+    j: f32,
+    leaf: Leaf,
+    recon: Vec<u8>,
+    nz: bool,
 }
 
 impl EncState {
+    /// Coste en bits de la cabecera de una hoja con el estado actual.
+    #[allow(clippy::too_many_arguments)]
+    fn head_bits(&mut self, pe: &PlaneEnc, x0: usize, y0: usize, n: usize, kind: &Kind, ts: bool) -> f32 {
+        let mut cc = CostCounter::default();
+        let mut st = pe.sc.clone();
+        let leaf = Leaf { kind: kind.clone(), ts, levels: Vec::new() };
+        code_leaf_head(&mut self.ctx, &mut cc, &pe.plane, pe.pc, x0, y0, n, self.screen, self.lossless, &leaf, &mut st);
+        cc.bits
+    }
+
+    /// Mejor codificación del residuo de una predicción (DCT y, si procede,
+    /// transform skip). Devuelve (J sin cabecera, niveles, ts).
+    #[allow(clippy::too_many_arguments)]
+    fn rd_residual(
+        &self,
+        pc: usize,
+        n: usize,
+        cctx: usize,
+        src: &[f32],
+        pred: &[i32],
+        q: f32,
+        lambda: f32,
+        try_ts: bool,
+        allow_dct: bool,
+    ) -> (f32, Vec<i32>, bool) {
+        let nn = n * n;
+        let mut res = [0f32; 64 * 64];
+        let mut best = (f32::INFINITY, Vec::new(), false);
+        let mut levels = vec![0i32; nn];
+        if self.lossless {
+            // Residuo exacto, sin cuantizar: solo cuenta la tasa.
+            for i in 0..nn {
+                levels[i] = (src[i] - pred[i] as f32).round() as i32;
+            }
+            let bits = self.ctx.coef_ts.block_cost(pc, n, cctx, &levels);
+            return (lambda * bits, levels, true);
+        }
+        if allow_dct {
+            for i in 0..nn {
+                res[i] = src[i] - pred[i] as f32;
+            }
+            dct::forward(&mut res[..nn], n);
+            let w = &self.qt.w[pc][size_index(n)];
+            let qs: Vec<f32> = w.iter().map(|&wi| wi * q).collect();
+            let (d, bits) = self.ctx.coef.quantize_rdo(pc, n, cctx, &res[..nn], &qs, lambda, &mut levels);
+            best = (d + lambda * bits, levels.clone(), false);
+        }
+        if try_ts {
+            for i in 0..nn {
+                res[i] = src[i] - pred[i] as f32;
+            }
+            let qs = vec![q; nn];
+            let (d, bits) = self.ctx.coef_ts.quantize_rdo(pc, n, cctx, &res[..nn], &qs, lambda, &mut levels);
+            let j = d + lambda * bits;
+            if j < best.0 {
+                best = (j, levels.clone(), true);
+            }
+        }
+        best
+    }
+
     fn eval_leaf(
         &mut self,
         pe: &mut PlaneEnc,
@@ -493,7 +724,7 @@ impl EncState {
         y0: usize,
         n: usize,
         q: f32,
-    ) -> (f32, u8, Vec<i32>, Vec<u8>, bool) {
+    ) -> LeafEval {
         let lambda = self.lambda_k * q * q;
         let slam = lambda.sqrt();
         let pc = pe.pc;
@@ -507,15 +738,12 @@ impl EncState {
         let refs = predict::build_refs(&pe.plane, x0, y0, n);
         let mpm = mpm_list(&pe.plane, x0, y0);
         let cctx = cbf_ctx(&pe.plane, x0, y0);
-        let nmodes = if pc == 1 && lref.is_some() {
-            MODE_CCLM + 1
-        } else {
-            predict::NUM_ANGULAR_MODES
-        };
+        let nmodes = if pc == 1 && lref.is_some() { MODE_CCLM + 1 } else { predict::NUM_ANGULAR_MODES };
+        let try_ts = self.screen && n <= 16;
         let mut pred = vec![0i32; nn];
         let mut res = [0f32; 64 * 64];
         let mut cands: Vec<(f32, u8, f32)> = Vec::with_capacity(nmodes as usize);
-        // Búsqueda en dos fases: barrido grueso y refinado angular.
+        // Búsqueda intra en dos fases: barrido grueso y refinado angular.
         let mut done = [false; 64];
         let mut todo: Vec<u8> = vec![MODE_PLANAR, MODE_DC];
         todo.extend((2..predict::NUM_ANGULAR_MODES).step_by(4));
@@ -525,11 +753,8 @@ impl EncState {
         }
         for pass in 0..2 {
             if pass == 1 {
-                let mut ang: Vec<(f32, u8)> = cands
-                    .iter()
-                    .filter(|c| c.1 >= 2 && c.1 < MODE_CCLM)
-                    .map(|c| (c.0, c.1))
-                    .collect();
+                let mut ang: Vec<(f32, u8)> =
+                    cands.iter().filter(|c| c.1 >= 2 && c.1 < MODE_CCLM).map(|c| (c.0, c.1)).collect();
                 ang.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 todo.clear();
                 let width = if self.topk > 4 { 3 } else { 2 };
@@ -558,31 +783,72 @@ impl EncState {
             }
         }
         cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        let w = &self.qt.w[pc][size_index(n)];
-        let qs: Vec<f32> = w.iter().map(|&wi| wi * q).collect();
-        let mut best = (f32::INFINITY, 0u8, vec![0i32; nn]);
-        let mut levels = vec![0i32; nn];
-        for &(_, mode, mbits) in cands.iter().take(self.topk) {
-            predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
-            for i in 0..nn {
-                res[i] = src[i] - pred[i] as f32;
+
+        let mut best: Option<(f32, Kind, Vec<i32>, bool)> = None;
+        let consider = |best: &mut Option<(f32, Kind, Vec<i32>, bool)>, j: f32, kind: Kind, lv: Vec<i32>, ts: bool| {
+            if best.as_ref().is_none_or(|b| j < b.0) {
+                *best = Some((j, kind, lv, ts));
             }
-            dct::forward(&mut res[..nn], n);
-            let (d, bits) =
-                self.ctx
-                    .coef
-                    .quantize_rdo(pc, n, cctx, &res[..nn], &qs, lambda, &mut levels);
-            let j = d + lambda * (bits + mbits);
-            if j < best.0 {
-                best = (j, mode, levels.clone());
+        };
+        for &(_, mode, _) in cands.iter().take(self.topk) {
+            predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
+            let (jr, lv, ts) = self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
+            let kind = Kind::Intra(mode);
+            let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
+            consider(&mut best, jr + lambda * hb, kind, lv, ts);
+        }
+        if self.screen {
+            // Paleta
+            for pal in tools::palette_candidates(&src, n) {
+                tools::predict_palette(&pal, &mut pred);
+                let (jr, lv, ts) = self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
+                let kind = Kind::Palette(pal);
+                let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
+                consider(&mut best, jr + lambda * hb, kind, lv, ts);
+            }
+            // Copia intra de bloques
+            if n >= 8 {
+                let mut bvs: Vec<(i32, i32)> = vec![pe.sc.last_bv, (-(n as i32), 0), (0, -(n as i32))];
+                if let Some(h) = &pe.hash {
+                    bvs.extend(h.candidates(pe.src, pe.plane.w, x0, y0));
+                }
+                let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
+                for bv in bvs {
+                    if scored.iter().any(|s| s.1 == bv) || !tools::bv_valid(&pe.plane, x0, y0, n, bv) {
+                        continue;
+                    }
+                    tools::predict_ibc(&pe.plane, x0, y0, n, bv, &mut pred);
+                    let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
+                    let bits = self.ctx.bv.cost(pc, bv, pe.sc.last_bv);
+                    scored.push((sad + slam * bits, bv));
+                }
+                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                for &(_, bv) in scored.iter().take(3) {
+                    tools::predict_ibc(&pe.plane, x0, y0, n, bv, &mut pred);
+                    let (jr, lv, ts) = self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
+                    let kind = Kind::Ibc(bv);
+                    let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
+                    consider(&mut best, jr + lambda * hb, kind, lv, ts);
+                }
             }
         }
-        let (j, mode, levels) = best;
-        predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
+        let (j, kind, levels, ts) = best.expect("al menos un candidato");
+        predict_leaf(&pe.plane, &refs, lref, &kind, x0, y0, n, &mut pred);
         let mut recon = vec![0u8; nn];
-        reconstruct(&levels, &pred, q, w, n, &mut recon);
+        reconstruct(&levels, &pred, q, &self.qt.w[pc][size_index(n)], n, ts, &mut recon);
         let nz = levels.iter().any(|&l| l != 0);
-        (j, mode, levels, recon, nz)
+        LeafEval { j, leaf: Leaf { kind, ts, levels }, recon, nz }
+    }
+
+    /// Aplica una hoja elegida al plano y al estado sintético aproximado.
+    fn commit_leaf(pe: &mut PlaneEnc, x0: usize, y0: usize, n: usize, ev: &LeafEval) {
+        pe.plane.write_block(x0, y0, n, &ev.recon);
+        pe.plane.set_block(x0, y0, n, ev.leaf.kind.mark(), ev.nz);
+        match &ev.leaf.kind {
+            Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
+            Kind::Ibc(bv) => pe.sc.last_bv = *bv,
+            Kind::Intra(_) => {}
+        }
     }
 
     fn rdo_node(
@@ -596,14 +862,15 @@ impl EncState {
     ) -> (f32, Node) {
         let q = qm.q(pe.pc, x0, y0, n);
         let lambda = self.lambda_k * q * q;
-        let (mut ja, mode, levels, recon, nz) = self.eval_leaf(pe, lref, x0, y0, n, q);
+        let sc_before = pe.sc.clone();
+        let mut ev = self.eval_leaf(pe, lref, x0, y0, n, q);
         if n == 4 {
-            pe.plane.write_block(x0, y0, n, &recon);
-            pe.plane.set_block(x0, y0, n, mode, nz);
-            return (ja, Node::Leaf { mode, levels });
+            Self::commit_leaf(pe, x0, y0, n, &ev);
+            let j = ev.j;
+            return (j, Node::Leaf(Box::new(ev.leaf)));
         }
         let sctx = split_ctx(&pe.plane, x0, y0, n, pe.pc);
-        ja += lambda * self.ctx.split[sctx].cost(false);
+        ev.j += lambda * self.ctx.split[sctx].cost(false);
         let h = n / 2;
         let mut jb = lambda * self.ctx.split[sctx].cost(true);
         let mut kids: Vec<Node> = Vec::with_capacity(4);
@@ -612,21 +879,24 @@ impl EncState {
             jb += j;
             kids.push(node);
         }
-        if ja <= jb {
-            pe.plane.write_block(x0, y0, n, &recon);
-            pe.plane.set_block(x0, y0, n, mode, nz);
-            (ja, Node::Leaf { mode, levels })
+        if ev.j <= jb {
+            pe.sc = sc_before;
+            Self::commit_leaf(pe, x0, y0, n, &ev);
+            let j = ev.j;
+            (j, Node::Leaf(Box::new(ev.leaf)))
         } else {
             let arr: [Node; 4] = kids.try_into().ok().unwrap();
             (jb, Node::Split(Box::new(arr)))
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_node(
         &mut self,
         enc: &mut Encoder,
         p: &Plane,
         pc: usize,
+        st: &mut ScState,
         x0: usize,
         y0: usize,
         n: usize,
@@ -640,16 +910,14 @@ impl EncState {
             Node::Split(kids) => {
                 let h = n / 2;
                 for (k, (dx, dy)) in CHILDREN.iter().enumerate() {
-                    self.write_node(enc, p, pc, x0 + dx * h, y0 + dy * h, h, &kids[k]);
+                    self.write_node(enc, p, pc, st, x0 + dx * h, y0 + dy * h, h, &kids[k]);
                 }
             }
-            Node::Leaf { mode, levels } => {
-                let mpm = mpm_list(p, x0, y0);
-                code_mode(&mut self.ctx, enc, pc, n, mpm, *mode);
-                let mut l = levels.clone();
-                self.ctx
-                    .coef
-                    .code_block(enc, pc, n, cbf_ctx(p, x0, y0), &mut l);
+            Node::Leaf(leaf) => {
+                code_leaf_head(&mut self.ctx, enc, p, pc, x0, y0, n, self.screen, self.lossless, leaf, st);
+                let mut l = leaf.levels.clone();
+                let coef = if leaf.ts { &mut self.ctx.coef_ts } else { &mut self.ctx.coef };
+                coef.code_block(enc, pc, n, cbf_ctx(p, x0, y0), &mut l);
             }
         }
     }
@@ -708,6 +976,8 @@ fn pad_plane(src: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
 pub struct Encoded {
     pub bytes: Vec<u8>,
     pub recon_rgb: Vec<u8>,
+    /// Alfa reconstruido (si la imagen tiene transparencia).
+    pub recon_alpha: Option<Vec<u8>>,
 }
 
 /// Rectángulo de una tesela de la imagen (en píxeles).
@@ -745,28 +1015,46 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> 
     items.iter().map(f).collect()
 }
 
-fn crop(rgb: &[u8], width: usize, t: &TileRect) -> Vec<u8> {
-    let mut out = Vec::with_capacity(t.w * t.h * 3);
+fn crop(px: &[u8], ch: usize, width: usize, t: &TileRect) -> Vec<u8> {
+    let mut out = Vec::with_capacity(t.w * t.h * ch);
     for y in t.y..t.y + t.h {
-        out.extend_from_slice(&rgb[(y * width + t.x) * 3..(y * width + t.x + t.w) * 3]);
+        out.extend_from_slice(&px[(y * width + t.x) * ch..(y * width + t.x + t.w) * ch]);
     }
     out
 }
 
-fn paste(dst: &mut [u8], width: usize, t: &TileRect, src: &[u8]) {
+fn paste(dst: &mut [u8], ch: usize, width: usize, t: &TileRect, src: &[u8]) {
     for y in 0..t.h {
-        dst[((t.y + y) * width + t.x) * 3..((t.y + y) * width + t.x + t.w) * 3]
-            .copy_from_slice(&src[y * t.w * 3..(y + 1) * t.w * 3]);
+        dst[((t.y + y) * width + t.x) * ch..((t.y + y) * width + t.x + t.w) * ch]
+            .copy_from_slice(&src[y * t.w * ch..(y + 1) * t.w * ch]);
     }
 }
 
-pub fn make_header(width: usize, height: usize, p: &Params) -> Header {
+/// Cabecera para una imagen. Analiza el contenido para decidir si activar
+/// las herramientas de contenido sintético (salvo que `p.screen` lo fije).
+pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Header {
+    let screen = p.screen.unwrap_or_else(|| tools::looks_synthetic(rgb, width, height));
     let base_q = quality_to_qstep(p.quality);
     let tile = (p.tile.clamp(64, 65535 * 64) / 64) as u16;
+    if p.lossless {
+        return Header {
+            width: width as u32,
+            height: height as u32,
+            subsample: false,
+            qstep: 64,
+            chroma_q: 32,
+            qm_luma: 0,
+            qm_chroma: 0,
+            aq: false,
+            deblock: 0,
+            tile,
+            tools: TOOL_SCREEN | TOOL_LOSSLESS,
+        };
+    }
     Header {
         width: width as u32,
         height: height as u32,
-        subsample: p.subsample.unwrap_or(base_q > 1.04),
+        subsample: p.subsample.unwrap_or(!screen && base_q > 1.04),
         qstep: (base_q * 64.0).round().clamp(1.0, 65535.0) as u16,
         chroma_q: (p.chroma_q * 32.0).round().clamp(1.0, 255.0) as u8,
         qm_luma: (p.qm_luma * 16.0).round().clamp(0.0, 255.0) as u8,
@@ -774,13 +1062,29 @@ pub fn make_header(width: usize, height: usize, p: &Params) -> Header {
         aq: p.aq_strength != 0.0,
         deblock: p.deblock.unwrap_or(0),
         tile,
+        tools: if screen { TOOL_SCREEN } else { 0 },
     }
 }
 
 /// Une cabecera y cargas de las teselas en un archivo completo.
 pub fn assemble(header: &Header, payloads: &[Vec<u8>]) -> Vec<u8> {
+    assemble_with_preview(header, None, payloads)
+}
+
+/// Como `assemble`, con una vista previa opcional (un archivo .tsl completo).
+pub fn assemble_with_preview(header: &Header, preview: Option<&[u8]>, payloads: &[Vec<u8>]) -> Vec<u8> {
     let mut bytes = Vec::new();
-    header.write(&mut bytes);
+    let mut h = header.clone();
+    if preview.is_some() {
+        h.tools |= TOOL_PREVIEW;
+    } else {
+        h.tools &= !TOOL_PREVIEW;
+    }
+    h.write(&mut bytes);
+    if let Some(pv) = preview {
+        bytes.extend_from_slice(&(pv.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(pv);
+    }
     for p in payloads {
         bytes.extend_from_slice(&(p.len() as u32).to_le_bytes());
     }
@@ -790,134 +1094,241 @@ pub fn assemble(header: &Header, payloads: &[Vec<u8>]) -> Vec<u8> {
     bytes
 }
 
+/// Codifica una imagen RGB (8 bits por canal, orden fila).
 pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
-    let header = make_header(width, height, p);
-    let tiles = tile_grid(width, height, header.tile_size());
-    let res = par_map(&tiles, |t| {
-        let sub_rgb = crop(rgb, width, t);
-        encode_tile(&sub_rgb, t.w, t.h, &header, p)
-    });
-    let mut recon_rgb = vec![0u8; width * height * 3];
-    for (t, (_, r)) in tiles.iter().zip(&res) {
-        paste(&mut recon_rgb, width, t, r);
-    }
-    let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
-    Encoded {
-        bytes: assemble(&header, &payloads),
-        recon_rgb,
-    }
+    encode_with_alpha(rgb, None, width, height, p)
 }
 
-/// Codifica una tesela independiente. Devuelve (carga útil, reconstrucción RGB).
+/// Codifica una imagen RGBA. Si todos los píxeles son opacos no se guarda alfa.
+pub fn encode_rgba(rgba: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
+    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|px| [px[0], px[1], px[2]]).collect();
+    let alpha: Vec<u8> = rgba.chunks_exact(4).map(|px| px[3]).collect();
+    let has_alpha = alpha.iter().any(|&a| a != 255);
+    encode_with_alpha(&rgb, has_alpha.then_some(&alpha[..]), width, height, p)
+}
+
+fn encode_with_alpha(rgb: &[u8], alpha: Option<&[u8]>, width: usize, height: usize, p: &Params) -> Encoded {
+    let mut header = make_header(rgb, width, height, p);
+    if alpha.is_some() {
+        header.tools |= TOOL_ALPHA;
+    }
+    let tiles = tile_grid(width, height, header.tile_size());
+    let res = par_map(&tiles, |t| {
+        let a = alpha.map(|a| crop(a, 1, width, t));
+        encode_tile(&crop(rgb, 3, width, t), a.as_deref(), t.w, t.h, &header, p)
+    });
+    let mut recon_rgb = vec![0u8; width * height * 3];
+    let mut recon_alpha = alpha.map(|_| vec![0u8; width * height]);
+    for (t, r) in tiles.iter().zip(&res) {
+        paste(&mut recon_rgb, 3, width, t, &r.1);
+        if let (Some(dst), Some(src)) = (recon_alpha.as_mut(), r.2.as_ref()) {
+            paste(dst, 1, width, t, src);
+        }
+    }
+    let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
+    let preview = (p.preview && width.max(height) > PREVIEW_SIDE).then(|| make_preview(rgb, alpha, width, height));
+    Encoded { bytes: assemble_with_preview(&header, preview.as_deref(), &payloads), recon_rgb, recon_alpha }
+}
+
+/// Vista previa: la imagen reducida (promedio por áreas) a `PREVIEW_SIDE`
+/// píxeles de lado mayor, codificada como un .tsl independiente.
+fn make_preview(rgb: &[u8], alpha: Option<&[u8]>, w: usize, h: usize) -> Vec<u8> {
+    let s = PREVIEW_SIDE as f64 / w.max(h) as f64;
+    let (pw, ph) = (((w as f64 * s).round() as usize).max(1), ((h as f64 * s).round() as usize).max(1));
+    let mut out = vec![0u8; pw * ph * 4];
+    for y in 0..ph {
+        for x in 0..pw {
+            let (x0, x1) = (x * w / pw, ((x + 1) * w / pw).max(x * w / pw + 1));
+            let (y0, y1) = (y * h / ph, ((y + 1) * h / ph).max(y * h / ph + 1));
+            let mut acc = [0u32; 4];
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let i = yy * w + xx;
+                    for c in 0..3 {
+                        acc[c] += rgb[i * 3 + c] as u32;
+                    }
+                    acc[3] += alpha.map_or(255, |a| a[i]) as u32;
+                }
+            }
+            let n = ((x1 - x0) * (y1 - y0)) as u32;
+            for c in 0..4 {
+                out[(y * pw + x) * 4 + c] = ((acc[c] + n / 2) / n) as u8;
+            }
+        }
+    }
+    let p = Params { quality: 45.0, preview: false, screen: Some(false), ..Params::default() };
+    encode_rgba(&out, pw, ph, &p).bytes
+}
+
+/// Codifica una tesela independiente.
+/// Devuelve (carga útil, reconstrucción RGB, reconstrucción alfa).
 pub fn encode_tile(
     rgb: &[u8],
+    alpha: Option<&[u8]>,
     width: usize,
     height: usize,
     header: &Header,
     p: &Params,
-) -> (Vec<u8>, Vec<u8>) {
-    let (a, b, _) = encode_tile_stats(rgb, width, height, header, p);
-    (a, b)
+) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>) {
+    let r = encode_tile_stats(rgb, alpha, width, height, header, p);
+    (r.0, r.1, r.2)
+}
+
+/// Planos de color a codificar: YCbCr (con pérdida) o G, B, R (sin pérdida).
+fn color_planes(rgb: &[u8], w: usize, h: usize, header: &Header) -> Vec<(Vec<f32>, usize, usize)> {
+    if header.tools & TOOL_LOSSLESS != 0 {
+        let ch = |c: usize| rgb.chunks_exact(3).map(|px| px[c] as f32).collect::<Vec<f32>>();
+        vec![(ch(1), w, h), (ch(2), w, h), (ch(0), w, h)]
+    } else {
+        color::rgb_to_ycbcr(rgb, w, h, header.subsample).planes
+    }
+}
+
+/// Codifica un plano completo (quadtree por superbloques). Devuelve la
+/// reconstrucción y el original con relleno.
+#[allow(clippy::too_many_arguments)]
+fn encode_plane(
+    st: &mut EncState,
+    enc: &mut Encoder,
+    src: &[f32],
+    w: usize,
+    h: usize,
+    pc: usize,
+    lref: Option<&LumaRef>,
+    qm: &mut QMap,
+    code_dq: bool,
+) -> (Plane, Vec<f32>) {
+    let (src, pw, ph) = pad_plane(src, w, h);
+    let mut pe = PlaneEnc {
+        src: &src,
+        plane: Plane::new(pw, ph),
+        pc,
+        hash: st.screen.then(|| tools::HashIndex::build(&src, pw, ph)),
+        sc: ScState::default(),
+    };
+    let mut wst = ScState::default();
+    for sy in 0..ph / SB {
+        for sx in 0..pw / SB {
+            if code_dq {
+                qm.code_sb(&mut st.ctx, enc, sx, sy);
+            }
+            let (_, node) = st.rdo_node(&mut pe, lref, qm, sx * SB, sy * SB, SB);
+            st.write_node(enc, &pe.plane, pc, &mut wst, sx * SB, sy * SB, SB, &node);
+        }
+    }
+    let plane = pe.plane;
+    (plane, src)
+}
+
+/// Mapa de cuantización plano con paso 1 (alfa y modo sin pérdida).
+fn unit_qmap(w: usize, h: usize) -> QMap {
+    let (qw, qh) = (w.div_ceil(SB) * SB / AQ, h.div_ceil(SB) * SB / AQ);
+    QMap { dq: vec![0; qw * qh], w: qw, h: qh, base: 1.0, cq: 1.0, sub: false }
 }
 
 /// Como `encode_tile`, pero devuelve también el estado final de los modelos.
 pub fn encode_tile_stats(
     rgb: &[u8],
+    alpha: Option<&[u8]>,
     width: usize,
     height: usize,
     header: &Header,
     p: &Params,
-) -> (Vec<u8>, Vec<u8>, Vec<(u32, u32)>) {
-    let sub = header.subsample;
+) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(u32, u32)>) {
+    let lossless = header.tools & TOOL_LOSSLESS != 0;
+    let sub = header.subsample && !lossless;
     let base_q = header.qstep();
     let cq = header.chroma_q as f32 / 32.0;
-    let ycc = color::rgb_to_ycbcr(rgb, width, height, sub);
     let mut st = EncState {
         ctx: Ctx::trained(base_q),
         qt: QuantTables::new(header.qm_luma as f32 / 16.0, header.qm_chroma as f32 / 16.0),
         lambda_k: p.lambda_k,
         topk: (p.effort.clamp(1, 9) as usize) + 1,
+        screen: header.tools & TOOL_SCREEN != 0,
+        lossless,
     };
     let mut enc = Encoder::new();
     let mut planes: Vec<Plane> = Vec::new();
-    let mut qm = QMap {
-        dq: Vec::new(),
-        w: 0,
-        h: 0,
-        base: base_q,
-        cq,
-        sub,
-    };
+    let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub };
     let mut lref: Option<LumaRef> = None;
     let mut srcs = Vec::new();
-    for (pi, (src, w, h)) in ycc.planes.iter().enumerate() {
-        let (src, pw, ph) = pad_plane(src, *w, *h);
+    for (pi, (src, w, h)) in color_planes(rgb, width, height, header).iter().enumerate() {
         let pc = (pi > 0) as usize;
         if pi == 0 {
-            qm.dq = compute_aq(&src, pw, ph, p.aq_strength);
+            let (padded, pw, ph) = pad_plane(src, *w, *h);
+            qm.dq = compute_aq(&padded, pw, ph, if header.aq { p.aq_strength } else { 0.0 });
             qm.w = pw / AQ;
             qm.h = ph / AQ;
         }
-        let mut pe = PlaneEnc {
-            src: &src,
-            plane: Plane::new(pw, ph),
-            pc,
-        };
-        for sy in 0..ph / SB {
-            for sx in 0..pw / SB {
-                if pi == 0 && header.aq {
-                    qm.code_sb(&mut st.ctx, &mut enc, sx, sy);
-                }
-                let (_, node) = st.rdo_node(&mut pe, lref.as_ref(), &qm, sx * SB, sy * SB, SB);
-                st.write_node(&mut enc, &pe.plane, pc, sx * SB, sy * SB, SB, &node);
-            }
-        }
+        let (plane, src) =
+            encode_plane(&mut st, &mut enc, src, *w, *h, pc, lref.as_ref(), &mut qm, pi == 0 && header.aq);
         if pi == 0 {
-            lref = Some(LumaRef::new(&pe.plane, sub));
+            lref = Some(LumaRef::new(&plane, sub));
         }
-        planes.push(pe.plane);
+        planes.push(plane);
         srcs.push(src);
     }
     for (pi, plane) in planes.iter_mut().enumerate() {
         let pc = (pi > 0) as usize;
         let q = base_q * if pc == 1 { cq } else { 1.0 };
-        let d = if p.restore {
+        let d = if p.restore && !lossless {
             restore::decide(plane, &srcs[pi], p.lambda_k * q * q)
         } else {
             restore::Decision::default()
         };
-        let d = st
-            .ctx
-            .rest
-            .code(&mut enc, pc, plane.w / SB, plane.h / SB, &d);
+        let d = st.ctx.rest.code(&mut enc, pc, plane.w / SB, plane.h / SB, &d);
         restore::apply(plane, &d);
     }
-    let recon = finish_planes(header, &planes, width, height);
     let stats = st.ctx.stats();
-    (enc.finish(), recon, stats)
+    // Canal alfa: plano adicional sin pérdida, con contextos propios.
+    let mut recon_alpha = None;
+    if header.tools & TOOL_ALPHA != 0 {
+        let a: Vec<f32> = match alpha {
+            Some(a) => a.iter().map(|&v| v as f32).collect(),
+            None => vec![255.0; width * height],
+        };
+        let mut ast = EncState {
+            ctx: Ctx::new(),
+            qt: QuantTables::new(0.0, 0.0),
+            lambda_k: p.lambda_k,
+            topk: st.topk,
+            screen: true,
+            lossless: true,
+        };
+        let mut aq = unit_qmap(width, height);
+        let (plane, _) = encode_plane(&mut ast, &mut enc, &a, width, height, 0, None, &mut aq, false);
+        recon_alpha = Some(crop_plane(&plane, width, height));
+    }
+    let recon = finish_planes(header, &planes, width, height);
+    (enc.finish(), recon, recon_alpha, stats)
+}
+
+fn crop_plane(p: &Plane, w: usize, h: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(w * h);
+    for y in 0..h {
+        out.extend_from_slice(&p.data[y * p.w..y * p.w + w]);
+    }
+    out
 }
 
 fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
+    if h.tools & TOOL_LOSSLESS != 0 {
+        let (g, b, r) = (&planes[0], &planes[1], &planes[2]);
+        let mut out = Vec::with_capacity(w * ht * 3);
+        for y in 0..ht {
+            for x in 0..w {
+                out.extend_from_slice(&[r.px(x, y), g.px(x, y), b.px(x, y)]);
+            }
+        }
+        return out;
+    }
     let mut ps: Vec<Plane> = planes.to_vec();
     if h.deblock > 0 {
         for (i, p) in ps.iter_mut().enumerate() {
-            crate::deblock::filter(
-                p,
-                h.qstep() * if i > 0 { h.chroma_q as f32 / 32.0 } else { 1.0 },
-                h.deblock,
-            );
+            crate::deblock::filter(p, h.qstep() * if i > 0 { h.chroma_q as f32 / 32.0 } else { 1.0 }, h.deblock);
         }
     }
-    color::ycbcr_to_rgb(
-        &ps[0].data,
-        ps[0].w,
-        &ps[1].data,
-        &ps[2].data,
-        ps[1].w,
-        w,
-        ht,
-        h.subsample,
-    )
+    color::ycbcr_to_rgb(&ps[0].data, ps[0].w, &ps[1].data, &ps[2].data, ps[1].w, w, ht, h.subsample)
 }
 
 // ----------------------------------------------------------- Decodificador
@@ -925,6 +1336,8 @@ fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
 struct DecState {
     ctx: Ctx,
     qt: QuantTables,
+    screen: bool,
+    lossless: bool,
 }
 
 impl DecState {
@@ -936,6 +1349,7 @@ impl DecState {
         lref: Option<&LumaRef>,
         qm: &QMap,
         pc: usize,
+        st: &mut ScState,
         x0: usize,
         y0: usize,
         n: usize,
@@ -945,38 +1359,29 @@ impl DecState {
             if dec.bit(&mut self.ctx.split[sctx], false) {
                 let h = n / 2;
                 for (dx, dy) in CHILDREN {
-                    self.read_node(dec, p, lref, qm, pc, x0 + dx * h, y0 + dy * h, h);
+                    self.read_node(dec, p, lref, qm, pc, st, x0 + dx * h, y0 + dy * h, h);
                 }
                 return;
             }
         }
-        let mpm = mpm_list(p, x0, y0);
-        let mode = code_mode(&mut self.ctx, dec, pc, n, mpm, 0);
-        let mode = if mode == MODE_CCLM && lref.is_none() {
-            MODE_DC
-        } else {
-            mode
+        let dummy = Leaf { kind: Kind::Intra(MODE_DC), ts: false, levels: Vec::new() };
+        let (kind, ts) = code_leaf_head(&mut self.ctx, dec, p, pc, x0, y0, n, self.screen, self.lossless, &dummy, st);
+        let kind = match kind {
+            Kind::Intra(m) if m == MODE_CCLM && lref.is_none() => Kind::Intra(MODE_DC),
+            Kind::Intra(m) if m > MODE_CCLM => Kind::Intra(MODE_DC),
+            k => k,
         };
         let mut levels = vec![0i32; n * n];
-        let nz = self
-            .ctx
-            .coef
-            .code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
+        let coef = if ts { &mut self.ctx.coef_ts } else { &mut self.ctx.coef };
+        let nz = coef.code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
         let refs = predict::build_refs(p, x0, y0, n);
         let mut pred = vec![0i32; n * n];
-        predict_mode(p, &refs, lref, mode.min(MODE_CCLM), x0, y0, n, &mut pred);
+        predict_leaf(p, &refs, lref, &kind, x0, y0, n, &mut pred);
         let mut recon = vec![0u8; n * n];
         let q = qm.q(pc, x0, y0, n);
-        reconstruct(
-            &levels,
-            &pred,
-            q,
-            &self.qt.w[pc][size_index(n)],
-            n,
-            &mut recon,
-        );
+        reconstruct(&levels, &pred, q, &self.qt.w[pc][size_index(n)], n, ts, &mut recon);
         p.write_block(x0, y0, n, &recon);
-        p.set_block(x0, y0, n, mode, nz);
+        p.set_block(x0, y0, n, kind.mark(), nz);
     }
 }
 
@@ -984,6 +1389,20 @@ pub struct Decoded {
     pub width: usize,
     pub height: usize,
     pub rgb: Vec<u8>,
+    /// Canal alfa, si la imagen lo tiene.
+    pub alpha: Option<Vec<u8>>,
+}
+
+impl Decoded {
+    /// Píxeles RGBA (alfa 255 si la imagen no tiene transparencia).
+    pub fn rgba(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.width * self.height * 4);
+        for (i, px) in self.rgb.chunks_exact(3).enumerate() {
+            out.extend_from_slice(px);
+            out.push(self.alpha.as_ref().map_or(255, |a| a[i]));
+        }
+        out
+    }
 }
 
 /// Cabecera y tabla de teselas de un archivo.
@@ -992,105 +1411,125 @@ pub struct Info {
     pub tiles: Vec<TileRect>,
     /// Rango de bytes de la carga útil de cada tesela.
     pub ranges: Vec<std::ops::Range<usize>>,
+    /// Rango de la vista previa (un .tsl completo), si la hay.
+    pub preview: Option<std::ops::Range<usize>>,
 }
 
 pub fn info(data: &[u8]) -> Result<Info, String> {
     let header = Header::read(data)?;
-    let tiles = tile_grid(
-        header.width as usize,
-        header.height as usize,
-        header.tile_size(),
-    );
-    let mut pos = HEADER_LEN + 4 * tiles.len();
+    let tiles = tile_grid(header.width as usize, header.height as usize, header.tile_size());
+    let mut base = HEADER_LEN;
+    let mut preview = None;
+    if header.tools & TOOL_PREVIEW != 0 {
+        let len = data
+            .get(base..base + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .ok_or("archivo truncado")?;
+        let end = (base + 4).checked_add(len).filter(|&e| e <= data.len()).ok_or("archivo truncado")?;
+        preview = Some(base + 4..end);
+        base = end;
+    }
+    let mut pos = base + 4 * tiles.len();
     if data.len() < pos {
         return Err("archivo truncado".into());
     }
     let mut ranges = Vec::with_capacity(tiles.len());
     for i in 0..tiles.len() {
-        let o = HEADER_LEN + 4 * i;
+        let o = base + 4 * i;
         let len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
-        let end = pos
-            .checked_add(len)
-            .filter(|&e| e <= data.len())
-            .ok_or("archivo truncado")?;
+        let end = pos.checked_add(len).filter(|&e| e <= data.len()).ok_or("archivo truncado")?;
         ranges.push(pos..end);
         pos = end;
     }
-    Ok(Info {
-        header,
-        tiles,
-        ranges,
-    })
+    Ok(Info { header, tiles, ranges, preview })
 }
 
-/// Decodifica una tesela a RGB (tamaño `w × h` de la tesela).
-pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
+/// Decodifica solo la vista previa (si el archivo la tiene).
+pub fn decode_preview(data: &[u8]) -> Result<Option<Decoded>, String> {
+    let header = Header::read(data)?;
+    if header.tools & TOOL_PREVIEW == 0 {
+        return Ok(None);
+    }
+    let len = data
+        .get(HEADER_LEN..HEADER_LEN + 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .ok_or("archivo truncado")?;
+    let pv = data.get(HEADER_LEN + 4..HEADER_LEN + 4 + len).ok_or("archivo truncado")?;
+    let inner = Header::read(pv)?;
+    if inner.tools & TOOL_PREVIEW != 0 {
+        return Err("vista previa no válida".into());
+    }
+    decode(pv).map(Some)
+}
+
+/// Decodifica un plano completo.
+#[allow(clippy::too_many_arguments)]
+fn decode_plane(
+    st: &mut DecState,
+    dec: &mut Decoder,
+    w: usize,
+    h: usize,
+    pc: usize,
+    lref: Option<&LumaRef>,
+    qm: &mut QMap,
+    code_dq: bool,
+) -> Plane {
+    let pw = w.div_ceil(SB) * SB;
+    let ph = h.div_ceil(SB) * SB;
+    let mut plane = Plane::new(pw, ph);
+    let mut sst = ScState::default();
+    for sy in 0..ph / SB {
+        for sx in 0..pw / SB {
+            if code_dq {
+                qm.code_sb(&mut st.ctx, dec, sx, sy);
+            }
+            st.read_node(dec, &mut plane, lref, qm, pc, &mut sst, sx * SB, sy * SB, SB);
+        }
+    }
+    plane
+}
+
+/// Decodifica una tesela de `w × ht`. Devuelve (RGB, alfa).
+pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>, Option<Vec<u8>>) {
+    let lossless = h.tools & TOOL_LOSSLESS != 0;
+    let sub = h.subsample && !lossless;
     let base_q = h.qstep();
     let cq = h.chroma_q as f32 / 32.0;
-    let (cw, ch) = if h.subsample {
-        (w.div_ceil(2), ht.div_ceil(2))
-    } else {
-        (w, ht)
-    };
+    let (cw, ch) = if sub { (w.div_ceil(2), ht.div_ceil(2)) } else { (w, ht) };
     let dims = [(w, ht), (cw, ch), (cw, ch)];
     let mut st = DecState {
         ctx: Ctx::trained(base_q),
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
+        screen: h.tools & TOOL_SCREEN != 0,
+        lossless,
     };
     let mut dec = Decoder::new(payload);
     let mut planes = Vec::new();
-    let mut qm = QMap {
-        dq: Vec::new(),
-        w: 0,
-        h: 0,
-        base: base_q,
-        cq,
-        sub: h.subsample,
-    };
+    let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub };
     let mut lref: Option<LumaRef> = None;
     for (pi, &(pw0, ph0)) in dims.iter().enumerate() {
-        let pw = pw0.div_ceil(SB) * SB;
-        let ph = ph0.div_ceil(SB) * SB;
-        let pc = (pi > 0) as usize;
-        let mut plane = Plane::new(pw, ph);
         if pi == 0 {
-            qm.w = pw / AQ;
-            qm.h = ph / AQ;
+            qm.w = pw0.div_ceil(SB) * SB / AQ;
+            qm.h = ph0.div_ceil(SB) * SB / AQ;
             qm.dq = vec![0; qm.w * qm.h];
         }
-        for sy in 0..ph / SB {
-            for sx in 0..pw / SB {
-                if pi == 0 && h.aq {
-                    qm.code_sb(&mut st.ctx, &mut dec, sx, sy);
-                }
-                st.read_node(
-                    &mut dec,
-                    &mut plane,
-                    lref.as_ref(),
-                    &qm,
-                    pc,
-                    sx * SB,
-                    sy * SB,
-                    SB,
-                );
-            }
-        }
+        let plane = decode_plane(&mut st, &mut dec, pw0, ph0, (pi > 0) as usize, lref.as_ref(), &mut qm, pi == 0 && h.aq);
         if pi == 0 {
-            lref = Some(LumaRef::new(&plane, h.subsample));
+            lref = Some(LumaRef::new(&plane, sub));
         }
         planes.push(plane);
     }
     for (pi, plane) in planes.iter_mut().enumerate() {
-        let d = st.ctx.rest.code(
-            &mut dec,
-            (pi > 0) as usize,
-            plane.w / SB,
-            plane.h / SB,
-            &restore::Decision::default(),
-        );
+        let d = st.ctx.rest.code(&mut dec, (pi > 0) as usize, plane.w / SB, plane.h / SB, &restore::Decision::default());
         restore::apply(plane, &d);
     }
-    finish_planes(h, &planes, w, ht)
+    let alpha = (h.tools & TOOL_ALPHA != 0).then(|| {
+        let mut ast = DecState { ctx: Ctx::new(), qt: QuantTables::new(0.0, 0.0), screen: true, lossless: true };
+        let mut aq = unit_qmap(w, ht);
+        let plane = decode_plane(&mut ast, &mut dec, w, ht, 0, None, &mut aq, false);
+        crop_plane(&plane, w, ht)
+    });
+    (finish_planes(h, &planes, w, ht), alpha)
 }
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
@@ -1102,12 +1541,12 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         decode_tile(&data[inf.ranges[i].clone()], t.w, t.h, &inf.header)
     });
     let mut rgb = vec![0u8; w * ht * 3];
-    for (t, part) in inf.tiles.iter().zip(&parts) {
-        paste(&mut rgb, w, t, part);
+    let mut alpha = (inf.header.tools & TOOL_ALPHA != 0).then(|| vec![255u8; w * ht]);
+    for (t, (prgb, palpha)) in inf.tiles.iter().zip(&parts) {
+        paste(&mut rgb, 3, w, t, prgb);
+        if let (Some(dst), Some(src)) = (alpha.as_mut(), palpha.as_ref()) {
+            paste(dst, 1, w, t, src);
+        }
     }
-    Ok(Decoded {
-        width: w,
-        height: ht,
-        rgb,
-    })
+    Ok(Decoded { width: w, height: ht, rgb, alpha })
 }

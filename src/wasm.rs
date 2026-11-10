@@ -55,21 +55,18 @@ pub extern "C" fn tsl_last_error() -> *mut u8 {
 }
 
 fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(rgba.len() / 4 * 3);
-    for p in rgba.chunks_exact(4) {
-        // Composición sobre blanco si hay transparencia.
-        let a = p[3] as u32;
-        for c in &p[..3] {
-            out.push(((*c as u32 * a + 255 * (255 - a) + 127) / 255) as u8);
-        }
-    }
-    out
+    rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
 }
 
-fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+fn alpha_of(rgba: &[u8]) -> Option<Vec<u8>> {
+    let a: Vec<u8> = rgba.chunks_exact(4).map(|p| p[3]).collect();
+    a.iter().any(|&v| v != 255).then_some(a)
+}
+
+fn to_rgba(rgb: &[u8], alpha: Option<&[u8]>) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
-    for p in rgb.chunks_exact(3) {
-        out.extend_from_slice(&[p[0], p[1], p[2], 255]);
+    for (i, p) in rgb.chunks_exact(3).enumerate() {
+        out.extend_from_slice(&[p[0], p[1], p[2], alpha.map_or(255, |a| a[i])]);
     }
     out
 }
@@ -87,10 +84,18 @@ fn params(quality: f32, effort: u32, tune: u32) -> Params {
     }
 }
 
-/// Cabecera (22 bytes) para una imagen de `w × h` con estos parámetros.
+/// Cabecera para una imagen RGBA de `w × h` con estos parámetros (analiza el
+/// contenido para decidir las herramientas).
+///
+/// # Safety
+/// `rgba` debe apuntar a `w*h*4` bytes válidos.
 #[unsafe(no_mangle)]
-pub extern "C" fn tsl_header(w: u32, h: u32, quality: f32, effort: u32, tune: u32) -> *mut u8 {
-    let hd = codec::make_header(w as usize, h as usize, &params(quality, effort, tune));
+pub unsafe extern "C" fn tsl_header(rgba: *const u8, w: u32, h: u32, quality: f32, effort: u32, tune: u32) -> *mut u8 {
+    let px = unsafe { slice(rgba, w as usize * h as usize * 4) };
+    let mut hd = codec::make_header(&rgba_to_rgb(px), w as usize, h as usize, &params(quality, effort, tune));
+    if alpha_of(px).is_some() {
+        hd.tools |= codec::TOOL_ALPHA;
+    }
     give(&codec::assemble(&hd, &[])[..codec::HEADER_SIZE])
 }
 
@@ -108,33 +113,41 @@ pub unsafe extern "C" fn tsl_encode(
     tune: u32,
 ) -> *mut u8 {
     let (w, h) = (w as usize, h as usize);
-    let rgb = rgba_to_rgb(unsafe { slice(rgba, w * h * 4) });
-    let e = codec::encode(&rgb, w, h, &params(quality, effort, tune));
+    let e = codec::encode_rgba(unsafe { slice(rgba, w * h * 4) }, w, h, &params(quality, effort, tune));
     give(&e.bytes)
 }
 
-/// Codifica una tesela RGBA (`tw × th`) de una imagen de `w × h`.
-/// Devuelve la carga útil de la tesela (para ensamblar en JavaScript).
+/// Codifica una tesela RGBA (`tw × th`) con la cabecera de su imagen
+/// (de `tsl_header`). Devuelve la carga útil (para ensamblar en JavaScript).
 ///
 /// # Safety
-/// `rgba` debe apuntar a `tw*th*4` bytes válidos.
+/// `rgba` debe apuntar a `tw*th*4` bytes y `hdr` a `hdr_len` bytes válidos.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn tsl_encode_tile(
     rgba: *const u8,
     tw: u32,
     th: u32,
-    w: u32,
-    h: u32,
+    hdr: *const u8,
+    hdr_len: usize,
     quality: f32,
     effort: u32,
     tune: u32,
 ) -> *mut u8 {
     let (tw, th) = (tw as usize, th as usize);
-    let rgb = rgba_to_rgb(unsafe { slice(rgba, tw * th * 4) });
+    let px = unsafe { slice(rgba, tw * th * 4) };
+    let rgb = rgba_to_rgb(px);
+    let alpha: Vec<u8> = px.chunks_exact(4).map(|p| p[3]).collect();
     let p = params(quality, effort, tune);
-    let hd = codec::make_header(w as usize, h as usize, &p);
-    let (payload, _) = codec::encode_tile(&rgb, tw, th, &hd, &p);
+    let hd = match Header::read(unsafe { slice(hdr, hdr_len) }) {
+        Ok(h) => h,
+        Err(e) => {
+            set_error(&e);
+            return std::ptr::null_mut();
+        }
+    };
+    let a = (hd.tools & codec::TOOL_ALPHA != 0).then_some(&alpha[..]);
+    let (payload, _, _) = codec::encode_tile(&rgb, a, tw, th, &hd, &p);
     give(&payload)
 }
 
@@ -158,13 +171,8 @@ pub unsafe extern "C" fn tsl_decode_tile(
             return std::ptr::null_mut();
         }
     };
-    let rgb = codec::decode_tile(
-        unsafe { slice(payload, payload_len) },
-        tw as usize,
-        th as usize,
-        &hd,
-    );
-    give(&rgb_to_rgba(&rgb))
+    let (rgb, alpha) = codec::decode_tile(unsafe { slice(payload, payload_len) }, tw as usize, th as usize, &hd);
+    give(&to_rgba(&rgb, alpha.as_deref()))
 }
 
 /// Decodifica un archivo completo. Devuelve [w u32][h u32][RGBA].
@@ -178,7 +186,7 @@ pub unsafe extern "C" fn tsl_decode(data: *const u8, len: usize) -> *mut u8 {
             let mut body = Vec::with_capacity(8 + d.width * d.height * 4);
             body.extend_from_slice(&(d.width as u32).to_le_bytes());
             body.extend_from_slice(&(d.height as u32).to_le_bytes());
-            body.extend_from_slice(&rgb_to_rgba(&d.rgb));
+            body.extend_from_slice(&d.rgba());
             give(&body)
         }
         Err(e) => {
