@@ -1,0 +1,4 @@
+pillow>=11.3   # incluye libwebp y libavif (AVIF nativo)
+numpy
+scipy
+matplotlib

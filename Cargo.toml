@@ -1,0 +1,13 @@
+[package]
+name = "fvd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+ssimulacra2 = "0.5.1"
+
+[profile.release]
+debug = false
+codegen-units = 1
+lto = "thin"
