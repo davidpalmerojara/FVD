@@ -1,16 +1,16 @@
-use fvd::{Params, metrics};
+use tesela::{Params, metrics};
 use std::process::ExitCode;
 use std::time::Instant;
 
 const USAGE: &str = "\
-fvd - códec de imagen experimental
+tesela - códec de imagen (formato .tsl)
 
 USO:
-  fvd encode <entrada.png> <salida.fvd> [-q CALIDAD] [-e ESFUERZO] [--tune perceptual|psnr] [--444|--420]
+  tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune perceptual|psnr] [--444|--420]
              [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F] [--deblock N]
-  fvd decode <entrada.fvd> <salida.png>
-  fvd compare <original.png> <distorsionada.png>      (imprime JSON)
-  fvd roundtrip <entrada.png> [opciones de encode]     (imprime JSON con bpp y métricas)
+  tesela decode <entrada.tsl> <salida.png>
+  tesela compare <original.png> <distorsionada.png>      (imprime JSON)
+  tesela roundtrip <entrada.png> [opciones de encode]     (imprime JSON con bpp y métricas)
 ";
 
 fn load_png(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
@@ -77,6 +77,10 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
                 p.lambda_k = num(i)?;
                 i += 1;
             }
+            "--tile" => {
+                p.tile = num(i)? as usize;
+                i += 1;
+            }
             "--deblock" => {
                 p.deblock = Some(num(i)? as u8);
                 i += 1;
@@ -104,7 +108,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let (rgb, w, h) = load_png(&args[1])?;
             let p = parse_params(&args[3..])?;
             let t = Instant::now();
-            let e = fvd::encode(&rgb, w, h, &p);
+            let e = tesela::encode(&rgb, w, h, &p);
             std::fs::write(&args[2], &e.bytes).map_err(|e| e.to_string())?;
             eprintln!(
                 "{} bytes, {:.4} bpp, {:.2} s",
@@ -115,7 +119,7 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("decode") if args.len() == 3 => {
             let data = std::fs::read(&args[1]).map_err(|e| e.to_string())?;
-            let d = fvd::decode(&data)?;
+            let d = tesela::decode(&data)?;
             save_png(&args[2], d.rgb, d.width, d.height)?;
         }
         Some("compare") if args.len() == 3 => {
@@ -130,10 +134,10 @@ fn run(args: &[String]) -> Result<(), String> {
             let (rgb, w, h) = load_png(&args[1])?;
             let p = parse_params(&args[2..])?;
             let t = Instant::now();
-            let e = fvd::encode(&rgb, w, h, &p);
+            let e = tesela::encode(&rgb, w, h, &p);
             let te = t.elapsed().as_secs_f64();
             let t = Instant::now();
-            let d = fvd::decode(&e.bytes)?;
+            let d = tesela::decode(&e.bytes)?;
             let td = t.elapsed().as_secs_f64();
             if d.rgb != e.recon_rgb {
                 return Err(

@@ -1,4 +1,4 @@
-use fvd::{Params, decode, encode, metrics};
+use tesela::{Params, decode, encode, metrics};
 
 fn synthetic(w: usize, h: usize, seed: u32) -> Vec<u8> {
     let mut s = seed.wrapping_mul(2654435761).max(1);
@@ -82,7 +82,7 @@ fn quality_controls_size() {
 #[test]
 fn rejects_garbage() {
     assert!(decode(b"hola").is_err());
-    assert!(decode(b"FVD1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").is_err());
+    assert!(decode(b"TSL1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").is_err());
     // Datos truncados/corruptos no deben provocar pánico.
     let img = synthetic(40, 40, 1);
     let mut e = encode(&img, 40, 40, &Params::default()).bytes;
@@ -91,4 +91,17 @@ fn rejects_garbage() {
         *b ^= 0x5A;
     }
     let _ = decode(&e);
+}
+
+#[test]
+fn tiles_roundtrip() {
+    let (w, h) = (200, 150);
+    let img = synthetic(w, h, 9);
+    for tile in [64, 128, 1024] {
+        let p = Params { quality: 60.0, tile, ..Params::default() };
+        let e = encode(&img, w, h, &p);
+        let d = decode(&e.bytes).unwrap();
+        assert_eq!(d.rgb, e.recon_rgb, "tile={tile}");
+        assert!(metrics::psnr_rgb(&img, &d.rgb) > 25.0);
+    }
 }

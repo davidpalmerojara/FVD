@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Banco de pruebas: FVD frente a WebP, AVIF y JPEG XL.
+"""Banco de pruebas: Tesela frente a WebP, AVIF y JPEG XL.
 
 Para cada imagen y códec recorre varios niveles de calidad, codifica,
-decodifica a PNG y mide (con el mismo binario `fvd compare` para todos):
+decodifica a PNG y mide (con el mismo binario `tesela compare` para todos):
 PSNR RGB, PSNR-Y, SSIM-Y y SSIMULACRA2.
 
 Después calcula el BD-rate (Bjøntegaard) de cada códec frente a WebP: el
@@ -30,11 +30,11 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-FVD = os.environ.get("FVD_BIN", str(ROOT / "target" / "release" / "fvd"))
+TESELA = os.environ.get("TESELA_BIN", str(ROOT / "target" / "release" / "tesela"))
 
 SWEEPS = {
-    "fvd": [15, 25, 35, 45, 55, 65, 75, 85, 92],
-    "fvd-psnr": [15, 25, 35, 45, 55, 65, 75, 85, 92],
+    "tesela": [15, 25, 35, 45, 55, 65, 75, 85, 92],
+    "tesela-psnr": [15, 25, 35, 45, 55, 65, 75, 85, 92],
     "webp": [5, 15, 30, 50, 70, 80, 88, 94, 98],
     "avif": [15, 30, 45, 55, 65, 75, 82, 90, 95],
     "jxl": [8.0, 5.0, 3.5, 2.5, 1.8, 1.2, 0.8, 0.5, 0.3],
@@ -46,22 +46,22 @@ BD_RANGE = {"ssimulacra2": (30, 90), "psnr_y": (28, 48), "ssim_y": (0.85, 0.995)
 
 
 def compare(orig: str, dist: str) -> dict:
-    out = subprocess.run([FVD, "compare", orig, dist], check=True, capture_output=True, text=True).stdout
+    out = subprocess.run([TESELA, "compare", orig, dist], check=True, capture_output=True, text=True).stdout
     return json.loads(out)
 
 
 def run_one(job):
-    codec, img, param, fvd_args = job
+    codec, img, param, tesela_args = job
     with tempfile.TemporaryDirectory() as td:
         enc = os.path.join(td, "enc")
         dec = os.path.join(td, "dec.png")
         t0 = time.perf_counter()
-        if codec in ("fvd", "fvd-psnr"):
-            extra = ["--tune", "psnr"] if codec == "fvd-psnr" else []
-            subprocess.run([FVD, "encode", img, enc, "-q", str(param), *extra, *fvd_args],
+        if codec in ("tesela", "tesela-psnr"):
+            extra = ["--tune", "psnr"] if codec == "tesela-psnr" else []
+            subprocess.run([TESELA, "encode", img, enc, "-q", str(param), *extra, *tesela_args],
                            check=True, capture_output=True)
             t1 = time.perf_counter()
-            subprocess.run([FVD, "decode", enc, dec], check=True, capture_output=True)
+            subprocess.run([TESELA, "decode", enc, dec], check=True, capture_output=True)
         elif codec == "webp":
             Image.open(img).convert("RGB").save(enc, "WEBP", quality=param, method=6)
             t1 = time.perf_counter()
@@ -71,13 +71,12 @@ def run_one(job):
             t1 = time.perf_counter()
             Image.open(enc).convert("RGB").save(dec)
         elif codec == "jxl":
-            enc += ".jxl"
-            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", img,
-                            "-c:v", "libjxl", "-distance", str(param), "-effort", "7", enc],
-                           check=True, capture_output=True)
+            import imagecodecs
+            px = np.asarray(Image.open(img).convert("RGB"))
+            data = imagecodecs.jpegxl_encode(px, distance=param, effort=7, numthreads=1)
+            Path(enc).write_bytes(data)
             t1 = time.perf_counter()
-            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", enc,
-                            "-pix_fmt", "rgb24", dec], check=True, capture_output=True)
+            Image.fromarray(imagecodecs.jpegxl_decode(Path(enc).read_bytes())).save(dec)
         else:
             raise ValueError(codec)
         t2 = time.perf_counter()
@@ -169,7 +168,7 @@ def plot(rows, out: Path):
     import matplotlib.pyplot as plt
 
     curves = mean_curves(rows)
-    colors = {"fvd": "#d62728", "fvd-psnr": "#ff9896", "webp": "#1f77b4", "avif": "#2ca02c", "jxl": "#9467bd"}
+    colors = {"tesela": "#d62728", "tesela-psnr": "#ff9896", "webp": "#1f77b4", "avif": "#2ca02c", "jxl": "#9467bd"}
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     for ax, m, label in zip(axes, ["ssimulacra2", "psnr_y", "ssim_y"], ["SSIMULACRA2", "PSNR-Y (dB)", "SSIM-Y"]):
         for c, pts in curves.items():
@@ -203,11 +202,11 @@ def write_report(rows, summary, out: Path, note: str):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--images", default=str(ROOT / "bench" / "data" / "kodak"))
-    ap.add_argument("--codecs", default="fvd,fvd-psnr,webp,avif,jxl")
+    ap.add_argument("--codecs", default="tesela,tesela-psnr,webp,avif,jxl")
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--out", default=str(ROOT / "bench" / "results"))
     ap.add_argument("--limit", type=int, default=0, help="usar solo las N primeras imágenes")
-    ap.add_argument("--fvd-args", default="", help="opciones extra para `fvd encode`")
+    ap.add_argument("--tesela-args", default="", help="opciones extra para `tesela encode`")
     ap.add_argument("--reuse", action="store_true", help="reutilizar resultados guardados de otros códecs")
     ap.add_argument("--note", default="")
     args = ap.parse_args()
@@ -221,12 +220,12 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     raw = out / "raw.json"
     codecs = args.codecs.split(",")
-    fvd_args = shlex.split(args.fvd_args)
+    tesela_args = shlex.split(args.tesela_args)
 
     old = json.loads(raw.read_text()) if (args.reuse and raw.exists()) else []
     names = {Path(i).name for i in imgs}
     keep = [r for r in old if r["codec"] not in codecs and r["image"] in names]
-    jobs = [(c, i, p, fvd_args) for c in codecs for i in imgs for p in SWEEPS[c]]
+    jobs = [(c, i, p, tesela_args) for c in codecs for i in imgs for p in SWEEPS[c]]
     t0 = time.time()
     rows = []
     with ProcessPoolExecutor(max_workers=args.jobs) as ex:

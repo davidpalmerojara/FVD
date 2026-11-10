@@ -1,4 +1,4 @@
-//! Codificador y decodificador FVD.
+//! Codificador y decodificador Tesela.
 //!
 //! Estructura del bitstream: cabecera fija + carga útil con codificación
 //! aritmética. Se codifican los planos Y, Cb y Cr en ese orden, cada uno en
@@ -12,11 +12,12 @@ use crate::dct::{self, size_index};
 use crate::predict::{self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_VER, Plane};
 use crate::rc::{Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx};
 
-pub const MAGIC: &[u8; 4] = b"FVD1";
+pub const HEADER_SIZE: usize = HEADER_LEN;
+pub const MAGIC: &[u8; 4] = b"TSL1";
 const SB: usize = 64;
 /// Granularidad de la cuantización adaptativa (AQ).
 const AQ: usize = 32;
-const HEADER_LEN: usize = 4 + 4 + 4 + 1 + 2 + 1 + 1 + 1 + 1 + 1;
+const HEADER_LEN: usize = 4 + 4 + 4 + 1 + 2 + 1 + 1 + 1 + 1 + 1 + 2;
 
 /// Parámetros del codificador.
 #[derive(Clone, Debug)]
@@ -38,6 +39,8 @@ pub struct Params {
     pub lambda_k: f32,
     /// Intensidad del filtro de desbloqueo (None = automático).
     pub deblock: Option<u8>,
+    /// Tamaño de las teselas independientes (múltiplo de 64).
+    pub tile: usize,
 }
 
 impl Default for Params {
@@ -52,6 +55,7 @@ impl Default for Params {
             qm_chroma: 3.0,
             lambda_k: 0.12,
             deblock: Some(0),
+            tile: 1024,
         }
     }
 }
@@ -83,9 +87,15 @@ pub struct Header {
     pub qm_chroma: u8,
     pub aq: bool,
     pub deblock: u8,
+    /// Tamaño de tesela en unidades de 64 píxeles.
+    pub tile: u16,
 }
 
 impl Header {
+    pub fn tile_size(&self) -> usize {
+        self.tile as usize * 64
+    }
+
     fn write(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.width.to_le_bytes());
@@ -97,11 +107,12 @@ impl Header {
         out.push(self.qm_chroma);
         out.push(self.aq as u8);
         out.push(self.deblock);
+        out.extend_from_slice(&self.tile.to_le_bytes());
     }
 
     fn read(d: &[u8]) -> Result<Header, String> {
         if d.len() < HEADER_LEN || &d[..4] != MAGIC {
-            return Err("no es un archivo FVD".into());
+            return Err("no es un archivo Tesela".into());
         }
         let u32le = |i: usize| u32::from_le_bytes(d[i..i + 4].try_into().unwrap());
         let h = Header {
@@ -114,7 +125,11 @@ impl Header {
             qm_chroma: d[17],
             aq: d[18] != 0,
             deblock: d[19],
+            tile: u16::from_le_bytes([d[20], d[21]]),
         };
+        if h.tile == 0 {
+            return Err("tamaño de tesela no válido".into());
+        }
         if h.width == 0 || h.height == 0 || h.width > 1 << 16 || h.height > 1 << 16 {
             return Err("dimensiones no válidas".into());
         }
@@ -420,15 +435,44 @@ impl EncState {
         let mut pred = vec![0i32; nn];
         let mut res = [0f32; 64 * 64];
         let mut cands: Vec<(f32, u8, f32)> = Vec::with_capacity(nmodes as usize);
-        for mode in 0..nmodes {
-            predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
-            for i in 0..nn {
-                res[i] = src[i] - pred[i] as f32;
+        // Búsqueda en dos fases: barrido grueso y refinado angular.
+        let mut done = [false; 64];
+        let mut todo: Vec<u8> = vec![MODE_PLANAR, MODE_DC];
+        todo.extend((2..predict::NUM_ANGULAR_MODES).step_by(4));
+        todo.extend_from_slice(&mpm);
+        if nmodes > predict::NUM_ANGULAR_MODES {
+            todo.push(MODE_CCLM);
+        }
+        for pass in 0..2 {
+            if pass == 1 {
+                let mut ang: Vec<(f32, u8)> =
+                    cands.iter().filter(|c| c.1 >= 2 && c.1 < MODE_CCLM).map(|c| (c.0, c.1)).collect();
+                ang.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                todo.clear();
+                let width = if self.topk > 4 { 3 } else { 2 };
+                for &(_, m) in ang.iter().take(2) {
+                    for d in -width..=width {
+                        let mm = m as i32 + d;
+                        if (2..predict::NUM_ANGULAR_MODES as i32).contains(&mm) {
+                            todo.push(mm as u8);
+                        }
+                    }
+                }
             }
-            let mut cc = CostCounter::default();
-            code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
-            let s = dct::satd(&res[..nn], n);
-            cands.push((s + slam * cc.bits, mode, cc.bits));
+            for &mode in &todo {
+                if done[mode as usize] {
+                    continue;
+                }
+                done[mode as usize] = true;
+                predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
+                for i in 0..nn {
+                    res[i] = src[i] - pred[i] as f32;
+                }
+                let mut cc = CostCounter::default();
+                code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
+                let s = dct::satd(&res[..nn], n);
+                cands.push((s + slam * cc.bits, mode, cc.bits));
+            }
         }
         cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         let w = &self.qt.w[pc][size_index(n)];
@@ -583,24 +627,102 @@ pub struct Encoded {
     pub recon_rgb: Vec<u8>,
 }
 
-pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
+/// Rectángulo de una tesela de la imagen (en píxeles).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TileRect {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
+pub fn tile_grid(width: usize, height: usize, tile: usize) -> Vec<TileRect> {
+    let mut v = Vec::new();
+    for y in (0..height).step_by(tile) {
+        for x in (0..width).step_by(tile) {
+            v.push(TileRect { x, y, w: tile.min(width - x), h: tile.min(height - y) });
+        }
+    }
+    v
+}
+
+#[cfg(feature = "parallel")]
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    use rayon::prelude::*;
+    items.par_iter().map(f).collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    items.iter().map(f).collect()
+}
+
+fn crop(rgb: &[u8], width: usize, t: &TileRect) -> Vec<u8> {
+    let mut out = Vec::with_capacity(t.w * t.h * 3);
+    for y in t.y..t.y + t.h {
+        out.extend_from_slice(&rgb[(y * width + t.x) * 3..(y * width + t.x + t.w) * 3]);
+    }
+    out
+}
+
+fn paste(dst: &mut [u8], width: usize, t: &TileRect, src: &[u8]) {
+    for y in 0..t.h {
+        dst[((t.y + y) * width + t.x) * 3..((t.y + y) * width + t.x + t.w) * 3]
+            .copy_from_slice(&src[y * t.w * 3..(y + 1) * t.w * 3]);
+    }
+}
+
+pub fn make_header(width: usize, height: usize, p: &Params) -> Header {
     let base_q = quality_to_qstep(p.quality);
-    let sub = p.subsample.unwrap_or(p.quality < 90.0);
-    let header = Header {
+    let tile = (p.tile.clamp(64, 65535 * 64) / 64) as u16;
+    Header {
         width: width as u32,
         height: height as u32,
-        subsample: sub,
+        subsample: p.subsample.unwrap_or(p.quality < 90.0),
         qstep: (base_q * 64.0).round().clamp(1.0, 65535.0) as u16,
         chroma_q: (p.chroma_q * 32.0).round().clamp(1.0, 255.0) as u8,
         qm_luma: (p.qm_luma * 16.0).round().clamp(0.0, 255.0) as u8,
         qm_chroma: (p.qm_chroma * 16.0).round().clamp(0.0, 255.0) as u8,
         aq: p.aq_strength != 0.0,
         deblock: p.deblock.unwrap_or(0),
-    };
+        tile,
+    }
+}
+
+/// Une cabecera y cargas de las teselas en un archivo completo.
+pub fn assemble(header: &Header, payloads: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    header.write(&mut bytes);
+    for p in payloads {
+        bytes.extend_from_slice(&(p.len() as u32).to_le_bytes());
+    }
+    for p in payloads {
+        bytes.extend_from_slice(p);
+    }
+    bytes
+}
+
+pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
+    let header = make_header(width, height, p);
+    let tiles = tile_grid(width, height, header.tile_size());
+    let res = par_map(&tiles, |t| {
+        let sub_rgb = crop(rgb, width, t);
+        encode_tile(&sub_rgb, t.w, t.h, &header, p)
+    });
+    let mut recon_rgb = vec![0u8; width * height * 3];
+    for (t, (_, r)) in tiles.iter().zip(&res) {
+        paste(&mut recon_rgb, width, t, r);
+    }
+    let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
+    Encoded { bytes: assemble(&header, &payloads), recon_rgb }
+}
+
+/// Codifica una tesela independiente. Devuelve (carga útil, reconstrucción RGB).
+pub fn encode_tile(rgb: &[u8], width: usize, height: usize, header: &Header, p: &Params) -> (Vec<u8>, Vec<u8>) {
+    let sub = header.subsample;
     let base_q = header.qstep();
     let cq = header.chroma_q as f32 / 32.0;
     let ycc = color::rgb_to_ycbcr(rgb, width, height, sub);
-
     let mut st = EncState {
         ctx: Ctx::new(),
         qt: QuantTables::new(header.qm_luma as f32 / 16.0, header.qm_chroma as f32 / 16.0),
@@ -609,16 +731,8 @@ pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
     };
     let mut enc = Encoder::new();
     let mut planes: Vec<Plane> = Vec::new();
-    let mut qm = QMap {
-        dq: Vec::new(),
-        w: 0,
-        h: 0,
-        base: base_q,
-        cq,
-        sub,
-    };
+    let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub };
     let mut lref: Option<LumaRef> = None;
-
     for (pi, (src, w, h)) in ycc.planes.iter().enumerate() {
         let (src, pw, ph) = pad_plane(src, *w, *h);
         let pc = (pi > 0) as usize;
@@ -627,11 +741,7 @@ pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
             qm.w = pw / AQ;
             qm.h = ph / AQ;
         }
-        let mut pe = PlaneEnc {
-            src: &src,
-            plane: Plane::new(pw, ph),
-            pc,
-        };
+        let mut pe = PlaneEnc { src: &src, plane: Plane::new(pw, ph), pc };
         for sy in 0..ph / SB {
             for sx in 0..pw / SB {
                 if pi == 0 && header.aq {
@@ -646,35 +756,18 @@ pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
         }
         planes.push(pe.plane);
     }
-    let mut bytes = Vec::new();
-    header.write(&mut bytes);
-    bytes.extend_from_slice(&enc.finish());
-    let recon_rgb = finish_planes(&header, &planes);
-    Encoded { bytes, recon_rgb }
+    let recon = finish_planes(header, &planes, width, height);
+    (enc.finish(), recon)
 }
 
-fn finish_planes(h: &Header, planes: &[Plane]) -> Vec<u8> {
-    let (w, ht) = (h.width as usize, h.height as usize);
+fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
     let mut ps: Vec<Plane> = planes.to_vec();
     if h.deblock > 0 {
         for (i, p) in ps.iter_mut().enumerate() {
-            crate::deblock::filter(
-                p,
-                h.qstep() * if i > 0 { h.chroma_q as f32 / 32.0 } else { 1.0 },
-                h.deblock,
-            );
+            crate::deblock::filter(p, h.qstep() * if i > 0 { h.chroma_q as f32 / 32.0 } else { 1.0 }, h.deblock);
         }
     }
-    color::ycbcr_to_rgb(
-        &ps[0].data,
-        ps[0].w,
-        &ps[1].data,
-        &ps[2].data,
-        ps[1].w,
-        w,
-        ht,
-        h.subsample,
-    )
+    color::ycbcr_to_rgb(&ps[0].data, ps[0].w, &ps[1].data, &ps[2].data, ps[1].w, w, ht, h.subsample)
 }
 
 // ----------------------------------------------------------- Decodificador
@@ -709,29 +802,15 @@ impl DecState {
         }
         let mpm = mpm_list(p, x0, y0);
         let mode = code_mode(&mut self.ctx, dec, pc, n, mpm, 0);
-        let mode = if mode == MODE_CCLM && lref.is_none() {
-            MODE_DC
-        } else {
-            mode
-        };
+        let mode = if mode == MODE_CCLM && lref.is_none() { MODE_DC } else { mode };
         let mut levels = vec![0i32; n * n];
-        let nz = self
-            .ctx
-            .coef
-            .code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
+        let nz = self.ctx.coef.code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
         let refs = predict::build_refs(p, x0, y0, n);
         let mut pred = vec![0i32; n * n];
         predict_mode(p, &refs, lref, mode.min(MODE_CCLM), x0, y0, n, &mut pred);
         let mut recon = vec![0u8; n * n];
         let q = qm.q(pc, x0, y0, n);
-        reconstruct(
-            &levels,
-            &pred,
-            q,
-            &self.qt.w[pc][size_index(n)],
-            n,
-            &mut recon,
-        );
+        reconstruct(&levels, &pred, q, &self.qt.w[pc][size_index(n)], n, &mut recon);
         p.write_block(x0, y0, n, &recon);
         p.set_block(x0, y0, n, mode, nz);
     }
@@ -743,31 +822,45 @@ pub struct Decoded {
     pub rgb: Vec<u8>,
 }
 
-pub fn decode(data: &[u8]) -> Result<Decoded, String> {
-    let h = Header::read(data)?;
-    let (w, ht) = (h.width as usize, h.height as usize);
+/// Cabecera y tabla de teselas de un archivo.
+pub struct Info {
+    pub header: Header,
+    pub tiles: Vec<TileRect>,
+    /// Rango de bytes de la carga útil de cada tesela.
+    pub ranges: Vec<std::ops::Range<usize>>,
+}
+
+pub fn info(data: &[u8]) -> Result<Info, String> {
+    let header = Header::read(data)?;
+    let tiles = tile_grid(header.width as usize, header.height as usize, header.tile_size());
+    let mut pos = HEADER_LEN + 4 * tiles.len();
+    if data.len() < pos {
+        return Err("archivo truncado".into());
+    }
+    let mut ranges = Vec::with_capacity(tiles.len());
+    for i in 0..tiles.len() {
+        let o = HEADER_LEN + 4 * i;
+        let len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+        let end = pos.checked_add(len).filter(|&e| e <= data.len()).ok_or("archivo truncado")?;
+        ranges.push(pos..end);
+        pos = end;
+    }
+    Ok(Info { header, tiles, ranges })
+}
+
+/// Decodifica una tesela a RGB (tamaño `w × h` de la tesela).
+pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
     let base_q = h.qstep();
     let cq = h.chroma_q as f32 / 32.0;
-    let (cw, ch) = if h.subsample {
-        (w.div_ceil(2), ht.div_ceil(2))
-    } else {
-        (w, ht)
-    };
+    let (cw, ch) = if h.subsample { (w.div_ceil(2), ht.div_ceil(2)) } else { (w, ht) };
     let dims = [(w, ht), (cw, ch), (cw, ch)];
     let mut st = DecState {
         ctx: Ctx::new(),
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
     };
-    let mut dec = Decoder::new(&data[HEADER_LEN..]);
+    let mut dec = Decoder::new(payload);
     let mut planes = Vec::new();
-    let mut qm = QMap {
-        dq: Vec::new(),
-        w: 0,
-        h: 0,
-        base: base_q,
-        cq,
-        sub: h.subsample,
-    };
+    let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub: h.subsample };
     let mut lref: Option<LumaRef> = None;
     for (pi, &(pw0, ph0)) in dims.iter().enumerate() {
         let pw = pw0.div_ceil(SB) * SB;
@@ -784,16 +877,7 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
                 if pi == 0 && h.aq {
                     qm.code_sb(&mut st.ctx, &mut dec, sx, sy);
                 }
-                st.read_node(
-                    &mut dec,
-                    &mut plane,
-                    lref.as_ref(),
-                    &qm,
-                    pc,
-                    sx * SB,
-                    sy * SB,
-                    SB,
-                );
+                st.read_node(&mut dec, &mut plane, lref.as_ref(), &qm, pc, sx * SB, sy * SB, SB);
             }
         }
         if pi == 0 {
@@ -801,10 +885,20 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         }
         planes.push(plane);
     }
-    let rgb = finish_planes(&h, &planes);
-    Ok(Decoded {
-        width: w,
-        height: ht,
-        rgb,
-    })
+    finish_planes(h, &planes, w, ht)
+}
+
+pub fn decode(data: &[u8]) -> Result<Decoded, String> {
+    let inf = info(data)?;
+    let (w, ht) = (inf.header.width as usize, inf.header.height as usize);
+    let idx: Vec<usize> = (0..inf.tiles.len()).collect();
+    let parts = par_map(&idx, |&i| {
+        let t = inf.tiles[i];
+        decode_tile(&data[inf.ranges[i].clone()], t.w, t.h, &inf.header)
+    });
+    let mut rgb = vec![0u8; w * ht * 3];
+    for (t, part) in inf.tiles.iter().zip(&parts) {
+        paste(&mut rgb, w, t, part);
+    }
+    Ok(Decoded { width: w, height: ht, rgb })
 }

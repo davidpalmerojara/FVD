@@ -17,88 +17,144 @@ pub fn size_index(n: usize) -> usize {
     }
 }
 
-/// Matriz DCT N×N en orden fila = frecuencia, columna = muestra.
-fn matrix(n: usize) -> &'static [f32] {
-    static M: OnceLock<[Vec<f32>; 5]> = OnceLock::new();
-    let all = M.get_or_init(|| {
-        SIZES.map(|n| {
-            let mut m = vec![0f32; n * n];
-            for k in 0..n {
-                let s = if k == 0 {
-                    (1.0 / n as f64).sqrt()
-                } else {
-                    (2.0 / n as f64).sqrt()
-                };
-                for i in 0..n {
-                    let a = std::f64::consts::PI * (2 * i + 1) as f64 * k as f64 / (2 * n) as f64;
-                    m[k * n + i] = (s * a.cos()) as f32;
-                }
+/// Factores 1/(2·cos((i+½)π/n)) para cada nivel de la recursión de Lee
+/// (n = 2, 4, …, 64), concatenados: el nivel n empieza en `n/2 - 1`.
+fn lee_factors() -> &'static [f32] {
+    static F: OnceLock<Vec<f32>> = OnceLock::new();
+    F.get_or_init(|| {
+        let mut v = Vec::new();
+        let mut n = 2;
+        while n <= 64 {
+            for i in 0..n / 2 {
+                let c = (std::f64::consts::PI * (i as f64 + 0.5) / n as f64).cos();
+                v.push((1.0 / (2.0 * c)) as f32);
             }
-            m
-        })
-    });
-    &all[size_index(n)]
+            n *= 2;
+        }
+        v
+    })
 }
 
-/// Transformada directa en el sitio: `blk` es N×N en orden fila.
+#[inline]
+fn factors(n: usize) -> &'static [f32] {
+    let f = lee_factors();
+    &f[n / 2 - 1..n - 1]
+}
+
+/// DCT-II 1-D sin normalizar (algoritmo recursivo de Byeong Gi Lee, O(n log n)).
+fn dct_1d(x: &mut [f32], tmp: &mut [f32]) {
+    let n = x.len();
+    if n == 1 {
+        return;
+    }
+    let h = n / 2;
+    let f = factors(n);
+    for i in 0..h {
+        let a = x[i];
+        let b = x[n - 1 - i];
+        tmp[i] = a + b;
+        tmp[i + h] = (a - b) * f[i];
+    }
+    {
+        let (t0, t1) = tmp.split_at_mut(h);
+        let (x0, x1) = x.split_at_mut(h);
+        dct_1d(t0, x0);
+        dct_1d(&mut t1[..h], x1);
+    }
+    for i in 0..h - 1 {
+        x[2 * i] = tmp[i];
+        x[2 * i + 1] = tmp[i + h] + tmp[i + h + 1];
+    }
+    x[n - 2] = tmp[h - 1];
+    x[n - 1] = tmp[n - 1];
+}
+
+/// DCT-III 1-D: x_n = X_0 + Σ_{k≥1} X_k cos(π(2n+1)k/2N).
+fn idct_1d(x: &mut [f32], tmp: &mut [f32]) {
+    let n = x.len();
+    if n == 1 {
+        return;
+    }
+    let h = n / 2;
+    tmp[0] = x[0];
+    tmp[h] = x[1];
+    for i in 1..h {
+        tmp[i] = x[2 * i];
+        tmp[i + h] = x[2 * i - 1] + x[2 * i + 1];
+    }
+    {
+        let (t0, t1) = tmp.split_at_mut(h);
+        let (x0, x1) = x.split_at_mut(h);
+        idct_1d(t0, x0);
+        idct_1d(&mut t1[..h], x1);
+    }
+    let f = factors(n);
+    for i in 0..h {
+        let a = tmp[i];
+        let b = tmp[i + h] * f[i];
+        x[i] = a + b;
+        x[n - 1 - i] = a - b;
+    }
+}
+
+#[inline]
+fn norm(n: usize) -> (f32, f32) {
+    ((1.0 / n as f32).sqrt(), (2.0 / n as f32).sqrt())
+}
+
+/// Transformada directa ortonormal en el sitio: `blk` es N×N en orden fila.
 pub fn forward(blk: &mut [f32], n: usize) {
-    let m = matrix(n);
-    let mut tmp = [0f32; 64 * 64];
-    // filas: tmp[y][k] = sum_x m[k][x] * blk[y][x]
+    let (s0, s1) = norm(n);
+    let mut tmp = [0f32; 64];
+    let mut col = [0f32; 64];
     for y in 0..n {
-        let row = &blk[y * n..y * n + n];
-        for k in 0..n {
-            let mk = &m[k * n..k * n + n];
-            let mut s = 0f32;
-            for x in 0..n {
-                s += mk[x] * row[x];
-            }
-            tmp[y * n + k] = s;
+        let row = &mut blk[y * n..y * n + n];
+        dct_1d(row, &mut tmp[..n]);
+        row[0] *= s0;
+        for v in &mut row[1..] {
+            *v *= s1;
         }
     }
-    // columnas: blk[k][x] = sum_y m[k][y] * tmp[y][x]
-    for k in 0..n {
-        let mk = &m[k * n..k * n + n];
-        let out = &mut blk[k * n..k * n + n];
-        out.fill(0.0);
+    for x in 0..n {
         for y in 0..n {
-            let w = mk[y];
-            let tr = &tmp[y * n..y * n + n];
-            for x in 0..n {
-                out[x] += w * tr[x];
-            }
+            col[y] = blk[y * n + x];
+        }
+        dct_1d(&mut col[..n], &mut tmp[..n]);
+        blk[x] = col[0] * s0;
+        for y in 1..n {
+            blk[y * n + x] = col[y] * s1;
         }
     }
 }
 
-/// Transformada inversa en el sitio.
+/// Transformada inversa ortonormal en el sitio. Las filas de coeficientes
+/// nulas (muy frecuentes tras cuantizar) se saltan.
 pub fn inverse(blk: &mut [f32], n: usize) {
-    let m = matrix(n);
-    let mut tmp = [0f32; 64 * 64];
-    // columnas: tmp[y][u] = sum_v m[v][y] * blk[v][u]
+    let (s0, s1) = norm(n);
+    let (a0, a1) = (s0, s1);
+    let mut tmp = [0f32; 64];
+    let mut col = [0f32; 64];
+    // filas (frecuencia vertical fija): DCT-III sobre u
     for v in 0..n {
-        let row = &blk[v * n..v * n + n];
-        for y in 0..n {
-            let w = m[v * n + y];
-            if w == 0.0 {
-                continue;
-            }
-            let t = &mut tmp[y * n..y * n + n];
-            for u in 0..n {
-                t[u] += w * row[u];
-            }
+        let row = &mut blk[v * n..v * n + n];
+        if row.iter().all(|&c| c == 0.0) {
+            continue;
         }
+        row[0] *= a0;
+        for c in &mut row[1..] {
+            *c *= a1;
+        }
+        idct_1d(row, &mut tmp[..n]);
     }
-    // filas: blk[y][x] = sum_u m[u][x] * tmp[y][u]
-    for y in 0..n {
-        let t = &tmp[y * n..y * n + n];
-        let out = &mut blk[y * n..y * n + n];
-        for x in 0..n {
-            let mut s = 0f32;
-            for u in 0..n {
-                s += m[u * n + x] * t[u];
-            }
-            out[x] = s;
+    // columnas: DCT-III sobre v
+    for x in 0..n {
+        col[0] = blk[x] * a0;
+        for y in 1..n {
+            col[y] = blk[y * n + x] * a1;
+        }
+        idct_1d(&mut col[..n], &mut tmp[..n]);
+        for y in 0..n {
+            blk[y * n + x] = col[y];
         }
     }
 }
