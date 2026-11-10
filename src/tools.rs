@@ -94,13 +94,25 @@ fn neighbor_order(idx: &[u8], n: usize, k: usize, x: usize, y: usize) -> ([u8; M
 impl PalCtx {
     /// Codifica/decodifica una paleta. `last` es la última paleta del plano
     /// (estado compartido por codificador y decodificador).
-    pub fn code<C: Coder>(&mut self, c: &mut C, pc: usize, n: usize, pal: &Palette, last: &mut Option<Vec<u8>>) -> Palette {
+    pub fn code<C: Coder>(
+        &mut self,
+        c: &mut C,
+        pc: usize,
+        n: usize,
+        pal: &Palette,
+        last: &mut Option<Vec<u8>>,
+    ) -> Palette {
         let can_reuse = last.is_some();
-        let reuse = can_reuse && c.bit(&mut self.reuse[pc], last.as_deref() == Some(&pal.colors[..]));
+        let reuse = can_reuse
+            && c.bit(
+                &mut self.reuse[pc],
+                last.as_deref() == Some(&pal.colors[..]),
+            );
         let colors: Vec<u8> = if reuse {
             last.clone().unwrap()
         } else {
-            let k = (self.count[pc].code(c, (pal.colors.len().max(2) - 2) as u32) as usize + 2).min(MAX_COLORS);
+            let k = (self.count[pc].code(c, (pal.colors.len().max(2) - 2) as u32) as usize + 2)
+                .min(MAX_COLORS);
             let mut cols = Vec::with_capacity(k);
             let mut prev = 0u32;
             for i in 0..k {
@@ -171,7 +183,9 @@ pub fn palette_candidates(src: &[f32], n: usize) -> Vec<Palette> {
             ks.push(k);
         }
     }
-    ks.into_iter().map(|k| kmeans_palette(src, n, &hist, k)).collect()
+    ks.into_iter()
+        .map(|k| kmeans_palette(src, n, &hist, k))
+        .collect()
 }
 
 /// k-medias 1-D sobre el histograma del bloque.
@@ -197,7 +211,10 @@ fn kmeans_palette(src: &[f32], n: usize, hist: &[u32; 256], k: usize) -> Palette
             }
         }
     }
-    let mut colors: Vec<u8> = cent.iter().map(|c| c.round().clamp(0.0, 255.0) as u8).collect();
+    let mut colors: Vec<u8> = cent
+        .iter()
+        .map(|c| c.round().clamp(0.0, 255.0) as u8)
+        .collect();
     colors.sort_unstable();
     colors.dedup();
     if colors.len() < 2 {
@@ -209,7 +226,10 @@ fn kmeans_palette(src: &[f32], n: usize, hist: &[u32; 256], k: usize) -> Palette
         }
     }
     let cf: Vec<f32> = colors.iter().map(|&c| c as f32).collect();
-    let idx = src[..n * n].iter().map(|&v| nearest(&cf, v) as u8).collect();
+    let idx = src[..n * n]
+        .iter()
+        .map(|&v| nearest(&cf, v) as u8)
+        .collect();
     Palette { colors, idx }
 }
 
@@ -246,7 +266,13 @@ impl Visit for BvCtx {
 
 impl BvCtx {
     /// Codifica un vector como diferencia respecto al anterior del plano.
-    pub fn code<C: Coder>(&mut self, c: &mut C, pc: usize, bv: (i32, i32), last: &mut (i32, i32)) -> (i32, i32) {
+    pub fn code<C: Coder>(
+        &mut self,
+        c: &mut C,
+        pc: usize,
+        bv: (i32, i32),
+        last: &mut (i32, i32),
+    ) -> (i32, i32) {
         let out = if c.bit(&mut self.same[pc], bv == *last) {
             *last
         } else {
@@ -271,7 +297,8 @@ impl BvCtx {
 pub fn bv_valid(p: &Plane, x0: usize, y0: usize, n: usize, bv: (i32, i32)) -> bool {
     let rx = x0 as i64 + bv.0 as i64;
     let ry = y0 as i64 + bv.1 as i64;
-    if rx < 0 || ry < 0 || rx + n as i64 > p.w as i64 || ry + n as i64 > p.h as i64 || bv == (0, 0) {
+    if rx < 0 || ry < 0 || rx + n as i64 > p.w as i64 || ry + n as i64 > p.h as i64 || bv == (0, 0)
+    {
         return false;
     }
     let (rx, ry) = (rx as usize, ry as usize);
@@ -351,7 +378,11 @@ impl HashIndex {
         let key = block_hash(src, w, x0, y0);
         self.map
             .get(&key)
-            .map(|v| v.iter().map(|&(x, y)| (x as i32 - x0 as i32, y as i32 - y0 as i32)).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|&(x, y)| (x as i32 - x0 as i32, y as i32 - y0 as i32))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -372,7 +403,9 @@ pub fn looks_synthetic(rgb: &[u8], w: usize, h: usize) -> bool {
             for y in by * 16..by * 16 + 16 {
                 for x in bx * 16..bx * 16 + 16 {
                     let i = (y * w + x) * 3;
-                    let l = ((rgb[i] as u32 * 77 + rgb[i + 1] as u32 * 150 + rgb[i + 2] as u32 * 29) >> 8) as usize;
+                    let l =
+                        ((rgb[i] as u32 * 77 + rgb[i + 1] as u32 * 150 + rgb[i + 2] as u32 * 29)
+                            >> 8) as usize;
                     if !seen[l] {
                         seen[l] = true;
                         d += 1;

@@ -55,7 +55,9 @@ pub extern "C" fn tsl_last_error() -> *mut u8 {
 }
 
 fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
-    rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+    rgba.chunks_exact(4)
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect()
 }
 
 fn alpha_of(rgba: &[u8]) -> Option<Vec<u8>> {
@@ -90,9 +92,21 @@ fn params(quality: f32, effort: u32, tune: u32) -> Params {
 /// # Safety
 /// `rgba` debe apuntar a `w*h*4` bytes válidos.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn tsl_header(rgba: *const u8, w: u32, h: u32, quality: f32, effort: u32, tune: u32) -> *mut u8 {
+pub unsafe extern "C" fn tsl_header(
+    rgba: *const u8,
+    w: u32,
+    h: u32,
+    quality: f32,
+    effort: u32,
+    tune: u32,
+) -> *mut u8 {
     let px = unsafe { slice(rgba, w as usize * h as usize * 4) };
-    let mut hd = codec::make_header(&rgba_to_rgb(px), w as usize, h as usize, &params(quality, effort, tune));
+    let mut hd = codec::make_header(
+        &rgba_to_rgb(px),
+        w as usize,
+        h as usize,
+        &params(quality, effort, tune),
+    );
     if alpha_of(px).is_some() {
         hd.tools |= codec::TOOL_ALPHA;
     }
@@ -113,7 +127,12 @@ pub unsafe extern "C" fn tsl_encode(
     tune: u32,
 ) -> *mut u8 {
     let (w, h) = (w as usize, h as usize);
-    let e = codec::encode_rgba(unsafe { slice(rgba, w * h * 4) }, w, h, &params(quality, effort, tune));
+    let e = codec::encode_rgba(
+        unsafe { slice(rgba, w * h * 4) },
+        w,
+        h,
+        &params(quality, effort, tune),
+    );
     give(&e.bytes)
 }
 
@@ -171,7 +190,12 @@ pub unsafe extern "C" fn tsl_decode_tile(
             return std::ptr::null_mut();
         }
     };
-    let (rgb, alpha) = codec::decode_tile(unsafe { slice(payload, payload_len) }, tw as usize, th as usize, &hd);
+    let (rgb, alpha) = codec::decode_tile(
+        unsafe { slice(payload, payload_len) },
+        tw as usize,
+        th as usize,
+        &hd,
+    );
     give(&to_rgba(&rgb, alpha.as_deref()))
 }
 

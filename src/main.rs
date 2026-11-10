@@ -23,7 +23,9 @@ fn load_png(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
 
 /// Carga RGBA (alfa 255 si la imagen no tiene transparencia).
 fn load_rgba(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
-    let img = image::open(path).map_err(|e| format!("{path}: {e}"))?.to_rgba8();
+    let img = image::open(path)
+        .map_err(|e| format!("{path}: {e}"))?
+        .to_rgba8();
     let (w, h) = img.dimensions();
     Ok((img.into_raw(), w as usize, h as usize))
 }
@@ -161,7 +163,10 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("roundtrip") if args.len() >= 2 => {
             let (rgba, w, h) = load_rgba(&args[1])?;
-            let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let rgb: Vec<u8> = rgba
+                .chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect();
             let p = parse_params(&args[2..])?;
             let t = Instant::now();
             let e = tesela::encode_rgba(&rgba, w, h, &p);
@@ -198,10 +203,15 @@ fn run(args: &[String]) -> Result<(), String> {
 /// fotografía y otro para contenido sintético (según la detección automática).
 fn train(out: &str, imgs: &[String]) -> Result<(), String> {
     use rayon::prelude::*;
-    use tesela::codec::{TOOL_SCREEN, UNTRAINED, encode_tile_stats, make_header, quality_band, quality_to_qstep};
+    use tesela::codec::{
+        TOOL_SCREEN, UNTRAINED, encode_tile_stats, make_header, quality_band, quality_to_qstep,
+    };
     UNTRAINED.store(true, std::sync::atomic::Ordering::Relaxed);
-    let images: Vec<(Vec<u8>, usize, usize)> = imgs.iter().map(|p| load_png(p)).collect::<Result<_, _>>()?;
-    let qualities = [97.0, 93.0, 89.0, 85.0, 80.0, 74.0, 66.0, 58.0, 48.0, 38.0, 28.0, 20.0];
+    let images: Vec<(Vec<u8>, usize, usize)> =
+        imgs.iter().map(|p| load_png(p)).collect::<Result<_, _>>()?;
+    let qualities = [
+        97.0, 93.0, 89.0, 85.0, 80.0, 74.0, 66.0, 58.0, 48.0, 38.0, 28.0, 20.0,
+    ];
     let mut tables = vec![vec![Vec::<u16>::new(); 4]; 2];
     for (kind, kind_tables) in tables.iter_mut().enumerate() {
         let sel: Vec<usize> = (0..images.len())
@@ -211,14 +221,24 @@ fn train(out: &str, imgs: &[String]) -> Result<(), String> {
                 ((hd.tools & TOOL_SCREEN != 0) as usize) == kind
             })
             .collect();
-        eprintln!("{}: {} imágenes", ["fotografía", "sintético"][kind], sel.len());
+        eprintln!(
+            "{}: {} imágenes",
+            ["fotografía", "sintético"][kind],
+            sel.len()
+        );
         if sel.is_empty() {
             continue;
         }
         for (band, table) in kind_tables.iter_mut().enumerate() {
-            let qs: Vec<f32> =
-                qualities.iter().copied().filter(|&q| quality_band(quality_to_qstep(q)) == band).collect();
-            let jobs: Vec<(usize, f32)> = sel.iter().flat_map(|&i| qs.iter().map(move |&q| (i, q))).collect();
+            let qs: Vec<f32> = qualities
+                .iter()
+                .copied()
+                .filter(|&q| quality_band(quality_to_qstep(q)) == band)
+                .collect();
+            let jobs: Vec<(usize, f32)> = sel
+                .iter()
+                .flat_map(|&i| qs.iter().map(move |&q| (i, q)))
+                .collect();
             if jobs.is_empty() {
                 continue;
             }
@@ -226,7 +246,11 @@ fn train(out: &str, imgs: &[String]) -> Result<(), String> {
                 .par_iter()
                 .map(|&(i, q)| {
                     let (rgb, w, h) = &images[i];
-                    let p = Params { quality: q, tile: 4096, ..Params::default() };
+                    let p = Params {
+                        quality: q,
+                        tile: 4096,
+                        ..Params::default()
+                    };
                     let hd = make_header(rgb, *w, *h, &p);
                     encode_tile_stats(rgb, None, *w, *h, &hd, &p).3
                 })
@@ -242,10 +266,17 @@ fn train(out: &str, imgs: &[String]) -> Result<(), String> {
                             sp += c as f64 * p as f64;
                         }
                     }
-                    if sw > 0.0 { (sp / sw).round() as u16 } else { 32768 }
+                    if sw > 0.0 {
+                        (sp / sw).round() as u16
+                    } else {
+                        32768
+                    }
                 })
                 .collect();
-            eprintln!("  banda {band}: {n} modelos, {} codificaciones", stats.len());
+            eprintln!(
+                "  banda {band}: {n} modelos, {} codificaciones",
+                stats.len()
+            );
         }
     }
     let mut s = String::from(

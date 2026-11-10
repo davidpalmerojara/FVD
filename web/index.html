@@ -55,10 +55,10 @@
   <main class="wrap">
     <section class="hero">
       <div>
-        <h1>Más calidad por byte que WebP, AVIF y JPEG XL.</h1>
-        <p>Tesela es un formato de imagen con pérdida escrito desde cero en Rust. Divide cada foto en
-          teselas de tamaño adaptativo, como un mosaico, y funciona en cualquier navegador gracias a
-          WebAssembly.</p>
+        <h1>Imágenes más ligeras, decodificadas al instante.</h1>
+        <p>Tesela es un formato de imagen escrito desde cero en Rust. Divide cada imagen en teselas de
+          tamaño adaptativo, como un mosaico. Ocupa menos que WebP y JPEG XL, compite con AVIF y lo
+          supera en capturas e ilustraciones. Funciona en cualquier navegador gracias a WebAssembly.</p>
         <div class="cta">
           <a class="primary" href="./compare/index.html">Compara con tus fotos</a>
           <a href="./demo/index.html">Verlo en una web</a>
@@ -68,44 +68,52 @@
     </section>
 
     <div class="stats">
-      <div class="card stat"><b>−27 %</b><span>bytes frente a WebP a igual calidad perceptual</span></div>
-      <div class="card stat"><b>−2,5 %</b><span>frente a AVIF (−4,6 % en alta calidad), y decodifica 2,6× más rápido</span></div>
-      <div class="card stat"><b>−17 %</b><span>frente a JPEG XL (libjxl 0.12)</span></div>
+      <div class="card stat"><b>−27 %</b><span>bytes frente a WebP en fotos, a igual calidad perceptual</span></div>
+      <div class="card stat"><b>−58 %</b><span>frente a WebP en capturas de pantalla (AVIF: −51&nbsp;%)</span></div>
+      <div class="card stat"><b>8×</b><span>más rápido que AVIF al decodificar fotos de 2,7 MP</span></div>
     </div>
-    <p class="muted" style="font-size:13px">Diferencias de BD-rate con SSIMULACRA2, medidas en las 24 imágenes Kodak. Frente a AVIF y JPEG XL se calcula
-      como (1 + Tesela) / (1 + otro) − 1 sobre el BD-rate de cada uno frente a WebP.</p>
 
-    <h2>Resultados</h2>
-    <p class="muted">BD-rate frente a WebP: porcentaje medio de bytes a igual calidad (más negativo es mejor).</p>
+    <h2>Resultados por tipo de contenido</h2>
+    <p class="muted">BD-rate frente a WebP con SSIMULACRA2 (calidad perceptual): porcentaje medio de bytes a igual
+      calidad. Más negativo es mejor.</p>
     <div class="card tw">
       <table>
-        <thead><tr><th>Formato</th><th>SSIMULACRA2</th><th>SSIMULACRA2 alta calidad</th><th>PSNR-Y</th><th>SSIM-Y</th><th>Decodificación</th></tr></thead>
+        <thead><tr><th>Conjunto</th><th>Tesela</th><th>AVIF</th><th>JPEG XL</th><th>Decodificación Tesela / AVIF</th></tr></thead>
         <tbody>
-          <tr class="us"><td><span class="swatch" style="background:var(--c-tesela)"></span>Tesela</td><td>−26,7 %</td><td>−23,4 %</td><td>−17,8 %</td><td>−24,3 %</td><td>62 ms</td></tr>
-          <tr><td><span class="swatch" style="background:var(--c-avif)"></span>AVIF (aom, speed 4)</td><td>−24,8 %</td><td>−19,7 %</td><td>−16,4 %</td><td>−22,1 %</td><td>164 ms</td></tr>
-          <tr><td><span class="swatch" style="background:var(--c-jxl)"></span>JPEG XL (libjxl 0.12)</td><td>−12,1 %</td><td>−13,4 %</td><td>+9,4 %</td><td>+4,4 %</td><td>146 ms</td></tr>
-          <tr><td><span class="swatch" style="background:var(--c-webp)"></span>WebP (método 6)</td><td>0 %</td><td>0 %</td><td>0 %</td><td>0 %</td><td>115 ms</td></tr>
+          <tr><td>Kodak · 24 fotos de 768×512</td><td><b>−26,6 %</b></td><td>−24,8 %</td><td>−12,1 %</td><td>46 ms / 164 ms</td></tr>
+          <tr><td>DIV2K · 12 fotos de 2,7 MP</td><td>−29,2 %</td><td><b>−30,2 %</b></td><td>−21,2 %</td><td>0,28 s / 2,36 s</td></tr>
+          <tr><td>Capturas de pantalla · 9</td><td><b>−57,9 %</b></td><td>−50,6 %</td><td>−36,0 %</td><td>0,11 s / 0,18 s</td></tr>
+          <tr><td>Ilustraciones · 6</td><td><b>−60,2 %</b></td><td>−53,9 %</td><td>+9,5 %</td><td>0,08 s / 0,09 s</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="muted" style="font-size:13px">Kodak, 24 imágenes de 768×512. Mismo programa de métricas para todos los formatos.
-      Las probabilidades iniciales de Tesela se entrenaron con otro conjunto (BSD100). Detalles y datos en el repositorio
-      (<code>bench/results</code>).</p>
+    <p class="muted" style="font-size:13px">AVIF: libavif 1.4 + aom, speed 4. JPEG XL: libjxl 0.12, effort 7. WebP: método 6.
+      En fotos grandes el resultado es un empate técnico: Tesela gana en alta calidad, SSIM y PSNR RGB, y AVIF gana
+      a tasas muy bajas. Las probabilidades de Tesela se entrenaron con otras imágenes (BSD100 y sintéticas propias).
+      Metodología y datos crudos en el repositorio (<code>bench/results</code>).</p>
 
     <h2>Cómo funciona</h2>
     <div class="how">
       <div class="card"><h3>Bloques adaptativos</h3><p>Cada región se divide en bloques de 64×64 a 4×4 según cuánto detalle tenga, y se elige
         la partición que minimiza distorsión + bits.</p></div>
-      <div class="card"><h3>Predicción y transformada</h3><p>35 modos de predicción intra, croma predicho desde la luma, y DCT de 4 a 64 puntos
-        con cuantización perceptual.</p></div>
+      <div class="card"><h3>Predicción a medida</h3><p>35 modos intra y croma predicho desde la luma. En capturas, además: paleta, copia de
+        bloques repetidos (letras, iconos) y residuo sin transformada.</p></div>
       <div class="card"><h3>Codificación y filtro</h3><p>Codificador aritmético con contextos entrenados y un filtro de restauración por clases que el
         codificador ajusta por mínimos cuadrados.</p></div>
+    </div>
+
+    <h2>Preparado para la web</h2>
+    <div class="how">
+      <div class="card"><h3>Transparencia</h3><p>Canal alfa sin pérdida, para logos e imágenes recortadas.</p></div>
+      <div class="card"><h3>Vista previa progresiva</h3><p>Una miniatura de ~300 bytes al principio del archivo: se ve algo al instante incluso con
+        red lenta.</p></div>
+      <div class="card"><h3>Sin pérdida</h3><p>Modo exacto bit a bit. Mejor que PNG y a la par de WebP en capturas; en fotos, por detrás de WebP y JPEG XL.</p></div>
     </div>
 
     <h2>Úsalo en tu web</h2>
     <pre><code>&lt;script type="module" src="tesela.js"&gt;&lt;/script&gt;
 &lt;tesela-img src="foto.tsl" alt="Descripción" fallback="foto.jpg" loading="lazy"&gt;&lt;/tesela-img&gt;</code></pre>
-    <p class="muted">El decodificador pesa 360 KB (WebAssembly), reparte las teselas de la imagen entre varios
+    <p class="muted">El módulo WebAssembly pesa 515 KB, reparte las teselas de la imagen entre varios
       Web Workers y produce exactamente los mismos píxeles que la versión nativa (verificado bit a bit).</p>
   </main>
   <footer class="wrap">Tesela · proyecto experimental. Código, banco de pruebas y metodología en el repositorio.</footer>

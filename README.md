@@ -1,9 +1,12 @@
 # Tesela
 
-**Tesela** es un formato de imagen con pérdida escrito desde cero en Rust. Divide cada foto
-en *teselas* de tamaño adaptativo, como un mosaico. En las 24 imágenes Kodak ocupa menos que
-WebP, AVIF y JPEG XL a igual calidad, en cinco métricas distintas. Además funciona en cualquier
-navegador gracias a WebAssembly.
+**Tesela** es un formato de imagen escrito desde cero en Rust. Divide cada imagen en *teselas*
+de tamaño adaptativo, como un mosaico. A igual calidad ocupa menos que WebP y JPEG XL en todos los
+tipos de contenido probados. Frente a AVIF gana con claridad en capturas de pantalla e
+ilustraciones, gana en fotos pequeñas y empata en fotos grandes. Decodifica de 3 a 8 veces más
+rápido que AVIF y funciona en cualquier navegador gracias a WebAssembly.
+
+Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
 
 - **Comparador**: sube tus fotos y compáralas con WebP, AVIF, JPEG XL y JPEG, todo dentro del
   navegador (`web/compare/`).
@@ -13,37 +16,66 @@ navegador gracias a WebAssembly.
 
 ## Resultados
 
-BD-rate frente a WebP: porcentaje medio de bytes que ahorra cada formato a igual calidad
-(negativo = mejor). Se midió en las 24 imágenes Kodak, con el mismo programa de métricas para
-todos los formatos.
+**Qué se mide.** El BD-rate frente a WebP: el porcentaje medio de bytes que ahorra cada formato a
+igual calidad (negativo = mejor). Todas las salidas se miden con el mismo programa de métricas.
 
-| Formato | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Decodificación |
-|---|---|---|---|---|---|---|
-| **Tesela** (por defecto) | **−26,7 %** | **−23,4 %** | **−17,8 %** | **−24,3 %** | **−22,8 %** | **62 ms** |
-| Tesela `--tune psnr` | −7,4 % | −7,4 % | −25,8 % | −20,4 % | −25,7 % | 60 ms |
-| AVIF (libavif 1.4 + aom, `speed=4`) | −24,8 % | −19,7 % | −16,4 % | −22,1 % | −17,4 % | 164 ms |
-| JPEG XL (libjxl 0.12, `effort=7`) | −12,1 % | −13,4 % | +9,4 % | +4,4 % | +12,2 % | 146 ms |
-| WebP (libwebp 1.6, `method=6`) | 0 % | 0 % | 0 % | 0 % | 0 % | 115 ms |
+**Datos de entrenamiento.** Las probabilidades iniciales de Tesela se entrenaron con BSD100 y con
+imágenes sintéticas propias, nunca con las imágenes de evaluación.
+
+### Por tipo de contenido (SSIMULACRA2, calidad perceptual)
+
+| Conjunto | Tesela | AVIF | JPEG XL | Decodificación Tesela / AVIF |
+|---|---|---|---|---|
+| Kodak: 24 fotos de 768×512 | **−26,6 %** | −24,8 % | −12,1 % | 46 ms / 164 ms |
+| Fotos grandes: 12 DIV2K de 2,7 MP | −29,2 % | **−30,2 %** | −21,2 % | 0,28 s / 2,36 s |
+| Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−57,9 %** | −50,6 % | −36,0 % | 0,11 s / 0,18 s |
+| Ilustraciones: 6 (emojis, vectorial, gráficos) | **−60,2 %** | −53,9 % | +9,5 % | 0,08 s / 0,09 s |
+
+### Kodak, todas las métricas
+
+| Formato | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Codificación | Decodificación |
+|---|---|---|---|---|---|---|---|
+| **Tesela** (por defecto) | **−26,6 %** | **−23,4 %** | **−17,7 %** | **−24,2 %** | **−22,8 %** | 1,06 s | **46 ms** |
+| Tesela `--tune psnr` | −7,6 % | −7,6 % | −25,8 % | −20,3 % | −25,6 % | 1,07 s | 42 ms |
+| AVIF (libavif 1.4 + aom, `speed=4`) | −24,8 % | −19,7 % | −16,4 % | −22,1 % | −17,4 % | 1,42 s | 164 ms |
+| JPEG XL (libjxl 0.12, `effort=7`) | −12,1 % | −13,4 % | +9,4 % | +4,4 % | +12,2 % | 0,19 s | 146 ms |
+| WebP (libwebp 1.6, `method=6`) | 0 % | 0 % | 0 % | 0 % | 0 % | 0,13 s | 115 ms |
 
 ![curvas](bench/results/curves.png)
 
 **Cómo leer estos resultados:**
 
-- **Margen frente a AVIF.** Tesela supera a AVIF en todas las columnas con un único perfil. El
-  margen es pequeño en SSIMULACRA2 (−2,5 % relativo) y mayor en alta calidad (−4,6 %), SSIM y PSNR.
-- **Dónde gana y dónde no.** Las curvas muestran que **a tasas muy bajas (< 0,4 bpp) AVIF sigue
-  siendo mejor** en SSIMULACRA2. Tesela gana en las calidades medias y altas, las habituales en la
-  web. En PSNR a tasas muy altas, AVIF vuelve a estar ligeramente por encima del perfil por defecto.
-- **Frente a JPEG XL.** Tesela gana en todas las métricas (−17 % relativo en SSIMULACRA2).
-- **Calibración de la escala.** La escala de calidad imita la de JPEG: `-q 85` en Tesela se ve
-  parecido a un JPEG q85. En las imágenes de la demo, a igual SSIMULACRA2, Tesela ocupa entre
-  un 27 % y un 56 % menos.
-- **Sin trampas en el entrenamiento.** Las probabilidades iniciales del codificador se entrenaron
-  con **BSD100**, no con Kodak.
-- **Alcance.** Kodak son imágenes de 768×512. Faltaría validar con fotos más grandes y con otros
-  tipos de contenido (capturas de pantalla, ilustraciones).
+- **Fotos.** En Kodak, Tesela supera a AVIF en todas las columnas, aunque por poco en SSIMULACRA2
+  (−2,5 % relativo). En fotos grandes hay **empate técnico**:
+  - Tesela gana en SSIMULACRA2 de alta calidad (−25,8 % frente a −23,5 %), SSIM y PSNR RGB.
+  - AVIF gana por ~1 punto en SSIMULACRA2 global y PSNR-Y.
+  - **A tasas muy bajas (< 0,4 bpp), AVIF sigue siendo mejor.**
+- **Contenido sintético.** Tesela supera a AVIF por 7 puntos en capturas e ilustraciones. Lo
+  consigue con la paleta, la copia intra de bloques, el transform skip y la elección automática
+  de 4:4:4.
+- **Velocidad.** Tesela decodifica entre 3 y 8 veces más rápido que AVIF y, en fotos grandes,
+  codifica 3,4 veces más rápido.
+- **Calibración de la escala.** La escala de calidad imita la de JPEG: `-q 85` se ve parecido a un
+  JPEG q85, y en las imágenes de la demo Tesela ocupa entre un 27 % y un 55 % menos.
 
-El informe completo está en [`bench/results/REPORT.md`](bench/results/REPORT.md).
+Informes completos, con curvas y datos crudos:
+
+- [Kodak](bench/results/REPORT.md)
+- [fotos grandes](bench/results/fotos-grandes/REPORT.md)
+- [capturas](bench/results/capturas/REPORT.md)
+- [ilustraciones](bench/results/ilustraciones/REPORT.md)
+
+### Sin pérdida
+
+Tamaño total de 10 imágenes (3 fotos, 4 capturas y 3 ilustraciones):
+
+| PNG optimizado | JPEG XL | WebP | Tesela |
+|---|---|---|---|
+| 3033 KB | 1960 KB | **1722 KB** | 2054 KB |
+
+- **En capturas e ilustraciones** el modo sin pérdida de Tesela empata con WebP.
+- **En fotos pierde:** ocupa un 21 % más que WebP y un 32 % más que JPEG XL, porque no tiene un
+  predictor por píxel. Es la principal mejora pendiente de este modo.
 
 ## Diseño
 
@@ -53,10 +85,13 @@ El informe completo está en [`bench/results/REPORT.md`](bench/results/REPORT.md
 | Color | YCbCr. Croma 4:2:0 centrado con interpolación bilineal, o 4:4:4 a calidades muy altas. |
 | Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. Cada decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
 | Predicción | Planar, DC y 33 direcciones angulares con filtrado de referencias. Para croma también hay **CCLM**: la croma se predice desde la luma, con parámetros deducidos de los vecinos que no se transmiten. La búsqueda de modos se hace en dos fases. |
-| Transformada | DCT-II ortonormal de 4 a 64 puntos con el algoritmo rápido de Lee (O(n log n)), que salta las filas nulas. |
+| Transformada | DCT-II ortonormal de 4 a 64 puntos: por producto de matrices en 4 y 8, y con el algoritmo rápido de Lee (O(n log n)) desde 16. Si el bloque solo tiene DC, se usa un atajo. |
 | Cuantización | Matriz perceptual (`1 + s·r²`), cuantización adaptativa por actividad en celdas de 32×32 y **RDOQ**. |
-| Entropía | Range coder binario con modelos de doble velocidad. Los coeficientes se codifican con `cbf`, `eob` y un barrido diagonal inverso con contextos que dependen del tamaño, la frecuencia y la plantilla de vecinos. Las **probabilidades iniciales están entrenadas**, con una tabla por banda de calidad. |
+| Entropía | Range coder binario con modelos de doble velocidad. Los coeficientes se codifican con `cbf`, `eob` y un barrido diagonal inverso con contextos que dependen del tamaño, la frecuencia y la plantilla de vecinos. Las **probabilidades iniciales están entrenadas**, con tablas por tipo de contenido (foto o sintético) y por banda de calidad. |
 | Restauración | Filtro tipo ALF. Cada bloque 4×4 se clasifica en una de 12 clases (actividad × dirección). Cada clase tiene un filtro simétrico de 15 taps que el codificador estima por mínimos cuadrados y activa por superbloque. |
+| Contenido sintético | Si la imagen parece sintética (pocos valores por bloque), el codificador activa tres herramientas, que en fotos no cuestan ni un bit. **Paleta**: hasta 8 colores, con índices codificados por rango según los vecinos. **Copia intra de bloques**: el codificador busca candidatos con un índice hash de bloques de 8×8. **Transform skip** en bloques de hasta 16×16. Además, el croma pasa a 4:4:4. |
+| Alfa y sin pérdida | El alfa es un plano adicional sin pérdida con contextos propios. El modo sin pérdida codifica los planos G, B y R con residuo exacto, y predice B y R desde G con CCLM. |
+| Vista previa | Opcional (`--preview`): una miniatura de ~300 bytes al principio del archivo. `<tesela-img>` la muestra desenfocada en cuanto llega, mientras se descarga el resto. |
 | Determinismo | El decodificador WebAssembly produce **exactamente** los mismos bytes que el nativo, y lo comprueba el CI. |
 
 Toda la sintaxis del bitstream se escribe una sola vez sobre un trait `Coder` con tres
@@ -69,6 +104,7 @@ src/dct.rs        DCT rápida y SATD
 src/predict.rs    predicción intra y CCLM
 src/coeff.rs      codificación de coeficientes y RDOQ
 src/restore.rs    filtro de restauración por clases
+src/tools.rs      paleta, copia intra de bloques y detección de contenido sintético
 src/codec.rs      contenedor, teselas, codificador (RDO) y decodificador
 src/init_probs.rs probabilidades iniciales entrenadas (generado)
 src/wasm.rs       interfaz WebAssembly (ABI C, sin bindgen)
@@ -96,6 +132,27 @@ no funcionó.
 | Perfil equilibrado (búsqueda en rejilla) | −24,7 | −17,7 | Supera a AVIF en las cuatro, por márgenes mínimos |
 | Probabilidades iniciales entrenadas con BSD100 | +1,7 | +0,8 | **Adoptado**: amplía el margen sobre AVIF |
 
+En la validación con más tipos de contenido apareció el punto débil: en capturas, Tesela se
+quedaba en −26 % frente al −51 % de AVIF. Estos cambios se midieron en las 9 capturas:
+
+| Cambio en capturas | SSIMULACRA2 | Resultado |
+|---|---|---|
+| Croma 4:4:4 | −26 → −32 % | Se activa solo en contenido sintético |
+| Paleta, copia de bloques y transform skip (sin entrenar) | → −55,8 % | **Adoptado**: supera a AVIF |
+| Tablas entrenadas por tipo de contenido | → −57,9 % | **Adoptado** |
+
+El análisis por herramienta muestra que la copia de bloques aporta casi todo: una hoja de cálculo
+pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
+
+**Velocidad (perfilado con callgrind):**
+
+- **Decodificación:** −28 % de instrucciones. Antes se ponían a cero búferes de 64×64 en cada
+  bloque, incluso en los de 4×4. Además, el filtro de restauración se rehízo con un búfer con
+  borde.
+- **Codificación:** −40 % de tiempo con la SATD desenrollada, la DCT por matriz y la poda de
+  candidatos. Ninguna de estas optimizaciones cambió la compresión.
+- **SIMD en WebAssembly:** probado y **descartado**; no mejoraba nada.
+
 ## Uso
 
 ```sh
@@ -116,6 +173,9 @@ Opciones de `encode`:
 | `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). |
 | `--420` / `--444` | Fuerza el submuestreo de croma. |
 | `--no-restore` | Desactiva el filtro de restauración. |
+| `--lossless` | Compresión sin pérdida. |
+| `--preview` | Añade una vista previa progresiva (~300 bytes). |
+| `--screen` / `--no-screen` | Fuerza o desactiva las herramientas de contenido sintético. |
 | `--aq`, `--cq`, `--qm`, `--qmc`, `--lambda` | Ajustes finos. |
 
 ## En la web
@@ -132,7 +192,7 @@ const tsl = await encode(imageData, { quality: 85 });  // codificar en el navega
 const url = await toObjectURL(bytes);                  // para cualquier <img>
 ```
 
-- **Tamaño del módulo.** `web/tesela.wasm` pesa 360 KB e incluye el codificador, el
+- **Tamaño del módulo.** `web/tesela.wasm` pesa 515 KB e incluye el codificador, el
   decodificador y las métricas.
 - **Paralelismo.** La librería reparte las teselas entre varios Web Workers.
 - **Recompilar.** `web/build.sh` regenera el módulo (necesitas
@@ -169,7 +229,10 @@ incluidas en `web/vendor/`) y se ejecutan con un hilo por formato. Nada sale del
 ```sh
 pip install -r bench/requirements.txt   # Pillow (WebP y AVIF), imagecodecs (libjxl 0.12), numpy, scipy, matplotlib
 bench/fetch_kodak.sh
-python3 bench/bench.py                  # todos los códecs
+python3 bench/bench.py                  # Kodak, todos los códecs
+bench/fetch_div2k.sh && python3 bench/bench.py --images bench/data/div2k --out bench/results/fotos-grandes
+cargo doc --no-deps && node bench/gen_synthetic.js bench/data   # capturas e ilustraciones
+python3 bench/bench.py --images bench/data/screen --out bench/results/capturas
 python3 bench/bench.py --codecs tesela --reuse --tesela-args "--aq 1.5"   # iterar solo Tesela
 ```
 
@@ -181,13 +244,14 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 
 ## Limitaciones
 
-- **Soporte.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
-  `tesela.js` y WebAssembly. Mientras tanto, conviene servir un `fallback` en JPEG.
-- **Funcionalidad.** Solo admite 8 bits por canal. No tiene canal alfa (se compone sobre blanco),
-  modo sin pérdida, animación ni metadatos ICC o EXIF.
-- **Velocidad de codificación.** Codificar es lento: unos 2 s por imagen de 0,4 MP en un hilo.
-  Tesela está pensado para codificar una vez y servir muchas.
-- **Alcance de las pruebas.** Las comparativas se hicieron solo con Kodak. Falta validar con fotos
-  grandes y con otros tipos de contenido.
-- **Licencias de los datos.** Las imágenes Kodak se usan para las pruebas y las de BSD100 solo se
-  usaron para estimar probabilidades: ninguna de BSD100 se distribuye.
+- **Soporte nativo.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
+  `tesela.js` y WebAssembly (515 KB). Conviene servir un `fallback` en JPEG.
+- **Fotos a tasas bajas.** Por debajo de ~0,4 bpp AVIF sigue siendo mejor. En fotos grandes la
+  compresión está empatada con AVIF.
+- **Sin pérdida en fotos.** Ocupa más que WebP y JPEG XL.
+- **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
+  (un alfa con degradados suaves cuesta bastante). No tiene animación ni metadatos ICC o EXIF.
+- **Velocidad de codificación.** En capturas, codificar es más lento (~5 s por imagen de 1,3 MP).
+- **Licencias de los datos.** Las imágenes de prueba (Kodak, DIV2K) y de entrenamiento (BSD100) no
+  se redistribuyen, salvo `web/compare/sample.png` (kodim23). Las capturas e ilustraciones se
+  generan con `bench/gen_synthetic.js`.

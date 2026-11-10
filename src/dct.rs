@@ -109,7 +109,11 @@ fn small_matrix(n: usize) -> &'static [f32; 64] {
         [4usize, 8].map(|n| {
             let mut m = [0f32; 64];
             for k in 0..n {
-                let s = if k == 0 { (1.0 / n as f64).sqrt() } else { (2.0 / n as f64).sqrt() };
+                let s = if k == 0 {
+                    (1.0 / n as f64).sqrt()
+                } else {
+                    (2.0 / n as f64).sqrt()
+                };
                 for i in 0..n {
                     let a = std::f64::consts::PI * (2 * i + 1) as f64 * k as f64 / (2 * n) as f64;
                     m[k * n + i] = (s * a.cos()) as f32;
@@ -270,7 +274,16 @@ fn had8(b: &mut [f32; 64]) -> f32 {
     }
     let mut s = 0f32;
     for c in 0..8 {
-        let col = [b[c], b[8 + c], b[16 + c], b[24 + c], b[32 + c], b[40 + c], b[48 + c], b[56 + c]];
+        let col = [
+            b[c],
+            b[8 + c],
+            b[16 + c],
+            b[24 + c],
+            b[32 + c],
+            b[40 + c],
+            b[48 + c],
+            b[56 + c],
+        ];
         for v in wht8(col) {
             s += v.abs();
         }
@@ -285,7 +298,13 @@ mod tests {
     /// Referencia ingenua de la Hadamard para comprobar la versión rápida.
     fn satd_ref(res: &[f32], n: usize) -> f32 {
         let t = if n == 4 { 4 } else { 8 };
-        let h = |k: usize, i: usize| if (k & i).count_ones() % 2 == 0 { 1.0 } else { -1.0 };
+        let h = |k: usize, i: usize| {
+            if (k & i).count_ones() % 2 == 0 {
+                1.0
+            } else {
+                -1.0
+            }
+        };
         let mut total = 0.0;
         for by in (0..n).step_by(t) {
             for bx in (0..n).step_by(t) {
@@ -308,7 +327,9 @@ mod tests {
     #[test]
     fn satd_matches_reference() {
         for &n in &SIZES {
-            let r: Vec<f32> = (0..n * n).map(|i| ((i * 73 + 5) % 41) as f32 - 20.0).collect();
+            let r: Vec<f32> = (0..n * n)
+                .map(|i| ((i * 73 + 5) % 41) as f32 - 20.0)
+                .collect();
             let (a, b) = (satd(&r, n), satd_ref(&r, n));
             assert!((a - b).abs() / b.max(1.0) < 1e-4, "n={n}: {a} vs {b}");
         }

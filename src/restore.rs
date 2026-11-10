@@ -237,7 +237,9 @@ pub fn apply(p: &mut Plane, d: &Decision) {
         let (bx, by) = (i % bw, i / bw);
         for gy in by * BLK / 4..(by + 1) * BLK / 4 {
             for gx in bx * BLK / 4..(bx + 1) * BLK / 4 {
-                let Some(f) = d.filters[pad.class(gx, gy) as usize] else { continue };
+                let Some(f) = d.filters[pad.class(gx, gy) as usize] else {
+                    continue;
+                };
                 for y in gy * 4..gy * 4 + 4 {
                     let mut pi = pad.idx(gx * 4, y);
                     for x in gx * 4..gx * 4 + 4 {
