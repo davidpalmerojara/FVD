@@ -149,14 +149,24 @@ impl Padded {
     }
 
     /// Valor central y las 8 diferencias simétricas (vecino+ + vecino− − 2·centro).
+    /// `i` debe venir de `idx(x, y)` con (x, y) dentro del plano: el borde
+    /// de `PAD` píxeles garantiza que todos los vecinos están en el búfer.
     #[inline(always)]
     fn grads(&self, i: usize) -> (i32, [i32; NC]) {
         let d = &self.d;
+        assert!(i >= 3 * self.pw + 3 && i + 3 * self.pw + 3 < d.len());
         let c = d[i] as i32;
         let mut g = [0i32; NC];
         for k in 0..NC {
             let o = self.offs[k];
-            g[k] = d[(i as isize + o) as usize] as i32 + d[(i as isize - o) as usize] as i32 - 2 * c;
+            // SEGURIDAD: |o| ≤ 3·pw + 3 y el assert de arriba acota i.
+            let (p, m) = unsafe {
+                (
+                    *d.get_unchecked((i as isize + o) as usize),
+                    *d.get_unchecked((i as isize - o) as usize),
+                )
+            };
+            g[k] = p as i32 + m as i32 - 2 * c;
         }
         (c, g)
     }

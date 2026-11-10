@@ -102,8 +102,56 @@ fn norm(n: usize) -> (f32, f32) {
     ((1.0 / n as f32).sqrt(), (2.0 / n as f32).sqrt())
 }
 
+/// Matriz DCT ortonormal N×N (fila = frecuencia) para N = 4 u 8.
+fn small_matrix(n: usize) -> &'static [f32; 64] {
+    static M: OnceLock<[[f32; 64]; 2]> = OnceLock::new();
+    let all = M.get_or_init(|| {
+        [4usize, 8].map(|n| {
+            let mut m = [0f32; 64];
+            for k in 0..n {
+                let s = if k == 0 { (1.0 / n as f64).sqrt() } else { (2.0 / n as f64).sqrt() };
+                for i in 0..n {
+                    let a = std::f64::consts::PI * (2 * i + 1) as f64 * k as f64 / (2 * n) as f64;
+                    m[k * n + i] = (s * a.cos()) as f32;
+                }
+            }
+            m
+        })
+    });
+    &all[(n == 8) as usize]
+}
+
+/// DCT 2-D por producto de matrices (más rápida que la recursión en 4 y 8).
+fn small_transform(blk: &mut [f32], n: usize, inverse: bool) {
+    let m = small_matrix(n);
+    // a(k, i): coeficiente de la base; directa usa M, inversa usa Mᵀ.
+    let a = |k: usize, i: usize| if inverse { m[i * n + k] } else { m[k * n + i] };
+    let mut tmp = [0f32; 64];
+    for y in 0..n {
+        for k in 0..n {
+            let mut s = 0f32;
+            for x in 0..n {
+                s += a(k, x) * blk[y * n + x];
+            }
+            tmp[y * n + k] = s;
+        }
+    }
+    for k in 0..n {
+        for x in 0..n {
+            let mut s = 0f32;
+            for y in 0..n {
+                s += a(k, y) * tmp[y * n + x];
+            }
+            blk[k * n + x] = s;
+        }
+    }
+}
+
 /// Transformada directa ortonormal en el sitio: `blk` es N×N en orden fila.
 pub fn forward(blk: &mut [f32], n: usize) {
+    if n <= 8 {
+        return small_transform(blk, n, false);
+    }
     let (s0, s1) = norm(n);
     let mut tmp = [0f32; 64];
     let mut col = [0f32; 64];
@@ -130,6 +178,9 @@ pub fn forward(blk: &mut [f32], n: usize) {
 /// Transformada inversa ortonormal en el sitio. Las filas de coeficientes
 /// nulas (muy frecuentes tras cuantizar) se saltan.
 pub fn inverse(blk: &mut [f32], n: usize) {
+    if n <= 8 {
+        return small_transform(blk, n, true);
+    }
     let (s0, s1) = norm(n);
     let (a0, a1) = (s0, s1);
     let mut tmp = [0f32; 64];
@@ -161,59 +212,107 @@ pub fn inverse(blk: &mut [f32], n: usize) {
 
 /// SATD con Hadamard 4×4 u 8×8 sobre un residuo N×N (para preselección de modos).
 pub fn satd(res: &[f32], n: usize) -> f32 {
-    let t = if n == 4 { 4 } else { 8 };
+    if n == 4 {
+        let mut b = [0f32; 16];
+        b.copy_from_slice(&res[..16]);
+        return had4(&mut b) / 4.0;
+    }
     let mut total = 0f32;
-    let mut buf = [0f32; 64];
-    for by in (0..n).step_by(t) {
-        for bx in (0..n).step_by(t) {
-            for y in 0..t {
-                for x in 0..t {
-                    buf[y * t + x] = res[(by + y) * n + bx + x];
-                }
+    let mut b = [0f32; 64];
+    let mut by = 0;
+    while by < n {
+        let mut bx = 0;
+        while bx < n {
+            for y in 0..8 {
+                b[y * 8..y * 8 + 8].copy_from_slice(&res[(by + y) * n + bx..(by + y) * n + bx + 8]);
             }
-            hadamard(&mut buf[..t * t], t);
-            total += buf[..t * t].iter().map(|v| v.abs()).sum::<f32>() / t as f32;
+            total += had8(&mut b) / 8.0;
+            bx += 8;
         }
+        by += 8;
     }
     total
 }
 
-fn hadamard(b: &mut [f32], t: usize) {
-    for y in 0..t {
-        let r = &mut b[y * t..y * t + t];
-        wht1d(r);
-    }
-    let mut col = [0f32; 8];
-    for x in 0..t {
-        for y in 0..t {
-            col[y] = b[y * t + x];
-        }
-        wht1d(&mut col[..t]);
-        for y in 0..t {
-            b[y * t + x] = col[y];
-        }
-    }
+#[inline(always)]
+fn wht4(a: [f32; 4]) -> [f32; 4] {
+    let (s0, d0, s1, d1) = (a[0] + a[1], a[0] - a[1], a[2] + a[3], a[2] - a[3]);
+    [s0 + s1, d0 + d1, s0 - s1, d0 - d1]
 }
 
-fn wht1d(v: &mut [f32]) {
-    let n = v.len();
-    let mut h = 1;
-    while h < n {
-        for i in (0..n).step_by(h * 2) {
-            for j in i..i + h {
-                let a = v[j];
-                let b = v[j + h];
-                v[j] = a + b;
-                v[j + h] = a - b;
-            }
-        }
-        h *= 2;
+#[inline(always)]
+fn wht8(a: [f32; 8]) -> [f32; 8] {
+    let l = wht4([a[0] + a[1], a[2] + a[3], a[4] + a[5], a[6] + a[7]]);
+    let r = wht4([a[0] - a[1], a[2] - a[3], a[4] - a[5], a[6] - a[7]]);
+    [l[0], r[0], l[1], r[1], l[2], r[2], l[3], r[3]]
+}
+
+/// Suma de valores absolutos de la Hadamard 4×4.
+fn had4(b: &mut [f32; 16]) -> f32 {
+    for r in 0..4 {
+        let v = wht4([b[r * 4], b[r * 4 + 1], b[r * 4 + 2], b[r * 4 + 3]]);
+        b[r * 4..r * 4 + 4].copy_from_slice(&v);
     }
+    let mut s = 0f32;
+    for c in 0..4 {
+        let v = wht4([b[c], b[4 + c], b[8 + c], b[12 + c]]);
+        s += v[0].abs() + v[1].abs() + v[2].abs() + v[3].abs();
+    }
+    s
+}
+
+/// Suma de valores absolutos de la Hadamard 8×8 (el orden de las salidas
+/// no importa para la suma).
+fn had8(b: &mut [f32; 64]) -> f32 {
+    for r in 0..8 {
+        let row: [f32; 8] = b[r * 8..r * 8 + 8].try_into().unwrap();
+        b[r * 8..r * 8 + 8].copy_from_slice(&wht8(row));
+    }
+    let mut s = 0f32;
+    for c in 0..8 {
+        let col = [b[c], b[8 + c], b[16 + c], b[24 + c], b[32 + c], b[40 + c], b[48 + c], b[56 + c]];
+        for v in wht8(col) {
+            s += v.abs();
+        }
+    }
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Referencia ingenua de la Hadamard para comprobar la versión rápida.
+    fn satd_ref(res: &[f32], n: usize) -> f32 {
+        let t = if n == 4 { 4 } else { 8 };
+        let h = |k: usize, i: usize| if (k & i).count_ones() % 2 == 0 { 1.0 } else { -1.0 };
+        let mut total = 0.0;
+        for by in (0..n).step_by(t) {
+            for bx in (0..n).step_by(t) {
+                for u in 0..t {
+                    for v in 0..t {
+                        let mut s = 0f32;
+                        for y in 0..t {
+                            for x in 0..t {
+                                s += h(u, y) * h(v, x) * res[(by + y) * n + bx + x];
+                            }
+                        }
+                        total += s.abs() / t as f32;
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn satd_matches_reference() {
+        for &n in &SIZES {
+            let r: Vec<f32> = (0..n * n).map(|i| ((i * 73 + 5) % 41) as f32 - 20.0).collect();
+            let (a, b) = (satd(&r, n), satd_ref(&r, n));
+            assert!((a - b).abs() / b.max(1.0) < 1e-4, "n={n}: {a} vs {b}");
+        }
+    }
 
     #[test]
     fn roundtrip() {

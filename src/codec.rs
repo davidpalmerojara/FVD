@@ -244,9 +244,9 @@ pub fn quality_band(qstep: f32) -> usize {
 pub static UNTRAINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Ctx {
-    fn trained(qstep: f32) -> Self {
+    fn trained(qstep: f32, screen: bool) -> Self {
         let mut c = Ctx::new();
-        let t = crate::init_probs::TABLES[quality_band(qstep)];
+        let t = crate::init_probs::TABLES[screen as usize][quality_band(qstep)];
         if UNTRAINED.load(std::sync::atomic::Ordering::Relaxed) {
             return c;
         }
@@ -537,7 +537,7 @@ fn code_leaf_head<C: Coder>(
 /// Reconstruye un bloque: descuantiza, transformada inversa (salvo
 /// transform skip) y suma la predicción.
 fn reconstruct(levels: &[i32], pred: &[i32], q: f32, w: &[f32], n: usize, ts: bool, out: &mut [u8]) {
-    let mut buf = [0f32; 64 * 64];
+    let mut buf = vec![0f32; n * n];
     let mut any = false;
     for i in 0..n * n {
         if levels[i] != 0 {
@@ -546,7 +546,13 @@ fn reconstruct(levels: &[i32], pred: &[i32], q: f32, w: &[f32], n: usize, ts: bo
         }
     }
     if any && !ts {
-        dct::inverse(&mut buf[..n * n], n);
+        if levels[1..n * n].iter().all(|&l| l == 0) {
+            // Solo DC: la inversa es constante (base DC ortonormal = 1/n).
+            let v = buf[0] / n as f32;
+            buf.fill(v);
+        } else {
+            dct::inverse(&mut buf[..n * n], n);
+        }
     }
     for i in 0..n * n {
         out[i] = (pred[i] as f32 + buf[i]).round().clamp(0.0, 255.0) as u8;
@@ -681,7 +687,7 @@ impl EncState {
         allow_dct: bool,
     ) -> (f32, Vec<i32>, bool) {
         let nn = n * n;
-        let mut res = [0f32; 64 * 64];
+        let mut res = vec![0f32; nn];
         let mut best = (f32::INFINITY, Vec::new(), false);
         let mut levels = vec![0i32; nn];
         if self.lossless {
@@ -729,7 +735,7 @@ impl EncState {
         let slam = lambda.sqrt();
         let pc = pe.pc;
         let nn = n * n;
-        let mut src = [0f32; 64 * 64];
+        let mut src = vec![0f32; nn];
         for y in 0..n {
             for x in 0..n {
                 src[y * n + x] = pe.src[(y0 + y) * pe.plane.w + x0 + x];
@@ -741,7 +747,7 @@ impl EncState {
         let nmodes = if pc == 1 && lref.is_some() { MODE_CCLM + 1 } else { predict::NUM_ANGULAR_MODES };
         let try_ts = self.screen && n <= 16;
         let mut pred = vec![0i32; nn];
-        let mut res = [0f32; 64 * 64];
+        let mut res = vec![0f32; nn];
         let mut cands: Vec<(f32, u8, f32)> = Vec::with_capacity(nmodes as usize);
         // Búsqueda intra en dos fases: barrido grueso y refinado angular.
         let mut done = [false; 64];
@@ -790,14 +796,19 @@ impl EncState {
                 *best = Some((j, kind, lv, ts));
             }
         };
-        for &(_, mode, _) in cands.iter().take(self.topk) {
+        // Solo pasan a RDO completo los modos cuyo coste SATD está cerca del mejor.
+        let satd_limit = cands[0].0 * 1.3 + slam * 4.0;
+        for &(sc, mode, _) in cands.iter().take(self.topk) {
+            if sc > satd_limit {
+                break;
+            }
             predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
             let (jr, lv, ts) = self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
             let kind = Kind::Intra(mode);
             let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
             consider(&mut best, jr + lambda * hb, kind, lv, ts);
         }
-        if self.screen {
+        if self.screen && n <= 32 {
             // Paleta
             for pal in tools::palette_candidates(&src, n) {
                 tools::predict_palette(&pal, &mut pred);
@@ -823,7 +834,7 @@ impl EncState {
                     scored.push((sad + slam * bits, bv));
                 }
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                for &(_, bv) in scored.iter().take(3) {
+                for &(_, bv) in scored.iter().take(2) {
                     tools::predict_ibc(&pe.plane, x0, y0, n, bv, &mut pred);
                     let (jr, lv, ts) = self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
                     let kind = Kind::Ibc(bv);
@@ -1240,7 +1251,7 @@ pub fn encode_tile_stats(
     let base_q = header.qstep();
     let cq = header.chroma_q as f32 / 32.0;
     let mut st = EncState {
-        ctx: Ctx::trained(base_q),
+        ctx: if lossless { Ctx::new() } else { Ctx::trained(base_q, header.tools & TOOL_SCREEN != 0) },
         qt: QuantTables::new(header.qm_luma as f32 / 16.0, header.qm_chroma as f32 / 16.0),
         lambda_k: p.lambda_k,
         topk: (p.effort.clamp(1, 9) as usize) + 1,
@@ -1498,7 +1509,7 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
     let (cw, ch) = if sub { (w.div_ceil(2), ht.div_ceil(2)) } else { (w, ht) };
     let dims = [(w, ht), (cw, ch), (cw, ch)];
     let mut st = DecState {
-        ctx: Ctx::trained(base_q),
+        ctx: if lossless { Ctx::new() } else { Ctx::trained(base_q, h.tools & TOOL_SCREEN != 0) },
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
         screen: h.tools & TOOL_SCREEN != 0,
         lossless,

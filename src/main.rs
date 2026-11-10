@@ -194,80 +194,79 @@ fn run(args: &[String]) -> Result<(), String> {
 
 /// Entrena las probabilidades iniciales de los contextos: codifica las
 /// imágenes en varias calidades por banda y promedia el estado final de cada
-/// modelo (ponderado por su nº de observaciones).
+/// modelo (ponderado por su nº de observaciones). Hay un juego de tablas para
+/// fotografía y otro para contenido sintético (según la detección automática).
 fn train(out: &str, imgs: &[String]) -> Result<(), String> {
     use rayon::prelude::*;
-    use tesela::codec::{
-        UNTRAINED, encode_tile_stats, make_header, quality_band, quality_to_qstep,
-    };
+    use tesela::codec::{TOOL_SCREEN, UNTRAINED, encode_tile_stats, make_header, quality_band, quality_to_qstep};
     UNTRAINED.store(true, std::sync::atomic::Ordering::Relaxed);
-    let images: Vec<(Vec<u8>, usize, usize)> =
-        imgs.iter().map(|p| load_png(p)).collect::<Result<_, _>>()?;
-    let qualities = [
-        92.0, 85.0, 78.0, 70.0, 62.0, 55.0, 47.0, 40.0, 32.0, 24.0, 16.0,
-    ];
-    let mut tables = vec![Vec::<u16>::new(); 4];
-    for band in 0..4 {
-        let qs: Vec<f32> = qualities
-            .iter()
-            .copied()
-            .filter(|&q| quality_band(quality_to_qstep(q)) == band)
-            .collect();
-        let jobs: Vec<(usize, f32)> = (0..images.len())
-            .flat_map(|i| qs.iter().map(move |&q| (i, q)))
-            .collect();
-        let stats: Vec<Vec<(u32, u32)>> = jobs
-            .par_iter()
-            .map(|&(i, q)| {
+    let images: Vec<(Vec<u8>, usize, usize)> = imgs.iter().map(|p| load_png(p)).collect::<Result<_, _>>()?;
+    let qualities = [97.0, 93.0, 89.0, 85.0, 80.0, 74.0, 66.0, 58.0, 48.0, 38.0, 28.0, 20.0];
+    let mut tables = vec![vec![Vec::<u16>::new(); 4]; 2];
+    for (kind, kind_tables) in tables.iter_mut().enumerate() {
+        let sel: Vec<usize> = (0..images.len())
+            .filter(|&i| {
                 let (rgb, w, h) = &images[i];
-                let p = Params {
-                    quality: q,
-                    tile: 4096,
-                    ..Params::default()
-                };
-                let hd = make_header(rgb, *w, *h, &p);
-                encode_tile_stats(rgb, None, *w, *h, &hd, &p).3
+                let hd = make_header(rgb, *w, *h, &Params::default());
+                ((hd.tools & TOOL_SCREEN != 0) as usize) == kind
             })
             .collect();
-        let n = stats[0].len();
-        let mut t = vec![0u16; n];
-        for k in 0..n {
-            let (mut sw, mut sp) = (0f64, 0f64);
-            for s in &stats {
-                let (p, c) = s[k];
-                if c > 0 {
-                    sw += c as f64;
-                    sp += c as f64 * p as f64;
-                }
-            }
-            t[k] = if sw > 0.0 {
-                (sp / sw).round() as u16
-            } else {
-                32768
-            };
+        eprintln!("{}: {} imágenes", ["fotografía", "sintético"][kind], sel.len());
+        if sel.is_empty() {
+            continue;
         }
-        eprintln!(
-            "banda {band}: {} modelos, {} codificaciones",
-            n,
-            stats.len()
-        );
-        tables[band] = t;
+        for (band, table) in kind_tables.iter_mut().enumerate() {
+            let qs: Vec<f32> =
+                qualities.iter().copied().filter(|&q| quality_band(quality_to_qstep(q)) == band).collect();
+            let jobs: Vec<(usize, f32)> = sel.iter().flat_map(|&i| qs.iter().map(move |&q| (i, q))).collect();
+            if jobs.is_empty() {
+                continue;
+            }
+            let stats: Vec<Vec<(u32, u32)>> = jobs
+                .par_iter()
+                .map(|&(i, q)| {
+                    let (rgb, w, h) = &images[i];
+                    let p = Params { quality: q, tile: 4096, ..Params::default() };
+                    let hd = make_header(rgb, *w, *h, &p);
+                    encode_tile_stats(rgb, None, *w, *h, &hd, &p).3
+                })
+                .collect();
+            let n = stats[0].len();
+            *table = (0..n)
+                .map(|k| {
+                    let (mut sw, mut sp) = (0f64, 0f64);
+                    for s in &stats {
+                        let (p, c) = s[k];
+                        if c > 0 {
+                            sw += c as f64;
+                            sp += c as f64 * p as f64;
+                        }
+                    }
+                    if sw > 0.0 { (sp / sw).round() as u16 } else { 32768 }
+                })
+                .collect();
+            eprintln!("  banda {band}: {n} modelos, {} codificaciones", stats.len());
+        }
     }
     let mut s = String::from(
         "//! Probabilidades iniciales entrenadas (generado con `tesela train`).\n\
-         //! Una tabla por banda de calidad; si no coincide con el nº de modelos\n\
-         //! actual se ignora y todos los contextos empiezan en 0,5.\n\n\
-         pub static TABLES: [&[u16]; 4] = [\n",
+         //! TABLES[sintético][banda de calidad]; una tabla que no coincide con el\n\
+         //! nº de modelos actual se ignora y los contextos empiezan en 0,5.\n\n\
+         pub static TABLES: [[&[u16]; 4]; 2] = [\n",
     );
-    for t in &tables {
-        s.push_str("    &[");
-        for (i, v) in t.iter().enumerate() {
-            if i % 16 == 0 {
-                s.push_str("\n        ");
+    for kind in &tables {
+        s.push_str("    [\n");
+        for t in kind {
+            s.push_str("        &[");
+            for (i, v) in t.iter().enumerate() {
+                if i % 16 == 0 {
+                    s.push_str("\n            ");
+                }
+                s.push_str(&format!("{v}, "));
             }
-            s.push_str(&format!("{v}, "));
+            s.push_str("\n        ],\n");
         }
-        s.push_str("\n    ],\n");
+        s.push_str("    ],\n");
     }
     s.push_str("];\n");
     std::fs::write(out, s).map_err(|e| e.to_string())
