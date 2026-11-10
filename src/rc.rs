@@ -73,7 +73,11 @@ impl Model {
     /// Fija una probabilidad inicial entrenada (de 1, en 2^-16).
     pub fn set_init(&mut self, p1: u16) {
         let p = (p1 as u32).clamp(PROB_MIN, PROB_MAX);
-        *self = Model { fast: p, slow: p, n: INIT_N };
+        *self = Model {
+            fast: p,
+            slow: p,
+            n: INIT_N,
+        };
     }
 
     /// Probabilidad actual y nº de observaciones (para entrenamiento).

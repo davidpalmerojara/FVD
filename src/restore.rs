@@ -15,7 +15,16 @@ const PREC: i32 = 128; // coeficientes en 1/128
 const CMAX: i32 = 64;
 /// Nº de coeficientes: horizontal ±1..3, vertical ±1..3, diagonal y antidiagonal.
 const NC: usize = 8;
-const OFFS: [(isize, isize); NC] = [(1, 0), (2, 0), (3, 0), (0, 1), (0, 2), (0, 3), (1, 1), (1, -1)];
+const OFFS: [(isize, isize); NC] = [
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (1, 1),
+    (1, -1),
+];
 /// Clases: 4 niveles de actividad × 3 direcciones.
 pub const NCLASS: usize = 12;
 
@@ -64,8 +73,18 @@ impl Visit for RestCtx {
 }
 
 impl RestCtx {
-    pub fn code<C: Coder>(&mut self, c: &mut C, pc: usize, bw: usize, bh: usize, d: &Decision) -> Decision {
-        let off = Decision { filters: vec![None; NCLASS], flags: vec![false; bw * bh] };
+    pub fn code<C: Coder>(
+        &mut self,
+        c: &mut C,
+        pc: usize,
+        bw: usize,
+        bh: usize,
+        d: &Decision,
+    ) -> Decision {
+        let off = Decision {
+            filters: vec![None; NCLASS],
+            flags: vec![false; bw * bh],
+        };
         if !c.bit(&mut self.on[pc], d.active()) {
             return off;
         }
@@ -86,7 +105,10 @@ impl RestCtx {
             for bx in 0..bw {
                 let i = by * bw + bx;
                 let ctx = (bx > 0 && flags[i - 1]) as usize + (by > 0 && flags[i - bw]) as usize;
-                flags[i] = c.bit(&mut self.flag[pc][ctx], d.flags.get(i).copied().unwrap_or(false));
+                flags[i] = c.bit(
+                    &mut self.flag[pc][ctx],
+                    d.flags.get(i).copied().unwrap_or(false),
+                );
             }
         }
         Decision { filters, flags }
@@ -98,7 +120,9 @@ fn classify(p: &Plane) -> Vec<u8> {
     let (w, h) = (p.w, p.h);
     let (gw, gh) = (w / 4, h / 4);
     let d = &p.data;
-    let px = |x: isize, y: isize| d[(y.clamp(0, h as isize - 1) as usize) * w + x.clamp(0, w as isize - 1) as usize] as i32;
+    let px = |x: isize, y: isize| {
+        d[(y.clamp(0, h as isize - 1) as usize) * w + x.clamp(0, w as isize - 1) as usize] as i32
+    };
     let mut out = vec![0u8; gw * gh];
     for by in 0..gh {
         for bx in 0..gw {
@@ -164,7 +188,9 @@ pub fn apply(p: &mut Plane, d: &Decision) {
         let (bx, by) = (i % bw, i / bw);
         for y in by * BLK..(by + 1) * BLK {
             for x in bx * BLK..(bx + 1) * BLK {
-                let Some(f) = d.filters[cls[(y / 4) * gw + x / 4] as usize] else { continue };
+                let Some(f) = d.filters[cls[(y / 4) * gw + x / 4] as usize] else {
+                    continue;
+                };
                 let (c, g) = grads(src, w, h, x, y);
                 let mut s = 0i32;
                 for k in 0..NC {
@@ -185,7 +211,8 @@ fn solve(mut a: [[f64; NC]; NC], mut b: [f64; NC]) -> Option<[f64; NC]> {
         a[i][i] += 1e-4 * tr + 1e-6;
     }
     for col in 0..NC {
-        let piv = (col..NC).max_by(|&x, &y| a[x][col].abs().partial_cmp(&a[y][col].abs()).unwrap())?;
+        let piv =
+            (col..NC).max_by(|&x, &y| a[x][col].abs().partial_cmp(&a[y][col].abs()).unwrap())?;
         a.swap(col, piv);
         b.swap(col, piv);
         if a[col][col].abs() < 1e-12 {
@@ -211,7 +238,10 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
     let gw = w / 4;
     let cls = classify(p);
     let mut mask = vec![true; bw * bh];
-    let mut best = Decision { filters: vec![None; NCLASS], flags: vec![false; bw * bh] };
+    let mut best = Decision {
+        filters: vec![None; NCLASS],
+        flags: vec![false; bw * bh],
+    };
     let mut best_net = 0.0;
     let lam = lambda as f64;
     for _round in 0..2 {
@@ -284,7 +314,10 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
         let mut flags = vec![false; bw * bh];
         let mut gain = 0.0;
         for i in 0..bw * bh {
-            let gsum: f64 = (0..NCLASS).filter(|&k| filters[k].is_some()).map(|k| blk_gain[i][k]).sum();
+            let gsum: f64 = (0..NCLASS)
+                .filter(|&k| filters[k].is_some())
+                .map(|k| blk_gain[i][k])
+                .sum();
             if gsum > lam * 1.5 {
                 flags[i] = true;
                 gain += gsum;
@@ -294,7 +327,10 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
         let net = gain - lam * (NCLASS as f64 + nf * 40.0 + (bw * bh) as f64 * 0.8);
         if net > best_net {
             best_net = net;
-            best = Decision { filters: filters.clone(), flags: flags.clone() };
+            best = Decision {
+                filters: filters.clone(),
+                flags: flags.clone(),
+            };
         }
         mask = flags;
     }

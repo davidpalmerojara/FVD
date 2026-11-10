@@ -1,6 +1,6 @@
-use tesela::{Params, metrics};
 use std::process::ExitCode;
 use std::time::Instant;
+use tesela::{Params, metrics};
 
 const USAGE: &str = "\
 tesela - códec de imagen (formato .tsl)
@@ -122,7 +122,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("decode") if args.len() == 3 => {
             let data = std::fs::read(&args[1]).map_err(|e| e.to_string())?;
             let d = tesela::decode(&data)?;
-            save_png(&args[2], d.rgb, d.width, d.height)?;
+            if args[2].ends_with(".rgb") {
+                // RGB crudo (para pruebas de determinismo)
+                std::fs::write(&args[2], &d.rgb).map_err(|e| e.to_string())?;
+            } else {
+                save_png(&args[2], d.rgb, d.width, d.height)?;
+            }
         }
         Some("compare") if args.len() == 3 => {
             let (a, w, h) = load_png(&args[1])?;
@@ -166,19 +171,34 @@ fn run(args: &[String]) -> Result<(), String> {
 /// modelo (ponderado por su nº de observaciones).
 fn train(out: &str, imgs: &[String]) -> Result<(), String> {
     use rayon::prelude::*;
-    use tesela::codec::{UNTRAINED, encode_tile_stats, make_header, quality_band, quality_to_qstep};
+    use tesela::codec::{
+        UNTRAINED, encode_tile_stats, make_header, quality_band, quality_to_qstep,
+    };
     UNTRAINED.store(true, std::sync::atomic::Ordering::Relaxed);
-    let images: Vec<(Vec<u8>, usize, usize)> = imgs.iter().map(|p| load_png(p)).collect::<Result<_, _>>()?;
-    let qualities = [92.0, 85.0, 78.0, 70.0, 62.0, 55.0, 47.0, 40.0, 32.0, 24.0, 16.0];
+    let images: Vec<(Vec<u8>, usize, usize)> =
+        imgs.iter().map(|p| load_png(p)).collect::<Result<_, _>>()?;
+    let qualities = [
+        92.0, 85.0, 78.0, 70.0, 62.0, 55.0, 47.0, 40.0, 32.0, 24.0, 16.0,
+    ];
     let mut tables = vec![Vec::<u16>::new(); 4];
     for band in 0..4 {
-        let qs: Vec<f32> = qualities.iter().copied().filter(|&q| quality_band(quality_to_qstep(q)) == band).collect();
-        let jobs: Vec<(usize, f32)> = (0..images.len()).flat_map(|i| qs.iter().map(move |&q| (i, q))).collect();
+        let qs: Vec<f32> = qualities
+            .iter()
+            .copied()
+            .filter(|&q| quality_band(quality_to_qstep(q)) == band)
+            .collect();
+        let jobs: Vec<(usize, f32)> = (0..images.len())
+            .flat_map(|i| qs.iter().map(move |&q| (i, q)))
+            .collect();
         let stats: Vec<Vec<(u32, u32)>> = jobs
             .par_iter()
             .map(|&(i, q)| {
                 let (rgb, w, h) = &images[i];
-                let p = Params { quality: q, tile: 4096, ..Params::default() };
+                let p = Params {
+                    quality: q,
+                    tile: 4096,
+                    ..Params::default()
+                };
                 let hd = make_header(*w, *h, &p);
                 encode_tile_stats(rgb, *w, *h, &hd, &p).2
             })
@@ -194,9 +214,17 @@ fn train(out: &str, imgs: &[String]) -> Result<(), String> {
                     sp += c as f64 * p as f64;
                 }
             }
-            t[k] = if sw > 0.0 { (sp / sw).round() as u16 } else { 32768 };
+            t[k] = if sw > 0.0 {
+                (sp / sw).round() as u16
+            } else {
+                32768
+            };
         }
-        eprintln!("banda {band}: {} modelos, {} codificaciones", n, stats.len());
+        eprintln!(
+            "banda {band}: {} modelos, {} codificaciones",
+            n,
+            stats.len()
+        );
         tables[band] = t;
     }
     let mut s = String::from(

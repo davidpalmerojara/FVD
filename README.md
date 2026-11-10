@@ -1,117 +1,193 @@
-# FVD: códec de imagen experimental en Rust
+# Tesela
 
-FVD es un códec de imagen con pérdida escrito desde cero en Rust, sin
-dependencias de códecs externos. Incluye un banco de pruebas reproducible que
-lo compara con WebP, AVIF y JPEG XL.
+**Tesela** es un formato de imagen con pérdida escrito desde cero en Rust. Divide cada foto
+en *teselas* de tamaño adaptativo, como un mosaico. En las 24 imágenes Kodak ocupa menos que
+WebP, AVIF y JPEG XL a igual calidad, en cinco métricas distintas. Además funciona en cualquier
+navegador gracias a WebAssembly.
 
-## Resultados (Kodak, 24 imágenes)
+- **Comparador**: sube tus fotos y compáralas con WebP, AVIF, JPEG XL y JPEG, todo dentro del
+  navegador (`web/compare/`).
+- **Librería web**: `<tesela-img src="foto.tsl">`, con decodificación en paralelo en Web Workers
+  (`web/tesela.js`).
+- **Banco de pruebas reproducible** con BD-rate, curvas y datos crudos (`bench/`).
 
-El BD-rate frente a WebP indica cuántos bytes ahorra cada códec a igual
-calidad. Un valor negativo significa que necesita menos bytes.
+## Resultados
 
-| Códec | SSIMULACRA2 | PSNR-Y | SSIM-Y | PSNR RGB | Codificación | Decodificación |
+BD-rate frente a WebP: porcentaje medio de bytes que ahorra cada formato a igual calidad
+(negativo = mejor). Se midió en las 24 imágenes Kodak, con el mismo programa de métricas para
+todos los formatos.
+
+| Formato | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Decodificación |
 |---|---|---|---|---|---|---|
-| **FVD** (perceptual, por defecto) | **−29,1 %** | −2,7 % | −13,9 % | −14,5 % | 1,80 s | 0,054 s |
-| **FVD** `--tune psnr` | −3,3 % | **−23,3 %** | −16,4 % | **−22,9 %** | 1,87 s | 0,050 s |
-| WebP (libwebp 1.6, `method=6`) | 0 % | 0 % | 0 % | 0 % | 0,12 s | 0,114 s |
-| AVIF (libavif 1.4 + aom, `speed=4`) | −24,8 % | −16,4 % | −22,1 % | −17,4 % | 1,85 s | 0,210 s |
-| JPEG XL (libjxl 0.7, `effort=7`) | −13,1 % | +2,5 % | −2,2 % | +11,8 % | 0,20 s | 0,147 s |
-
-Lo que muestran estos números:
-
-- **Calidad perceptual.** Con SSIMULACRA2, la métrica que mejor se correlaciona
-  con la percepción humana, FVD ocupa un 29 % menos que WebP a igual calidad y
-  también supera a AVIF y JPEG XL.
-- **PSNR.** Con `--tune psnr`, FVD ocupa un 23 % menos que WebP y supera a AVIF
-  en esa métrica.
-- **Compromiso entre perfiles.** El perfil perceptual sacrifica PSNR a cambio
-  de calidad visual; el perfil PSNR hace lo contrario.
-- **Velocidad.** Decodifica de 2 a 4 veces más rápido que los demás. Codifica
-  a una velocidad parecida a AVIF `speed=4`.
+| **Tesela** (por defecto) | **−26,7 %** | **−23,4 %** | **−17,8 %** | **−24,3 %** | **−22,8 %** | **62 ms** |
+| Tesela `--tune psnr` | −7,4 % | −7,4 % | −25,8 % | −20,4 % | −25,7 % | 60 ms |
+| AVIF (libavif 1.4 + aom, `speed=4`) | −24,8 % | −19,7 % | −16,4 % | −22,1 % | −17,4 % | 164 ms |
+| JPEG XL (libjxl 0.12, `effort=7`) | −12,1 % | −13,4 % | +9,4 % | +4,4 % | +12,2 % | 146 ms |
+| WebP (libwebp 1.6, `method=6`) | 0 % | 0 % | 0 % | 0 % | 0 % | 115 ms |
 
 ![curvas](bench/results/curves.png)
 
-El informe completo y los datos de cada punto están en
-[`bench/results/`](bench/results/REPORT.md).
+**Cómo leer estos resultados:**
+
+- **Margen frente a AVIF.** Tesela supera a AVIF en todas las columnas con un único perfil. El
+  margen es pequeño en SSIMULACRA2 (−2,5 % relativo) y mayor en alta calidad (−4,6 %), SSIM y PSNR.
+- **Dónde gana y dónde no.** Las curvas muestran que **a tasas muy bajas (< 0,4 bpp) AVIF sigue
+  siendo mejor** en SSIMULACRA2. Tesela gana en las calidades medias y altas, las habituales en la
+  web. En PSNR a tasas muy altas, AVIF vuelve a estar ligeramente por encima del perfil por defecto.
+- **Frente a JPEG XL.** Tesela gana en todas las métricas (−17 % relativo en SSIMULACRA2).
+- **Calibración de la escala.** La escala de calidad imita la de JPEG: `-q 85` en Tesela se ve
+  parecido a un JPEG q85. En las imágenes de la demo, a igual SSIMULACRA2, Tesela ocupa entre
+  un 27 % y un 56 % menos.
+- **Sin trampas en el entrenamiento.** Las probabilidades iniciales del codificador se entrenaron
+  con **BSD100**, no con Kodak.
+- **Alcance.** Kodak son imágenes de 768×512. Faltaría validar con fotos más grandes y con otros
+  tipos de contenido (capturas de pantalla, ilustraciones).
+
+El informe completo está en [`bench/results/REPORT.md`](bench/results/REPORT.md).
 
 ## Diseño
 
 | Etapa | Técnica |
 |---|---|
-| Color | YCbCr BT.601 de rango completo. Croma 4:2:0 (centrado, interpolación bilineal) por debajo de calidad 90 y 4:4:4 por encima. |
-| Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. La decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
-| Predicción | Intra planar, DC y 33 direcciones angulares, con filtrado de referencias según tamaño y modo. Para croma también hay **CCLM** (croma a partir de luma), cuyos parámetros se deducen de los vecinos sin transmitirse. |
-| Transformada | DCT-II ortonormal separable de 4, 8, 16, 32 y 64. |
-| Cuantización | Matriz de cuantización perceptual (`1 + s·r²`), cuantización adaptativa por actividad en celdas de 32×32 y **RDOQ**, que decide cada nivel según su coste en distorsión y bits. |
-| Entropía | Range coder binario con modelos de doble velocidad. Los coeficientes se codifican con `cbf`, `eob` y un barrido diagonal inverso con contextos que dependen del tamaño, la frecuencia y la magnitud de los vecinos ya codificados. Los modos se codifican con 3 MPM. |
+| Contenedor | Cabecera y teselas independientes de 1024×1024 que se codifican y decodifican en paralelo (rayon en nativo, Web Workers en el navegador). En imágenes de hasta 1024 px no hay ninguna pérdida. |
+| Color | YCbCr. Croma 4:2:0 centrado con interpolación bilineal, o 4:4:4 a calidades muy altas. |
+| Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. Cada decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
+| Predicción | Planar, DC y 33 direcciones angulares con filtrado de referencias. Para croma también hay **CCLM**: la croma se predice desde la luma, con parámetros deducidos de los vecinos que no se transmiten. La búsqueda de modos se hace en dos fases. |
+| Transformada | DCT-II ortonormal de 4 a 64 puntos con el algoritmo rápido de Lee (O(n log n)), que salta las filas nulas. |
+| Cuantización | Matriz perceptual (`1 + s·r²`), cuantización adaptativa por actividad en celdas de 32×32 y **RDOQ**. |
+| Entropía | Range coder binario con modelos de doble velocidad. Los coeficientes se codifican con `cbf`, `eob` y un barrido diagonal inverso con contextos que dependen del tamaño, la frecuencia y la plantilla de vecinos. Las **probabilidades iniciales están entrenadas**, con una tabla por banda de calidad. |
+| Restauración | Filtro tipo ALF. Cada bloque 4×4 se clasifica en una de 12 clases (actividad × dirección). Cada clase tiene un filtro simétrico de 15 taps que el codificador estima por mínimos cuadrados y activa por superbloque. |
+| Determinismo | El decodificador WebAssembly produce **exactamente** los mismos bytes que el nativo, y lo comprueba el CI. |
 
-Código fuente:
+Toda la sintaxis del bitstream se escribe una sola vez sobre un trait `Coder` con tres
+implementaciones: codificar, decodificar y estimar coste. Así el codificador y el decodificador no
+pueden desincronizarse.
 
 ```
-src/rc.rs       codificador aritmético y binarizaciones
-src/dct.rs      DCT y SATD (Hadamard)
-src/predict.rs  predicción intra y CCLM
-src/coeff.rs    codificación de coeficientes y RDOQ
-src/codec.rs    cabecera, sintaxis, codificador (RDO) y decodificador
-src/color.rs    conversión de color y submuestreo
-src/deblock.rs  filtro de desbloqueo opcional (desactivado por defecto)
-src/metrics.rs  PSNR, SSIM y SSIMULACRA2
+src/rc.rs         codificador aritmético, modelos y binarizaciones
+src/dct.rs        DCT rápida y SATD
+src/predict.rs    predicción intra y CCLM
+src/coeff.rs      codificación de coeficientes y RDOQ
+src/restore.rs    filtro de restauración por clases
+src/codec.rs      contenedor, teselas, codificador (RDO) y decodificador
+src/init_probs.rs probabilidades iniciales entrenadas (generado)
+src/wasm.rs       interfaz WebAssembly (ABI C, sin bindgen)
+src/metrics.rs    PSNR, SSIM y SSIMULACRA2
+web/              librería JS, comparador, demo y codecs de referencia (vendor/)
+bench/            banco de pruebas
 ```
 
-Toda la sintaxis se escribe una sola vez sobre el trait `Coder`, que tiene tres
-implementaciones: codificar, decodificar y estimar coste. Así el codificador y
-el decodificador no pueden desincronizarse. Los tests verifican que la salida
-del decodificador coincide bit a bit con la reconstrucción del codificador.
+## Diario de experimentos
+
+Esta es la evolución medida con el BD-rate frente a WebP en SSIMULACRA2 y PSNR-Y, sobre 8 imágenes
+de ajuste. Las filas con signo (+/−) son cambios respecto a la fila anterior. También recojo lo que
+no funcionó.
+
+| Cambio | SSIMULACRA2 | PSNR-Y | Resultado |
+|---|---|---|---|
+| Primera versión (quadtree hasta 32, 35 modos, RDOQ) | −4 % | −24 % | Base |
+| Cuantización perceptual (matriz, AQ y croma) | −29 % | −4 % | Gran salto perceptual a costa de PSNR |
+| Bloques de 64×64 | ±0 | ±0 | Se mantiene: no aporta en Kodak, pero ayuda en fotos grandes |
+| AQ a 16×16 en vez de 32×32 | ±0 | −3 | Descartado |
+| Mezcla logística de contextos (estilo PAQ) | −0,3 | −0,7 | **Descartado**: no compensa su coste |
+| Poda de la partición por velocidad | −1 a −3 | | **Descartado**: cuesta calidad |
+| Filtro Wiener separable | +0,3 | +1,4 | Superado por el siguiente |
+| Filtro por clases (ALF, 12 clases) | +0,4 | +2,4 | **Adoptado** |
+| Perfil equilibrado (búsqueda en rejilla) | −24,7 | −17,7 | Supera a AVIF en las cuatro, por márgenes mínimos |
+| Probabilidades iniciales entrenadas con BSD100 | +1,7 | +0,8 | **Adoptado**: amplía el margen sobre AVIF |
 
 ## Uso
 
 ```sh
 cargo build --release
-./target/release/fvd encode foto.png foto.fvd -q 70
-./target/release/fvd decode foto.fvd salida.png
-./target/release/fvd compare foto.png salida.png      # métricas en JSON
-./target/release/fvd roundtrip foto.png -q 70         # codifica, decodifica, verifica y mide
+./target/release/tesela encode foto.png foto.tsl -q 85
+./target/release/tesela decode foto.tsl salida.png
+./target/release/tesela compare foto.png salida.png     # métricas en JSON
+./target/release/tesela roundtrip foto.png -q 85        # codifica, decodifica, verifica y mide
 ```
 
 Opciones de `encode`:
 
 | Opción | Efecto |
 |---|---|
-| `-q 0..100` | Calidad. |
-| `-e 1..9` | Esfuerzo de búsqueda de modos. |
-| `--tune psnr` | Activa el perfil PSNR. |
+| `-q 1..100` | Calidad, en una escala parecida a la de JPEG. |
+| `-e 1..9` | Esfuerzo de búsqueda. |
+| `--tune balanced\|perceptual\|psnr` | Perfil de ajuste. |
+| `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). |
 | `--420` / `--444` | Fuerza el submuestreo de croma. |
-| `--aq`, `--cq`, `--qm`, `--qmc`, `--lambda`, `--deblock` | Ajustes finos. |
+| `--no-restore` | Desactiva el filtro de restauración. |
+| `--aq`, `--cq`, `--qm`, `--qmc`, `--lambda` | Ajustes finos. |
+
+## En la web
+
+```html
+<script type="module" src="tesela.js"></script>
+<tesela-img src="foto.tsl" alt="Descripción" fallback="foto.jpg" loading="lazy"></tesela-img>
+```
+
+```js
+import { decode, encode, toObjectURL } from './tesela.js';
+const imageData = await decode(bytes);                 // ImageData
+const tsl = await encode(imageData, { quality: 85 });  // codificar en el navegador
+const url = await toObjectURL(bytes);                  // para cualquier <img>
+```
+
+- **Tamaño del módulo.** `web/tesela.wasm` pesa 360 KB e incluye el codificador, el
+  decodificador y las métricas.
+- **Paralelismo.** La librería reparte las teselas entre varios Web Workers.
+- **Recompilar.** `web/build.sh` regenera el módulo (necesitas
+  `rustup target add wasm32-unknown-unknown`).
+
+Para probarlo en local:
+
+```sh
+python3 -m http.server -d web 8000
+# http://localhost:8000/            portada
+# http://localhost:8000/compare/    comparador
+# http://localhost:8000/demo/       demo de <tesela-img>
+```
+
+El workflow `.github/workflows/pages.yml` publica `web/` en GitHub Pages. Hay que activarlo una
+vez en *Settings → Pages → Source: GitHub Actions*.
+
+### Comparador
+
+Sube fotos y elige uno de dos modos:
+
+- **Misma calidad.** Cada formato se codifica varias veces hasta rodear un objetivo de
+  SSIMULACRA2. El tamaño se interpola en ese punto exacto para que ningún formato salga
+  perjudicado por pasarse del objetivo.
+- **Calidad fija.** Cada formato usa la calidad que le indiques.
+
+Muestra tamaño, métricas y tiempos, y tiene un visor con cortina y zoom para comparar dos formatos
+cualquiera, además de descargas de cada archivo. Los códecs de referencia son las bibliotecas
+oficiales compiladas a WebAssembly ([jSquash](https://github.com/jamsinclair/jSquash), Apache-2.0,
+incluidas en `web/vendor/`) y se ejecutan con un hilo por formato. Nada sale del navegador.
 
 ## Banco de pruebas
 
 ```sh
-pip install -r bench/requirements.txt   # Pillow con WebP y AVIF, numpy, scipy, matplotlib
-bench/fetch_kodak.sh                    # descarga las 24 imágenes Kodak
-python3 bench/bench.py                  # todos los códecs; ffmpeg con libjxl para JPEG XL
-python3 bench/bench.py --codecs fvd --reuse --fvd-args "--aq 1.5"   # iterar solo FVD
+pip install -r bench/requirements.txt   # Pillow (WebP y AVIF), imagecodecs (libjxl 0.12), numpy, scipy, matplotlib
+bench/fetch_kodak.sh
+python3 bench/bench.py                  # todos los códecs
+python3 bench/bench.py --codecs tesela --reuse --tesela-args "--aq 1.5"   # iterar solo Tesela
 ```
 
-El script hace lo siguiente:
+Para reentrenar las probabilidades iniciales (con imágenes que no sean las de evaluación):
 
-1. Recorre 9 niveles de calidad por códec.
-2. Mide todas las salidas con el mismo binario (`fvd compare`).
-3. Calcula el BD-rate por imagen con interpolación PCHIP en un rango de calidad
-   típico de la web (SSIMULACRA2 entre 30 y 90).
-4. Promedia los resultados y genera `REPORT.md`, `summary.json` y `curves.png`.
+```sh
+./target/release/tesela train src/init_probs.rs entrenamiento/*.png
+```
 
-## Limitaciones y trabajo futuro
+## Limitaciones
 
-- **Uso.** Es un formato experimental: ningún navegador ni sistema operativo
-  lo abre. Para usarlo en la web haría falta un decodificador en WASM.
-- **Funcionalidad.** Solo admite RGB de 8 bits. No tiene canal alfa, modo sin
-  pérdida, metadatos ICC ni EXIF.
-- **Determinismo.** La DCT usa coma flotante. Es determinista con el mismo
-  binario, pero entre arquitecturas distintas podría haber diferencias de 1 LSB
-  que se propaguen. Una DCT entera lo resolvería.
-- **Velocidad.** El codificador es monohilo.
-- **Mejoras posibles.** Particiones rectangulares, DST para 4×4, inicialización
-  entrenada de los contextos y codificación conjunta de Cb/Cr.
-- **Alcance de las comparativas.** Los resultados se midieron solo en Kodak,
-  con imágenes de 768×512. La versión de JPEG XL (0.7) es antigua; versiones
-  recientes de libjxl rinden mejor.
+- **Soporte.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
+  `tesela.js` y WebAssembly. Mientras tanto, conviene servir un `fallback` en JPEG.
+- **Funcionalidad.** Solo admite 8 bits por canal. No tiene canal alfa (se compone sobre blanco),
+  modo sin pérdida, animación ni metadatos ICC o EXIF.
+- **Velocidad de codificación.** Codificar es lento: unos 2 s por imagen de 0,4 MP en un hilo.
+  Tesela está pensado para codificar una vez y servir muchas.
+- **Alcance de las pruebas.** Las comparativas se hicieron solo con Kodak. Falta validar con fotos
+  grandes y con otros tipos de contenido.
+- **Licencias de los datos.** Las imágenes Kodak se usan para las pruebas y las de BSD100 solo se
+  usaron para estimar probabilidades: ninguna de BSD100 se distribuye.

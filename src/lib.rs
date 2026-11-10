@@ -5,8 +5,8 @@ pub mod codec;
 pub mod coeff;
 pub mod color;
 pub mod dct;
-pub mod init_probs;
 pub mod deblock;
+pub mod init_probs;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod predict;

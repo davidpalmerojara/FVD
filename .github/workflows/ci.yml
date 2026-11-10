@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Tests
+        run: cargo test --release
+      - name: Compilar WebAssembly
+        run: cargo build --release --target wasm32-unknown-unknown --lib --no-default-features --features metrics
+      - name: Determinismo nativo vs WebAssembly
+        run: |
+          cp target/wasm32-unknown-unknown/release/tesela.wasm web/tesela.wasm
+          ./target/release/tesela encode web/compare/sample.png /tmp/s.tsl -q 80 --tile 256
+          ./target/release/tesela decode /tmp/s.tsl /tmp/s.rgb
+          node web/test-wasm.mjs /tmp/s.tsl /tmp/s.rgb

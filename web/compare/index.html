@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comparador Tesela</title>
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="compare.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+      <nav class="links">
+        <a href="../index.html">Inicio</a>
+        <a href="./index.html" aria-current="page">Comparador</a>
+        <a href="../demo/index.html">Demo web</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap layout">
+    <aside class="side">
+      <label class="drop card" id="drop">
+        <input type="file" id="file" accept="image/*" multiple hidden>
+        <strong>Sube fotos</strong>
+        <span class="muted">Arrastra imágenes aquí o haz clic. Todo se procesa en tu navegador; nada se envía a ningún servidor.</span>
+      </label>
+
+      <section class="card settings">
+        <h3>Comparar a…</h3>
+        <div class="seg" role="radiogroup" id="mode">
+          <button data-mode="target" aria-pressed="true">Misma calidad</button>
+          <button data-mode="fixed" aria-pressed="false">Calidad fija</button>
+        </div>
+        <div id="target-box">
+          <label for="target" class="row"><span>SSIMULACRA2 objetivo</span><b class="num" id="target-val">80</b></label>
+          <input type="range" id="target" min="50" max="92" step="1" value="80">
+          <p class="hint muted" id="target-hint">Alta: diferencias apenas visibles.</p>
+        </div>
+        <div id="fixed-box" hidden>
+          <p class="hint muted">Calidad (0–100) de cada códec. Las escalas no son equivalentes entre formatos.</p>
+          <div id="fixed-q"></div>
+        </div>
+
+        <label class="row" for="maxdim"><span>Tamaño máximo</span>
+          <select id="maxdim">
+            <option value="768">768 px</option>
+            <option value="1024" selected>1024 px</option>
+            <option value="1600">1600 px</option>
+            <option value="2048">2048 px</option>
+            <option value="0">Original</option>
+          </select>
+        </label>
+
+        <h3>Formatos</h3>
+        <div id="codecs"></div>
+
+        <details>
+          <summary>Ajustes avanzados</summary>
+          <label class="row"><span>Tesela: esfuerzo</span><input type="number" id="teselaEffort" min="1" max="9" value="4"></label>
+          <label class="row"><span>Tesela: perfil</span>
+            <select id="teselaTune"><option value="balanced">Equilibrado</option><option value="perceptual">Perceptual</option><option value="psnr">PSNR</option></select></label>
+          <label class="row"><span>WebP: método</span><input type="number" id="webpMethod" min="0" max="6" value="6"></label>
+          <label class="row"><span>AVIF: velocidad</span><input type="number" id="avifSpeed" min="0" max="10" value="6"></label>
+          <label class="row"><span>JPEG XL: esfuerzo</span><input type="number" id="jxlEffort" min="1" max="9" value="7"></label>
+        </details>
+        <button class="primary" id="rerun" disabled>Volver a comparar todo</button>
+      </section>
+
+      <ul class="photos" id="photos"></ul>
+    </aside>
+
+    <main id="main">
+      <section class="empty card" id="empty">
+        <h1>Compara Tesela con WebP, AVIF, JPEG XL y JPEG</h1>
+        <p>Sube tus fotos. En el modo <b>Misma calidad</b>, cada formato se ajusta automáticamente hasta
+          alcanzar la misma calidad perceptual (SSIMULACRA2), y se compara cuánto ocupa cada uno. Así la
+          comparación es justa aunque cada formato tenga su propia escala de calidad.</p>
+        <p class="muted">Los códecs de referencia son las bibliotecas oficiales (libwebp, libavif con aom y libjxl)
+          compiladas a WebAssembly. JPEG lo codifica tu navegador. Todos se ejecutan con un solo hilo por formato.</p>
+        <button class="primary" id="sample">Probar con una imagen de ejemplo</button>
+      </section>
+
+      <section id="detail" hidden>
+        <div class="detail-head">
+          <div>
+            <h2 id="d-name"></h2>
+            <p class="muted num" id="d-meta"></p>
+          </div>
+          <p class="verdict" id="d-verdict"></p>
+        </div>
+
+        <div class="card table-wrap">
+          <table class="results">
+            <thead>
+              <tr>
+                <th>Formato</th>
+                <th class="r" id="th-size">Tamaño</th>
+                <th class="r">vs JPEG</th>
+                <th class="r">vs WebP</th>
+                <th class="r" title="Calidad perceptual (0–100, más es mejor)">SSIMULACRA2</th>
+                <th class="r">PSNR</th>
+                <th class="r">SSIM</th>
+                <th class="r">Calidad</th>
+                <th class="r">Codif.</th>
+                <th class="r">Decod.</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="d-rows"></tbody>
+          </table>
+        </div>
+        <p class="hint muted" id="d-note"></p>
+
+        <div class="viewer-bar">
+          <label>Izquierda <select id="v-left"></select></label>
+          <div class="zoom" role="group" aria-label="Zoom">
+            <button data-zoom="fit" aria-pressed="true">Ajustar</button>
+            <button data-zoom="1" aria-pressed="false">1×</button>
+            <button data-zoom="2" aria-pressed="false">2×</button>
+            <button data-zoom="4" aria-pressed="false">4×</button>
+          </div>
+          <label>Derecha <select id="v-right"></select></label>
+        </div>
+        <div class="viewer card" id="viewer">
+          <div class="layer" id="layer-r"><canvas id="cv-r"></canvas></div>
+          <div class="layer" id="layer-l"><canvas id="cv-l"></canvas></div>
+          <div class="split" id="split"><span></span></div>
+          <span class="vlabel l" id="vl-l"></span>
+          <span class="vlabel r" id="vl-r"></span>
+        </div>
+        <p class="hint muted">Arrastra la línea para comparar. Con zoom, arrastra la imagen para desplazarte.</p>
+      </section>
+
+      <section id="summary" class="card summary" hidden>
+        <h2>Resumen de todas las fotos</h2>
+        <div id="s-body"></div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="compare.js"></script>
+</body>
+</html>

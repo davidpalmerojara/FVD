@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tesela en la web</title>
+  <link rel="stylesheet" href="../style.css">
+  <script type="module" src="../tesela.js"></script>
+  <style>
+    main { padding: 32px 0 64px; }
+    h1 { font-size: 30px; letter-spacing: -0.02em; margin: 0 0 8px; }
+    .lead { font-size: 17px; color: var(--muted); max-width: 720px; margin: 0 0 28px; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+    figure { margin: 0; padding: 12px; }
+    figure tesela-img, figure img { width: 100%; display: block; border-radius: 8px; }
+    figcaption { margin-top: 10px; display: flex; justify-content: space-between; gap: 8px; font-size: 14px; flex-wrap: wrap; }
+    .tag { font-weight: 600; }
+    .saving { color: var(--good); font-weight: 600; }
+    h2 { font-size: 20px; margin: 36px 0 10px; }
+    @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+      <nav class="links">
+        <a href="../index.html">Inicio</a>
+        <a href="../compare/index.html">Comparador</a>
+        <a href="./index.html" aria-current="page">Demo web</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <h1>Imágenes Tesela en una página web</h1>
+    <p class="lead">Las imágenes de la izquierda son archivos <code>.tsl</code> decodificados en tu navegador
+      con WebAssembly, en paralelo y fuera del hilo principal. A la derecha, el mismo original en JPEG
+      con calidad 85. Ambos tienen una calidad visual parecida.</p>
+
+    <div id="pairs"></div>
+
+    <h2>Cómo usarlo</h2>
+    <pre><code>&lt;script type="module" src="tesela.js"&gt;&lt;/script&gt;
+
+&lt;tesela-img src="foto.tsl" alt="Descripción" fallback="foto.jpg" loading="lazy"&gt;&lt;/tesela-img&gt;</code></pre>
+    <p class="muted">También puedes decodificar desde JavaScript:</p>
+    <pre><code>import { decode, encode, toObjectURL } from './tesela.js';
+
+const imageData = await decode(await (await fetch('foto.tsl')).arrayBuffer());
+const url = await toObjectURL(bytes);          // para usarla en cualquier &lt;img&gt;
+const tsl = await encode(imageData, { quality: 85 });   // codificar en el navegador</code></pre>
+  </main>
+
+  <script type="module">
+    const samples = [
+      { name: 'kodim23', alt: 'Dos loros de colores' },
+      { name: 'kodim05', alt: 'Motocicletas de carreras' },
+    ];
+    const kb = (n) => (n / 1024).toFixed(1) + ' KB';
+    const root = document.getElementById('pairs');
+    for (const s of samples) {
+      const [tsl, jpg] = await Promise.all(
+        [`${s.name}.tsl`, `${s.name}.jpg`].map(async (u) => (await fetch(u)).arrayBuffer().then((b) => b.byteLength)),
+      );
+      const div = document.createElement('div');
+      div.className = 'pair';
+      div.innerHTML = `
+        <figure class="card">
+          <tesela-img src="${s.name}.tsl" alt="${s.alt}"></tesela-img>
+          <figcaption><span><span class="tag">Tesela</span> · <span class="num">${kb(tsl)}</span></span>
+            <span class="saving num">−${Math.round((1 - tsl / jpg) * 100)} % frente a JPEG</span>
+            <span class="muted num" data-time>decodificando…</span></figcaption>
+        </figure>
+        <figure class="card">
+          <img src="${s.name}.jpg" alt="${s.alt}">
+          <figcaption><span><span class="tag">JPEG q85</span> · <span class="num">${kb(jpg)}</span></span></figcaption>
+        </figure>`;
+      root.appendChild(div);
+      const el = div.querySelector('tesela-img');
+      const t0 = performance.now();
+      el.addEventListener('load', () => {
+        div.querySelector('[data-time]').textContent = `decodificada en ${Math.round(performance.now() - t0)} ms`;
+      });
+    }
+  </script>
+</body>
+</html>

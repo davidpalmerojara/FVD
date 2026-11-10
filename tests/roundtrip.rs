@@ -98,7 +98,11 @@ fn tiles_roundtrip() {
     let (w, h) = (200, 150);
     let img = synthetic(w, h, 9);
     for tile in [64, 128, 1024] {
-        let p = Params { quality: 60.0, tile, ..Params::default() };
+        let p = Params {
+            quality: 60.0,
+            tile,
+            ..Params::default()
+        };
         let e = encode(&img, w, h, &p);
         let d = decode(&e.bytes).unwrap();
         assert_eq!(d.rgb, e.recon_rgb, "tile={tile}");

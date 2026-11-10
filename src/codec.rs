@@ -10,8 +10,8 @@ use crate::coeff::CoefCtx;
 use crate::color;
 use crate::dct::{self, size_index};
 use crate::predict::{self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_VER, Plane};
+use crate::rc::{Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx, Visit};
 use crate::restore;
-use crate::rc::{Visit, Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx};
 
 pub const HEADER_SIZE: usize = HEADER_LEN;
 pub const MAGIC: &[u8; 4] = b"TSL1";
@@ -86,8 +86,17 @@ impl Params {
     }
 }
 
+/// Calidad 0..100 → paso de cuantización. Usa la misma curva que el factor
+/// de escala de JPEG (5000/q por debajo de 50, 200−2q por encima), calibrada
+/// para que una calidad dada se vea parecida a un JPEG de la misma calidad.
 pub fn quality_to_qstep(q: f32) -> f32 {
-    0.6 * 2f32.powf((100.0 - q.clamp(0.0, 100.0)) / 12.5)
+    let q = q.clamp(1.0, 100.0);
+    let scale = if q < 50.0 {
+        5000.0 / q
+    } else {
+        200.0 - 2.0 * q
+    };
+    (0.257 * scale).max(0.5)
 }
 
 /// Cabecera: todo lo que el decodificador necesita para reconstruir.
@@ -125,7 +134,7 @@ impl Header {
         out.extend_from_slice(&self.tile.to_le_bytes());
     }
 
-    fn read(d: &[u8]) -> Result<Header, String> {
+    pub fn read(d: &[u8]) -> Result<Header, String> {
         if d.len() < HEADER_LEN || &d[..4] != MAGIC {
             return Err("no es un archivo Tesela".into());
         }
@@ -516,8 +525,11 @@ impl EncState {
         }
         for pass in 0..2 {
             if pass == 1 {
-                let mut ang: Vec<(f32, u8)> =
-                    cands.iter().filter(|c| c.1 >= 2 && c.1 < MODE_CCLM).map(|c| (c.0, c.1)).collect();
+                let mut ang: Vec<(f32, u8)> = cands
+                    .iter()
+                    .filter(|c| c.1 >= 2 && c.1 < MODE_CCLM)
+                    .map(|c| (c.0, c.1))
+                    .collect();
                 ang.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 todo.clear();
                 let width = if self.topk > 4 { 3 } else { 2 };
@@ -711,7 +723,12 @@ pub fn tile_grid(width: usize, height: usize, tile: usize) -> Vec<TileRect> {
     let mut v = Vec::new();
     for y in (0..height).step_by(tile) {
         for x in (0..width).step_by(tile) {
-            v.push(TileRect { x, y, w: tile.min(width - x), h: tile.min(height - y) });
+            v.push(TileRect {
+                x,
+                y,
+                w: tile.min(width - x),
+                h: tile.min(height - y),
+            });
         }
     }
     v
@@ -749,7 +766,7 @@ pub fn make_header(width: usize, height: usize, p: &Params) -> Header {
     Header {
         width: width as u32,
         height: height as u32,
-        subsample: p.subsample.unwrap_or(p.quality < 90.0),
+        subsample: p.subsample.unwrap_or(base_q > 1.04),
         qstep: (base_q * 64.0).round().clamp(1.0, 65535.0) as u16,
         chroma_q: (p.chroma_q * 32.0).round().clamp(1.0, 255.0) as u8,
         qm_luma: (p.qm_luma * 16.0).round().clamp(0.0, 255.0) as u8,
@@ -785,11 +802,20 @@ pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
         paste(&mut recon_rgb, width, t, r);
     }
     let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
-    Encoded { bytes: assemble(&header, &payloads), recon_rgb }
+    Encoded {
+        bytes: assemble(&header, &payloads),
+        recon_rgb,
+    }
 }
 
 /// Codifica una tesela independiente. Devuelve (carga útil, reconstrucción RGB).
-pub fn encode_tile(rgb: &[u8], width: usize, height: usize, header: &Header, p: &Params) -> (Vec<u8>, Vec<u8>) {
+pub fn encode_tile(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    header: &Header,
+    p: &Params,
+) -> (Vec<u8>, Vec<u8>) {
     let (a, b, _) = encode_tile_stats(rgb, width, height, header, p);
     (a, b)
 }
@@ -814,7 +840,14 @@ pub fn encode_tile_stats(
     };
     let mut enc = Encoder::new();
     let mut planes: Vec<Plane> = Vec::new();
-    let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub };
+    let mut qm = QMap {
+        dq: Vec::new(),
+        w: 0,
+        h: 0,
+        base: base_q,
+        cq,
+        sub,
+    };
     let mut lref: Option<LumaRef> = None;
     let mut srcs = Vec::new();
     for (pi, (src, w, h)) in ycc.planes.iter().enumerate() {
@@ -825,7 +858,11 @@ pub fn encode_tile_stats(
             qm.w = pw / AQ;
             qm.h = ph / AQ;
         }
-        let mut pe = PlaneEnc { src: &src, plane: Plane::new(pw, ph), pc };
+        let mut pe = PlaneEnc {
+            src: &src,
+            plane: Plane::new(pw, ph),
+            pc,
+        };
         for sy in 0..ph / SB {
             for sx in 0..pw / SB {
                 if pi == 0 && header.aq {
@@ -849,7 +886,10 @@ pub fn encode_tile_stats(
         } else {
             restore::Decision::default()
         };
-        let d = st.ctx.rest.code(&mut enc, pc, plane.w / SB, plane.h / SB, &d);
+        let d = st
+            .ctx
+            .rest
+            .code(&mut enc, pc, plane.w / SB, plane.h / SB, &d);
         restore::apply(plane, &d);
     }
     let recon = finish_planes(header, &planes, width, height);
@@ -861,10 +901,23 @@ fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
     let mut ps: Vec<Plane> = planes.to_vec();
     if h.deblock > 0 {
         for (i, p) in ps.iter_mut().enumerate() {
-            crate::deblock::filter(p, h.qstep() * if i > 0 { h.chroma_q as f32 / 32.0 } else { 1.0 }, h.deblock);
+            crate::deblock::filter(
+                p,
+                h.qstep() * if i > 0 { h.chroma_q as f32 / 32.0 } else { 1.0 },
+                h.deblock,
+            );
         }
     }
-    color::ycbcr_to_rgb(&ps[0].data, ps[0].w, &ps[1].data, &ps[2].data, ps[1].w, w, ht, h.subsample)
+    color::ycbcr_to_rgb(
+        &ps[0].data,
+        ps[0].w,
+        &ps[1].data,
+        &ps[2].data,
+        ps[1].w,
+        w,
+        ht,
+        h.subsample,
+    )
 }
 
 // ----------------------------------------------------------- Decodificador
@@ -899,15 +952,29 @@ impl DecState {
         }
         let mpm = mpm_list(p, x0, y0);
         let mode = code_mode(&mut self.ctx, dec, pc, n, mpm, 0);
-        let mode = if mode == MODE_CCLM && lref.is_none() { MODE_DC } else { mode };
+        let mode = if mode == MODE_CCLM && lref.is_none() {
+            MODE_DC
+        } else {
+            mode
+        };
         let mut levels = vec![0i32; n * n];
-        let nz = self.ctx.coef.code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
+        let nz = self
+            .ctx
+            .coef
+            .code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
         let refs = predict::build_refs(p, x0, y0, n);
         let mut pred = vec![0i32; n * n];
         predict_mode(p, &refs, lref, mode.min(MODE_CCLM), x0, y0, n, &mut pred);
         let mut recon = vec![0u8; n * n];
         let q = qm.q(pc, x0, y0, n);
-        reconstruct(&levels, &pred, q, &self.qt.w[pc][size_index(n)], n, &mut recon);
+        reconstruct(
+            &levels,
+            &pred,
+            q,
+            &self.qt.w[pc][size_index(n)],
+            n,
+            &mut recon,
+        );
         p.write_block(x0, y0, n, &recon);
         p.set_block(x0, y0, n, mode, nz);
     }
@@ -929,7 +996,11 @@ pub struct Info {
 
 pub fn info(data: &[u8]) -> Result<Info, String> {
     let header = Header::read(data)?;
-    let tiles = tile_grid(header.width as usize, header.height as usize, header.tile_size());
+    let tiles = tile_grid(
+        header.width as usize,
+        header.height as usize,
+        header.tile_size(),
+    );
     let mut pos = HEADER_LEN + 4 * tiles.len();
     if data.len() < pos {
         return Err("archivo truncado".into());
@@ -938,18 +1009,29 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
     for i in 0..tiles.len() {
         let o = HEADER_LEN + 4 * i;
         let len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
-        let end = pos.checked_add(len).filter(|&e| e <= data.len()).ok_or("archivo truncado")?;
+        let end = pos
+            .checked_add(len)
+            .filter(|&e| e <= data.len())
+            .ok_or("archivo truncado")?;
         ranges.push(pos..end);
         pos = end;
     }
-    Ok(Info { header, tiles, ranges })
+    Ok(Info {
+        header,
+        tiles,
+        ranges,
+    })
 }
 
 /// Decodifica una tesela a RGB (tamaño `w × h` de la tesela).
 pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
     let base_q = h.qstep();
     let cq = h.chroma_q as f32 / 32.0;
-    let (cw, ch) = if h.subsample { (w.div_ceil(2), ht.div_ceil(2)) } else { (w, ht) };
+    let (cw, ch) = if h.subsample {
+        (w.div_ceil(2), ht.div_ceil(2))
+    } else {
+        (w, ht)
+    };
     let dims = [(w, ht), (cw, ch), (cw, ch)];
     let mut st = DecState {
         ctx: Ctx::trained(base_q),
@@ -957,7 +1039,14 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
     };
     let mut dec = Decoder::new(payload);
     let mut planes = Vec::new();
-    let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub: h.subsample };
+    let mut qm = QMap {
+        dq: Vec::new(),
+        w: 0,
+        h: 0,
+        base: base_q,
+        cq,
+        sub: h.subsample,
+    };
     let mut lref: Option<LumaRef> = None;
     for (pi, &(pw0, ph0)) in dims.iter().enumerate() {
         let pw = pw0.div_ceil(SB) * SB;
@@ -974,7 +1063,16 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
                 if pi == 0 && h.aq {
                     qm.code_sb(&mut st.ctx, &mut dec, sx, sy);
                 }
-                st.read_node(&mut dec, &mut plane, lref.as_ref(), &qm, pc, sx * SB, sy * SB, SB);
+                st.read_node(
+                    &mut dec,
+                    &mut plane,
+                    lref.as_ref(),
+                    &qm,
+                    pc,
+                    sx * SB,
+                    sy * SB,
+                    SB,
+                );
             }
         }
         if pi == 0 {
@@ -983,7 +1081,13 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
         planes.push(plane);
     }
     for (pi, plane) in planes.iter_mut().enumerate() {
-        let d = st.ctx.rest.code(&mut dec, (pi > 0) as usize, plane.w / SB, plane.h / SB, &restore::Decision::default());
+        let d = st.ctx.rest.code(
+            &mut dec,
+            (pi > 0) as usize,
+            plane.w / SB,
+            plane.h / SB,
+            &restore::Decision::default(),
+        );
         restore::apply(plane, &d);
     }
     finish_planes(h, &planes, w, ht)
@@ -1001,5 +1105,9 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     for (t, part) in inf.tiles.iter().zip(&parts) {
         paste(&mut rgb, w, t, part);
     }
-    Ok(Decoded { width: w, height: ht, rgb })
+    Ok(Decoded {
+        width: w,
+        height: ht,
+        rgb,
+    })
 }

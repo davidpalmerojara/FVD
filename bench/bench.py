@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TESELA = os.environ.get("TESELA_BIN", str(ROOT / "target" / "release" / "tesela"))
 
 SWEEPS = {
-    "tesela": [15, 25, 35, 45, 55, 65, 75, 85, 92],
-    "tesela-psnr": [15, 25, 35, 45, 55, 65, 75, 85, 92],
+    "tesela": [20, 35, 50, 62, 72, 80, 87, 93, 97],
+    "tesela-psnr": [20, 35, 50, 62, 72, 80, 87, 93, 97],
     "webp": [5, 15, 30, 50, 70, 80, 88, 94, 98],
     "avif": [15, 30, 45, 55, 65, 75, 82, 90, 95],
     "jxl": [8.0, 5.0, 3.5, 2.5, 1.8, 1.2, 0.8, 0.5, 0.3],
