@@ -10,7 +10,8 @@ use crate::coeff::CoefCtx;
 use crate::color;
 use crate::dct::{self, size_index};
 use crate::predict::{self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_VER, Plane};
-use crate::rc::{Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx};
+use crate::restore;
+use crate::rc::{Visit, Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx};
 
 pub const HEADER_SIZE: usize = HEADER_LEN;
 pub const MAGIC: &[u8; 4] = b"TSL1";
@@ -41,6 +42,8 @@ pub struct Params {
     pub deblock: Option<u8>,
     /// Tamaño de las teselas independientes (múltiplo de 64).
     pub tile: usize,
+    /// Filtro de restauración Wiener.
+    pub restore: bool,
 }
 
 impl Default for Params {
@@ -48,14 +51,15 @@ impl Default for Params {
         Params {
             quality: 75.0,
             subsample: None,
-            effort: 2,
+            effort: 4,
             aq_strength: 1.0,
-            chroma_q: 0.6,
-            qm_luma: 3.0,
+            chroma_q: 0.8,
+            qm_luma: 1.5,
             qm_chroma: 3.0,
-            lambda_k: 0.12,
+            lambda_k: 0.11,
             deblock: Some(0),
             tile: 1024,
+            restore: true,
         }
     }
 }
@@ -67,6 +71,17 @@ impl Params {
         self.chroma_q = 1.0;
         self.qm_luma = 0.0;
         self.qm_chroma = 0.0;
+        self.lambda_k = 0.12;
+        self
+    }
+
+    /// Ajuste perceptual fuerte: maximiza SSIMULACRA2 a costa de PSNR.
+    pub fn tune_perceptual(mut self) -> Self {
+        self.aq_strength = 1.0;
+        self.chroma_q = 0.6;
+        self.qm_luma = 3.0;
+        self.qm_chroma = 3.0;
+        self.lambda_k = 0.12;
         self
     }
 }
@@ -151,9 +166,64 @@ struct Ctx {
     rem_mode: [TreeCtx; 2],
     cclm: [Model; 5],
     dq: SintCtx,
+    rest: restore::RestCtx,
 }
 
+impl Visit for Ctx {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.coef.visit(f);
+        self.split.visit(f);
+        self.mpm_flag.visit(f);
+        self.mpm_idx.visit(f);
+        self.rem_mode.visit(f);
+        self.cclm.visit(f);
+        self.dq.visit(f);
+        self.rest.visit(f);
+    }
+}
+
+/// Banda de calidad (selecciona la tabla de probabilidades iniciales).
+pub fn quality_band(qstep: f32) -> usize {
+    if qstep < 2.5 {
+        0
+    } else if qstep < 6.0 {
+        1
+    } else if qstep < 16.0 {
+        2
+    } else {
+        3
+    }
+}
+
+/// Desactiva las tablas entrenadas (solo para entrenar).
+pub static UNTRAINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Ctx {
+    fn trained(qstep: f32) -> Self {
+        let mut c = Ctx::new();
+        let t = crate::init_probs::TABLES[quality_band(qstep)];
+        if UNTRAINED.load(std::sync::atomic::Ordering::Relaxed) {
+            return c;
+        }
+        let mut n = 0;
+        c.visit(&mut |_| n += 1);
+        if t.len() == n {
+            let mut i = 0;
+            c.visit(&mut |m| {
+                m.set_init(t[i]);
+                i += 1;
+            });
+        }
+        c
+    }
+
+    /// Estado final de todos los modelos: (probabilidad, observaciones).
+    fn stats(&mut self) -> Vec<(u32, u32)> {
+        let mut v = Vec::new();
+        self.visit(&mut |m| v.push(m.stats()));
+        v
+    }
+
     fn new() -> Self {
         Ctx {
             coef: CoefCtx::default(),
@@ -163,6 +233,7 @@ impl Ctx {
             rem_mode: [TreeCtx::new(5), TreeCtx::new(5)],
             cclm: [Model::new(); 5],
             dq: SintCtx::default(),
+            rest: restore::RestCtx::default(),
         }
     }
 }
@@ -719,12 +790,24 @@ pub fn encode(rgb: &[u8], width: usize, height: usize, p: &Params) -> Encoded {
 
 /// Codifica una tesela independiente. Devuelve (carga útil, reconstrucción RGB).
 pub fn encode_tile(rgb: &[u8], width: usize, height: usize, header: &Header, p: &Params) -> (Vec<u8>, Vec<u8>) {
+    let (a, b, _) = encode_tile_stats(rgb, width, height, header, p);
+    (a, b)
+}
+
+/// Como `encode_tile`, pero devuelve también el estado final de los modelos.
+pub fn encode_tile_stats(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    header: &Header,
+    p: &Params,
+) -> (Vec<u8>, Vec<u8>, Vec<(u32, u32)>) {
     let sub = header.subsample;
     let base_q = header.qstep();
     let cq = header.chroma_q as f32 / 32.0;
     let ycc = color::rgb_to_ycbcr(rgb, width, height, sub);
     let mut st = EncState {
-        ctx: Ctx::new(),
+        ctx: Ctx::trained(base_q),
         qt: QuantTables::new(header.qm_luma as f32 / 16.0, header.qm_chroma as f32 / 16.0),
         lambda_k: p.lambda_k,
         topk: (p.effort.clamp(1, 9) as usize) + 1,
@@ -733,6 +816,7 @@ pub fn encode_tile(rgb: &[u8], width: usize, height: usize, header: &Header, p: 
     let mut planes: Vec<Plane> = Vec::new();
     let mut qm = QMap { dq: Vec::new(), w: 0, h: 0, base: base_q, cq, sub };
     let mut lref: Option<LumaRef> = None;
+    let mut srcs = Vec::new();
     for (pi, (src, w, h)) in ycc.planes.iter().enumerate() {
         let (src, pw, ph) = pad_plane(src, *w, *h);
         let pc = (pi > 0) as usize;
@@ -755,9 +839,22 @@ pub fn encode_tile(rgb: &[u8], width: usize, height: usize, header: &Header, p: 
             lref = Some(LumaRef::new(&pe.plane, sub));
         }
         planes.push(pe.plane);
+        srcs.push(src);
+    }
+    for (pi, plane) in planes.iter_mut().enumerate() {
+        let pc = (pi > 0) as usize;
+        let q = base_q * if pc == 1 { cq } else { 1.0 };
+        let d = if p.restore {
+            restore::decide(plane, &srcs[pi], p.lambda_k * q * q)
+        } else {
+            restore::Decision::default()
+        };
+        let d = st.ctx.rest.code(&mut enc, pc, plane.w / SB, plane.h / SB, &d);
+        restore::apply(plane, &d);
     }
     let recon = finish_planes(header, &planes, width, height);
-    (enc.finish(), recon)
+    let stats = st.ctx.stats();
+    (enc.finish(), recon, stats)
 }
 
 fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
@@ -855,7 +952,7 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
     let (cw, ch) = if h.subsample { (w.div_ceil(2), ht.div_ceil(2)) } else { (w, ht) };
     let dims = [(w, ht), (cw, ch), (cw, ch)];
     let mut st = DecState {
-        ctx: Ctx::new(),
+        ctx: Ctx::trained(base_q),
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
     };
     let mut dec = Decoder::new(payload);
@@ -884,6 +981,10 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> Vec<u8> {
             lref = Some(LumaRef::new(&plane, h.subsample));
         }
         planes.push(plane);
+    }
+    for (pi, plane) in planes.iter_mut().enumerate() {
+        let d = st.ctx.rest.code(&mut dec, (pi > 0) as usize, plane.w / SB, plane.h / SB, &restore::Decision::default());
+        restore::apply(plane, &d);
     }
     finish_planes(h, &planes, w, ht)
 }

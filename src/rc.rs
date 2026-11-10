@@ -33,7 +33,54 @@ impl Default for Model {
     }
 }
 
+/// Recorrido determinista de todos los modelos de un conjunto de contextos
+/// (para inicializarlos con probabilidades entrenadas).
+pub trait Visit {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model));
+}
+
+impl Visit for Model {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        f(self)
+    }
+}
+
+impl<T: Visit> Visit for [T] {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        for x in self.iter_mut() {
+            x.visit(f);
+        }
+    }
+}
+
+impl<T: Visit, const N: usize> Visit for [T; N] {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.as_mut_slice().visit(f)
+    }
+}
+
+impl<T: Visit> Visit for Vec<T> {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.as_mut_slice().visit(f)
+    }
+}
+
+/// Observaciones con las que arranca un modelo inicializado con una
+/// probabilidad entrenada (frena la adaptación inicial).
+const INIT_N: u32 = 3;
+
 impl Model {
+    /// Fija una probabilidad inicial entrenada (de 1, en 2^-16).
+    pub fn set_init(&mut self, p1: u16) {
+        let p = (p1 as u32).clamp(PROB_MIN, PROB_MAX);
+        *self = Model { fast: p, slow: p, n: INIT_N };
+    }
+
+    /// Probabilidad actual y nº de observaciones (para entrenamiento).
+    pub fn stats(&self) -> (u32, u32) {
+        (self.p1(), self.n)
+    }
+
     pub const fn new() -> Self {
         Model {
             fast: PROB_ONE / 2,
@@ -282,6 +329,27 @@ impl Default for UintCtx {
             prefix: [Model::new(); 24],
             mant: [Model::new(); 24],
         }
+    }
+}
+
+impl Visit for UintCtx {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.prefix.visit(f);
+        self.mant.visit(f);
+    }
+}
+
+impl Visit for SintCtx {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        f(&mut self.zero);
+        f(&mut self.sign);
+        self.mag.visit(f);
+    }
+}
+
+impl Visit for TreeCtx {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.nodes.visit(f);
     }
 }
 

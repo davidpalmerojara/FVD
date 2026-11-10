@@ -10,7 +10,7 @@
 //!    codificados (plantilla de 5 posiciones).
 
 use crate::dct::size_index;
-use crate::rc::{Coder, Model, UintCtx};
+use crate::rc::{Coder, Model, UintCtx, Visit};
 use std::sync::OnceLock;
 
 const NF: usize = 5; // clases de frecuencia
@@ -101,6 +101,18 @@ impl Default for CoefCtx {
 #[inline]
 fn cidx(pc: usize, sz: usize, fc: usize, mc: usize) -> usize {
     ((pc * NSZ + sz) * NF + fc) * NM + mc
+}
+
+impl Visit for CoefCtx {
+    fn visit(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.cbf.visit(f);
+        self.eob.visit(f);
+        self.sig.visit(f);
+        self.gt1.visit(f);
+        self.gt2.visit(f);
+        self.rem.visit(f);
+        self.dc_sign.visit(f);
+    }
 }
 
 impl CoefCtx {

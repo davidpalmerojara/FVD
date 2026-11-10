@@ -41,8 +41,14 @@ SWEEPS = {
 }
 
 METRICS = ["ssimulacra2", "psnr_y", "ssim_y", "psnr"]
-# Rango de calidad sobre el que se integra el BD-rate (calidades "web").
-BD_RANGE = {"ssimulacra2": (30, 90), "psnr_y": (28, 48), "ssim_y": (0.85, 0.995), "psnr": (26, 46)}
+# Columnas de BD-rate: (clave, métrica, rango de calidad sobre el que se integra).
+BD_SPECS = [
+    ("ssimulacra2", "ssimulacra2", (30, 90)),
+    ("ssimulacra2_hq", "ssimulacra2", (70, 90)),
+    ("psnr_y", "psnr_y", (28, 48)),
+    ("ssim_y", "ssim_y", (0.85, 0.995)),
+    ("psnr", "psnr", (26, 46)),
+]
 
 
 def compare(orig: str, dist: str) -> dict:
@@ -128,7 +134,7 @@ def summarize(rows, anchor="webp"):
     summary = {}
     for c in codecs:
         s = {}
-        for m in METRICS:
+        for key, m, rng in BD_SPECS:
             vals = []
             for im in images:
                 if (anchor, im) not in by or (c, im) not in by:
@@ -136,10 +142,10 @@ def summarize(rows, anchor="webp"):
                 A = by[(anchor, im)]
                 T = by[(c, im)]
                 v = bd_rate(([r["bpp"] for r in A], [r[m] for r in A]),
-                            ([r["bpp"] for r in T], [r[m] for r in T]), *BD_RANGE[m])
+                            ([r["bpp"] for r in T], [r[m] for r in T]), *rng)
                 if v is not None:
                     vals.append(v)
-            s[m] = float(np.mean(vals)) if vals else None
+            s[key] = float(np.mean(vals)) if vals else None
         cr = [r for r in rows if r["codec"] == c]
         s["enc_s"] = float(np.mean([r["enc_s"] for r in cr]))
         s["dec_s"] = float(np.mean([r["dec_s"] for r in cr]))
@@ -189,13 +195,14 @@ def write_report(rows, summary, out: Path, note: str):
         lines += [note, ""]
     imgs = len({r["image"] for r in rows})
     lines += [f"Imágenes: {imgs}. BD-rate frente a **WebP** (negativo = menos bytes a igual calidad).", ""]
-    lines += ["| Códec | SSIMULACRA2 | PSNR-Y | SSIM-Y | PSNR RGB | Cod. (s/img) | Dec. (s/img) |",
-              "|---|---|---|---|---|---|---|"]
+    lines += ["| Códec | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Cod. (s/img) | Dec. (s/img) |",
+              "|---|---|---|---|---|---|---|---|"]
     fmt = lambda v: "—" if v is None else f"{v:+.1f} %"
     for c, s in summary.items():
-        lines.append(f"| {c.upper()} | {fmt(s['ssimulacra2'])} | {fmt(s['psnr_y'])} | {fmt(s['ssim_y'])} | "
+        lines.append(f"| {c.upper()} | {fmt(s['ssimulacra2'])} | {fmt(s['ssimulacra2_hq'])} | {fmt(s['psnr_y'])} | {fmt(s['ssim_y'])} | "
                      f"{fmt(s['psnr'])} | {s['enc_s']:.2f} | {s['dec_s']:.3f} |")
-    lines += ["", f"Rangos de integración BD: {BD_RANGE}", "", "![curvas](curves.png)", ""]
+    rng = ", ".join(f"{k}: {r[0]}–{r[1]}" for k, _, r in BD_SPECS)
+    lines += ["", f"Rangos de calidad sobre los que se integra el BD-rate: {rng}.", "", "![curvas](curves.png)", ""]
     out.write_text("\n".join(lines))
 
 
