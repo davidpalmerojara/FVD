@@ -896,17 +896,54 @@ struct InterPlane<'a> {
     hash: Option<&'a tools::HashIndex>,
 }
 
+/// Filtros de interpolación de cuarto de píxel (los de luma de HEVC; suman 64).
+const QPEL: [[i32; 8]; 4] = [
+    [0, 0, 0, 64, 0, 0, 0, 0],
+    [-1, 4, -10, 58, 17, -5, 1, 0],
+    [-1, 4, -11, 40, 40, -11, 4, -1],
+    [0, 1, -5, 17, 58, -10, 4, -1],
+];
+
 impl InterPlane<'_> {
-    /// Copia desplazada; fuera del lienzo se repite el borde.
+    /// Copia desplazada por un vector en cuartos de píxel, con el filtro
+    /// separable de 8 coeficientes (horizontal y luego vertical, en enteros);
+    /// fuera del lienzo se repite el borde.
     fn predict(&self, x0: usize, y0: usize, w: usize, h: usize, mv: (i32, i32), out: &mut [i32]) {
-        let bx = (self.ox + x0) as i64 + mv.0 as i64;
-        let by = (self.oy + y0) as i64 + mv.1 as i64;
+        let bx = (self.ox + x0) as i64 + (mv.0 >> 2) as i64;
+        let by = (self.oy + y0) as i64 + (mv.1 >> 2) as i64;
+        let (fx, fy) = ((mv.0 & 3) as usize, (mv.1 & 3) as usize);
         let (mw, mh) = (self.w as i64 - 1, self.h as i64 - 1);
-        for y in 0..h {
-            let ry = (by + y as i64).clamp(0, mh) as usize;
-            let row = &self.data[ry * self.w..(ry + 1) * self.w];
+        let px = |x: i64, y: i64| {
+            self.data[y.clamp(0, mh) as usize * self.w + x.clamp(0, mw) as usize] as i32
+        };
+        if fx == 0 && fy == 0 {
+            for y in 0..h {
+                for x in 0..w {
+                    out[y * w + x] = px(bx + x as i64, by + y as i64);
+                }
+            }
+            return;
+        }
+        // Pasada horizontal sobre h + 7 filas (3 por encima y 4 por debajo).
+        let (cx, cy) = (&QPEL[fx], &QPEL[fy]);
+        let mut tmp = vec![0i32; (h + 7) * w];
+        for r in 0..h + 7 {
+            let yy = by + r as i64 - 3;
             for x in 0..w {
-                out[y * w + x] = row[(bx + x as i64).clamp(0, mw) as usize] as i32;
+                let mut s = 0;
+                for (k, c) in cx.iter().enumerate() {
+                    s += c * px(bx + x as i64 + k as i64 - 3, yy);
+                }
+                tmp[r * w + x] = s;
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let mut s = 0;
+                for (k, c) in cy.iter().enumerate() {
+                    s += c * tmp[(y + k) * w + x];
+                }
+                out[y * w + x] = ((s + 2048) >> 12).clamp(0, 255);
             }
         }
     }
@@ -1273,7 +1310,7 @@ impl EncState {
                              this: &mut Self,
                              scored: &mut Vec<(f32, (i32, i32))>,
                              pred: &mut [i32]| {
-                if seen.contains(&mv) || mv.0.abs() > 4096 || mv.1.abs() > 4096 {
+                if seen.contains(&mv) || mv.0.abs() > 16384 || mv.1.abs() > 16384 {
                     return f32::INFINITY;
                 }
                 seen.push(mv);
@@ -1283,6 +1320,7 @@ impl EncState {
                 scored.push((s, mv));
                 s
             };
+            // Vectores en cuartos de píxel.
             let mut start = vec![(0, 0), pe.sc.last_mv];
             if let Some(hi) = ip.hash.filter(|_| w.min(h) >= 8) {
                 for c in hi
@@ -1290,7 +1328,7 @@ impl EncState {
                     .into_iter()
                     .take(8)
                 {
-                    start.push((c.0 - ip.ox as i32, c.1 - ip.oy as i32));
+                    start.push((4 * (c.0 - ip.ox as i32), 4 * (c.1 - ip.oy as i32)));
                 }
             }
             let mut best_mv = (f32::INFINITY, (0, 0));
@@ -1301,7 +1339,8 @@ impl EncState {
                 }
             }
             if self.effort >= 2 && w.min(h) >= 8 {
-                for step in [8, 4, 2, 1] {
+                // Píxeles enteros (8, 4, 2, 1) y después medio y cuarto de píxel.
+                for step in [32, 16, 8, 4, 2, 1] {
                     let mut improved = true;
                     while improved {
                         improved = false;

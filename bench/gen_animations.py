@@ -6,6 +6,7 @@
 - terminal: texto que se va escribiendo en un terminal, con cursor parpadeante.
 - interfaz: una tarjeta con barra de progreso y un indicador que se mueve.
 - foto: un paneo lento sobre una foto (todo el fotograma cambia).
+- zoom: un zoom lento sobre una foto (movimiento de subpíxel, como una cámara).
 """
 import sys
 from pathlib import Path
@@ -93,8 +94,21 @@ def foto(d: Path):
     return frames, 70
 
 
+def zoom(d: Path):
+    """Zoom lento sobre una foto (movimiento de subpíxel, como una cámara real)."""
+    src = Image.open(ROOT / "web" / "compare" / "sample.png").convert("RGB")
+    frames = []
+    for t in range(30):
+        s = 1.0 + 0.006 * t
+        w, h = 400 / s, 300 / s
+        cx, cy = 400, 230
+        box = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+        frames.append(src.resize((400, 300), Image.LANCZOS, box=box))
+    return frames, 70
+
+
 def main():
-    for name, gen in [("terminal", terminal), ("interfaz", interfaz), ("foto", foto)]:
+    for name, gen in [("terminal", terminal), ("interfaz", interfaz), ("foto", foto), ("zoom", zoom)]:
         d = OUT / name
         d.mkdir(parents=True, exist_ok=True)
         frames, ms = gen(d)

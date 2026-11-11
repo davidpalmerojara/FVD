@@ -82,9 +82,22 @@ bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y super
 (0, 0) en cada plano de cada tesela. La marca de la hoja en el mapa es 202, y la cabecera sigue con
 `ts` como cualquier otra hoja.
 
-**Predicción.** La muestra (x, y) del bloque en (x0, y0) es la de la referencia en
-`(ox + x0 + x + mvx, oy + y0 + y + mvy)`, con las coordenadas recortadas al plano (se repite el
-borde). Los vectores son de píxeles enteros. El residuo y la reconstrucción son los de la v1.
+**Predicción.** Los vectores están en **cuartos de píxel**. Con la parte entera
+`(ix, iy) = (mvx >> 2, mvy >> 2)` (desplazamiento aritmético) y la fracción `(fx, fy) = (mvx & 3,
+mvy & 3)`, sea `R(x, y)` la referencia con las coordenadas recortadas al plano (se repite el borde)
+y `F` los filtros:
+
+```
+F[0] = [ 0, 0,   0, 64,  0,   0, 0,  0]
+F[1] = [-1, 4, -10, 58, 17,  -5, 1,  0]
+F[2] = [-1, 4, -11, 40, 40, -11, 4, -1]
+F[3] = [ 0, 1,  -5, 17, 58, -10, 4, -1]
+```
+
+Si `fx = fy = 0`, la muestra (x, y) es `R(ox + x0 + x + ix, oy + y0 + y + iy)`. Si no, en enteros:
+`t(x, r) = Σk F[fx][k] · R(ox + x0 + x + ix + k − 3, oy + y0 + r + iy − 3)` para
+r = 0 … h + 6, y la muestra es `clamp((Σk F[fy][k] · t(x, y + k) + 2048) >> 12, 0, 255)`. El residuo
+y la reconstrucción son los de la v1.
 
 Los modelos `inter` y `mv` van al final del orden de visita, detrás de los de la v2.
 
