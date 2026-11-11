@@ -89,7 +89,7 @@ impl Default for Params {
             qm_chroma: 3.0,
             lambda_k: 0.11,
             deblock: Some(0),
-            tile: 2048,
+            tile: 1024,
             restore: true,
             screen: None,
             lossless: false,

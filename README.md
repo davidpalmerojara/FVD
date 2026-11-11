@@ -131,7 +131,7 @@ Tamaño total de 10 imágenes (3 fotos, 4 capturas y 3 ilustraciones):
 
 | Etapa | Técnica |
 |---|---|
-| Contenedor | Cabecera y teselas independientes de 2048×2048 que se codifican y decodifican en paralelo (rayon en nativo, Web Workers en el navegador); dentro de cada tesela, el codificador decide los superbloques en frente de onda con varios hilos. En imágenes de hasta 2048 px no hay ninguna pérdida por teselas. |
+| Contenedor | Cabecera y teselas independientes de 1024×1024 que se codifican y decodifican en paralelo (rayon en nativo, Web Workers en el navegador); dentro de cada tesela, el codificador decide los superbloques en frente de onda con varios hilos. En imágenes de hasta 1024 px no hay ninguna pérdida por teselas. |
 | Color | YCbCr. Croma 4:2:0 centrado con interpolación bilineal, o 4:4:4 a calidades muy altas. |
 | Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. En la v2, cada nodo que no se divide en cuatro puede partirse en dos mitades rectangulares (horizontales o verticales). Cada decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
 | Predicción | Planar, DC y 33 direcciones angulares con filtrado de referencias. Para croma también hay **CCLM**: la croma se predice desde la luma, con parámetros deducidos de los vecinos que no se transmiten. La búsqueda de modos se hace en dos fases. |
@@ -228,10 +228,13 @@ secuencial y con los contextos reales, así que el formato y el decodificador no
 | Contextos por fila (WPP) y reparto por diagonales | 1,19 s | Los hilos dejaron de esperarse entre sí en la misma fila |
 | Cada hilo copia solo la ventana que lee | 1,04 s | Antes clonaba el plano entero por superbloque (15 MB en una foto de 12 MP) |
 
-El coste en compresión es mínimo (−29,8 % frente a −29,9 % del codificador secuencial). Como ya no
-hace falta trocear la imagen para paralelizar, las teselas pasan de 1024 a 2048 en nativo, lo
-que ahorra un 1,35 % en una foto de 12 MP. En WebAssembly se mantienen las de 1024, porque allí el
-paralelismo son los Web Workers, uno por tesela.
+El coste en compresión es mínimo (−29,8 % frente a −29,9 % del codificador secuencial).
+
+**Teselas de 2048: probadas y no adoptadas por defecto.** Con el frente de onda ya no hace falta
+trocear la imagen para codificar en paralelo, y una tesela grande comprime algo mejor: −1,4 % en
+las 12 fotos de 2,7 MP. Pero el decodificador solo paraleliza por teselas, y esas fotos pasan de
+4 teselas a 1: decodificar tarda 2,3 veces más (0,10 → 0,23 s). Se quedan en 1024, y quien
+prefiera el 1,4 % puede usar `--tile 2048`.
 
 ## Uso
 
@@ -250,7 +253,7 @@ Opciones de `encode`:
 | `-q 1..100` | Calidad, en una escala parecida a la de JPEG. |
 | `-e 1..9` | Esfuerzo de búsqueda. |
 | `--tune balanced\|perceptual\|psnr` | Perfil de ajuste. |
-| `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). Por defecto, 2048. |
+| `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). Por defecto, 1024; con 2048 ocupa ~1,4 % menos en fotos grandes, pero decodifica más despacio. |
 | `--threads N` | Hilos del codificador (0 = todos). El resultado es idéntico con cualquier número. |
 | `--v1` | Escribe la versión 1 (congelada) en lugar de la 2. |
 | `--420` / `--444` | Fuerza el submuestreo de croma. |

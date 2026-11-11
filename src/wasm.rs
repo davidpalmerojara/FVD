@@ -77,9 +77,6 @@ fn params(quality: f32, effort: u32, tune: u32) -> Params {
     let p = Params {
         quality,
         effort: effort as u8,
-        // En el navegador no hay hilos dentro del módulo: el paralelismo son
-        // los Web Workers, uno por tesela, así que conviene que haya más.
-        tile: 1024,
         ..Params::default()
     };
     match tune {
