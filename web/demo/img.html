@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tesela con HTML normal</title>
+  <!-- Una sola línea: a partir de aquí, cualquier .tsl funciona como una imagen más. -->
+  <script src="../tesela-auto.js" data-sw="../tesela-sw.js"></script>
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    main { padding: 32px 0 64px; }
+    h1 { font-size: 28px; letter-spacing: -0.02em; margin: 0 0 8px; }
+    .lead { color: var(--muted); max-width: 720px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+    .grid figure { margin: 0; padding: 12px; }
+    .grid img { width: 100%; height: auto; display: block; border-radius: 8px; }
+    figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; }
+    .bg { height: 260px; border-radius: 8px; background: url('kodim05.tsl') center / cover; }
+    .checker { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; border-radius: 8px; }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+      <nav class="links">
+        <a href="../index.html">Inicio</a>
+        <a href="../compare/index.html">Comparador</a>
+        <a href="./index.html">Demo web</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <h1>Imágenes .tsl con HTML normal</h1>
+    <p class="lead">Esta página no usa ningún elemento especial: solo <code>&lt;img src="foto.tsl"&gt;</code> y CSS.
+      Un Service Worker entrega cada <code>.tsl</code> al navegador ya decodificado, así que también funcionan los
+      fondos CSS, <code>srcset</code> y «Guardar imagen como».</p>
+    <pre><code>&lt;script src="/tesela-auto.js"&gt;&lt;/script&gt;
+&lt;img src="foto.tsl" alt="..."&gt;</code></pre>
+    <div class="grid">
+      <figure class="card"><img id="img1" src="kodim23.tsl" alt="Dos loros"><figcaption>&lt;img src="kodim23.tsl"&gt;</figcaption></figure>
+      <figure class="card"><div class="bg" id="bg"></div><figcaption>background: url('kodim05.tsl')</figcaption></figure>
+      <figure class="card"><div class="checker"><img id="img2" src="alpha.tsl" alt="Loros con borde transparente"></div><figcaption>&lt;img src="alpha.tsl"&gt; con transparencia</figcaption></figure>
+    </div>
+  </main>
+</body>
+</html>

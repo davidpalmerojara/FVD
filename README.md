@@ -225,6 +225,32 @@ Opciones de `encode`:
 
 ## En la web
 
+### Opción 1: HTML normal (recomendada)
+
+```html
+<script src="/tesela-auto.js"></script>   <!-- en el <head> -->
+<img src="foto.tsl" alt="Descripción">
+```
+
+**Instalación.** Copia `tesela-auto.js`, `tesela-sw.js`, `tesela.wasm`, `tesela.js`,
+`tesela-core.js` y `tesela-worker.js` a la **raíz** de tu web.
+
+**Cómo funciona.** `tesela-sw.js` es un Service Worker que entrega cada `.tsl` al navegador ya
+convertido a PNG. Por eso funcionan `<img>`, `srcset`, `<picture>`, los fondos CSS y "Guardar
+imagen como" sin cambiar nada más.
+
+**Detalles:**
+
+- **Primera visita.** Aún no hay Service Worker activo; las imágenes `.tsl` se recargan solas en
+  cuanto se activa (~0,3 s).
+- **Requisitos.** Hace falta HTTPS (o `localhost`), y el Service Worker solo controla las páginas
+  de su carpeta y subcarpetas: por eso va en la raíz.
+- **Sin Service Worker.** En navegadores sin Service Worker, las `<img>` se decodifican en la
+  página; los fondos CSS, en cambio, no se convierten.
+- **Demo.** [`web/demo/img.html`](web/demo/img.html).
+
+### Opción 2: elemento propio, con vista previa progresiva y respaldo
+
 ```html
 <script type="module" src="tesela.js"></script>
 <tesela-img src="foto.tsl" alt="Descripción" fallback="foto.jpg" loading="lazy"></tesela-img>
