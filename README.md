@@ -14,6 +14,30 @@ Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
   (`web/tesela.js`).
 - **Banco de pruebas reproducible** con BD-rate, curvas y datos crudos (`bench/`).
 
+## Pruébalo en tu ordenador
+
+**Comparador con tus fotos.** Solo necesitas Python 3 o cualquier servidor web estático; no hace
+falta Rust.
+
+```sh
+git clone -b ccr-17dbeae9-yi88ht https://github.com/davidpalmerojara/FVD.git tesela
+cd tesela
+python3 -m http.server -d web 8000
+```
+
+Abre <http://localhost:8000/compare/> y arrastra tus fotos. Se procesan en tu navegador; nada sale
+de tu ordenador. Tiene que ser a través de `http://`: abriendo el archivo directamente
+(`file://`), el navegador bloquea WebAssembly y los workers.
+
+**Línea de comandos.** Necesita [Rust](https://rustup.rs) y acepta PNG y JPEG.
+
+```sh
+cargo build --release
+./target/release/tesela encode foto.jpg foto.tsl -q 85      # comprimir
+./target/release/tesela decode foto.tsl foto_decodificada.png
+./target/release/tesela roundtrip foto.jpg -q 85            # tamaño y métricas en JSON
+```
+
 ## Resultados
 
 **Qué se mide.** El BD-rate frente a WebP: el porcentaje medio de bytes que ahorra cada formato a
