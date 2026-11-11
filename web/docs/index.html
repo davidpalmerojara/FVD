@@ -157,7 +157,7 @@ tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodi
           <thead><tr><th>Opción</th><th style="text-align:left">Efecto</th></tr></thead>
           <tbody>
             <tr><td><code>-q 1..100</code></td><td style="text-align:left;white-space:normal">Calidad, en una escala parecida a la de JPEG: <code>-q 85</code> se ve parecido a un JPEG de calidad 85.</td></tr>
-            <tr><td><code>-e 1..9</code></td><td style="text-align:left;white-space:normal">Esfuerzo de búsqueda (por defecto 4). Más esfuerzo, archivo algo menor y codificación más lenta.</td></tr>
+            <tr><td><code>-e 1..9</code></td><td style="text-align:left;white-space:normal">Esfuerzo de búsqueda (por defecto 4). Los niveles 1–3 son modos rápidos: <code>-e 3</code> codifica unas 2,5 veces más rápido y ocupa un 3 % más; <code>-e 1</code>, unas 5 veces más rápido y un 8 % más. Incluso con <code>-e 1</code> comprime como AVIF.</td></tr>
             <tr><td><code>--tune balanced|perceptual|psnr</code></td><td style="text-align:left;white-space:normal">Perfil de ajuste: equilibrado, calidad visual o fidelidad numérica.</td></tr>
             <tr><td><code>--lossless</code></td><td style="text-align:left;white-space:normal">Compresión sin pérdida, exacta bit a bit.</td></tr>
             <tr><td><code>--preview</code></td><td style="text-align:left;white-space:normal">Añade la vista previa progresiva (~300 bytes).</td></tr>
@@ -246,7 +246,8 @@ tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodi
           funciona como siempre. Como cualquier imagen de la web, no hay protección contra copias.</dd>
         <dt>¿Por qué codifica más lento que AVIF?</dt>
         <dd>Porque prueba muchas más particiones y predicciones para ahorrar bytes. Usa todos los núcleos, y una imagen se
-          codifica una vez y se decodifica miles.</dd>
+          codifica una vez y se decodifica miles. Para cuando importa la velocidad están los modos rápidos: con
+          <code>-e 3</code> comprime más que AVIF y codifica 2,5 veces más rápido; con <code>-e 1</code>, empata con AVIF y es 5 veces más rápido.</dd>
         <dt>¿Y el modo sin pérdida?</dt>
         <dd>Es exacto bit a bit y mejora a PNG con claridad, pero en fotos ocupa más que WebP sin pérdida y que JPEG XL.</dd>
         <dt>¿Qué limitaciones tiene?</dt>

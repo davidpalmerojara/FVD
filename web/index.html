@@ -188,7 +188,9 @@
           igual que con cualquier otra.</p></details>
       <details class="card"><summary>¿Por qué codifica más lento que AVIF?</summary>
         <p>Porque prueba muchas más combinaciones de bloques y predicciones para ahorrar bytes. Usa todos los núcleos del
-          procesador, también en el navegador, y codificar se hace una vez mientras que decodificar, miles.</p></details>
+          procesador, también en el navegador, y codificar se hace una vez mientras que decodificar, miles. Si hace falta
+          velocidad, los modos rápidos (<code>-e 1</code> a <code>-e 3</code>) codifican de 2,5 a 5 veces más rápido que el modo por defecto
+          y siguen comprimiendo como AVIF o más.</p></details>
       <p><a href="./docs/index.html#faq">Más preguntas en la documentación →</a></p>
     </section>
   </main>

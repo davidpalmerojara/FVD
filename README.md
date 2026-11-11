@@ -220,6 +220,22 @@ pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
 | Cuantización dependiente (trellis de 4 estados, como en VVC), con tablas reentrenadas | Kodak −29,8 % (igual); recortes: +0,8 % en calidad baja, −0,8 % en alta | **Descartado**: neutro de media y un 25 % más lento. Nuestro RDOQ ya era ajustado y SSIMULACRA2 no es error cuadrático |
 | RDO psicovisual (penalizar la diferencia de energía AC, como el `psy-rd` de x264) | de +2 % (débil) a +32 % (fuerte) en calidad baja | **Descartado**: SSIMULACRA2 mide estructura, y forzar textura la empeora |
 
+**Modos rápidos.** Los niveles de esfuerzo bajos recortan la búsqueda del codificador: sin
+particiones rectangulares (3 y menos), sin refinado de los modos angulares y con parada temprana
+de la división (2 y menos), y sin bloques de 4×4 (1). Kodak-8, BD-rate frente a WebP y tiempo por
+imagen en el mismo banco (4 trabajos a la vez):
+
+| Modo | SSIMULACRA2 | PSNR-Y | Tiempo | Foto de 12 MP, 4 núcleos |
+|---|---|---|---|---|
+| `-e 4` (por defecto) | −29,9 % | −21,4 % | 2,04 s | 9,2 s |
+| `-e 3` | −28,1 % | −19,2 % | 0,76 s | |
+| `-e 2` | −25,7 % | −16,4 % | 0,55 s | 2,8 s |
+| `-e 1` | −24,0 % | −11,2 % | 0,40 s | 2,2 s |
+| AVIF (aom, speed 4), como referencia | −24,1 % | −17,3 % | 1,93 s | |
+
+Con `-e 3` Tesela comprime más que AVIF y codifica 2,5 veces más rápido; con `-e 1`, empata con
+AVIF en SSIMULACRA2 y es 5 veces más rápido.
+
 **Codificador multihilo.** Dentro de cada tesela, los superbloques de 64×64 se deciden en
 *frente de onda*: el (x, y) puede empezar en cuanto están el (x−1, y) y el (x+1, y−1). Para que
 el resultado no dependa del número de hilos, cada superbloque solo ve lo que es seguro que ya está
@@ -269,7 +285,7 @@ Opciones de `encode`:
 | Opción | Efecto |
 |---|---|
 | `-q 1..100` | Calidad, en una escala parecida a la de JPEG. |
-| `-e 1..9` | Esfuerzo de búsqueda. |
+| `-e 1..9` | Esfuerzo de búsqueda (por defecto 4). Los niveles 1–3 son modos rápidos: ver la tabla de abajo. |
 | `--tune balanced\|perceptual\|psnr` | Perfil de ajuste. |
 | `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). Por defecto, 1024; con 2048 ocupa ~1,4 % menos en fotos grandes, pero decodifica más despacio. |
 | `--threads N` | Hilos del codificador (0 = todos). El resultado es idéntico con cualquier número. |
