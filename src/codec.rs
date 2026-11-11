@@ -4257,7 +4257,7 @@ pub fn encode_animation_recon(
                 let dq: f32 = std::env::var("TESELA_INTER_DQ")
                     .ok()
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(if photo { 10.0 } else { 0.0 });
+                    .unwrap_or(if photo { 15.0 } else { 0.0 });
                 let mut pf = if inter && dq != 0.0 {
                     Params {
                         quality: (sub.quality - dq).max(1.0),
