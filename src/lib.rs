@@ -13,6 +13,8 @@ pub mod metrics;
 pub mod predict;
 pub mod rc;
 pub mod restore;
+#[cfg(feature = "metrics")]
+pub mod ssim2;
 pub mod tools;
 
 pub use codec::{Decoded, Encoded, Params, decode, encode, encode_rgba};

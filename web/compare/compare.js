@@ -37,13 +37,12 @@ let nextPhotoId = 1;
 // ------------------------------------------------------------ Workers
 
 // Memoria aproximada de cada trabajo en WebAssembly, en bytes por píxel
-// (medida en Chromium con una foto de 12 MP, con margen): la del códec más la
-// de las métricas, que son lo que más pesa (SSIMULACRA2 trabaja en coma
-// flotante a varias escalas: ~165 B/px, casi 2 GB a 12 MP). Con fotos grandes,
-// lanzar todos a la vez agota la RAM y puede colgar el ordenador: el grupo
-// solo arranca en paralelo los trabajos que caben en el presupuesto, y
+// (medida en Chromium con fotos de 12 y 24 MP, con margen): la del códec más
+// la de las métricas (~22 B/px; SSIMULACRA2 se calcula por filas). Con fotos
+// grandes, lanzar todos a la vez agota la RAM y puede colgar el ordenador: el
+// grupo solo arranca en paralelo los trabajos que caben en el presupuesto, y
 // siempre al menos uno.
-const METRICS_BYTES_PER_PX = 170;
+const METRICS_BYTES_PER_PX = 30;
 const BYTES_PER_PX = { jxl: 220, avif: 60, tesela: 40, webp: 30, jpeg: 20 };
 const MEMORY_BUDGET = Math.min(navigator.deviceMemory || 4, 8) * 0.3 * 2 ** 30;
 // Aunque vaya de uno en uno, un trabajo no puede pasar de esto (más lo que

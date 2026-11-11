@@ -44,6 +44,7 @@ pub fn psnr_y(a: &[u8], b: &[u8]) -> f64 {
 /// un anillo de 11 filas y el vertical se hace al vuelo. Mismas operaciones
 /// y en el mismo orden que con imágenes completas (mismo resultado exacto),
 /// pero con memoria proporcional al ancho en lugar de ~96 bytes por píxel.
+#[allow(clippy::needless_range_loop)] // mismo orden de operaciones que la versión completa
 pub fn ssim_y(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
     let g: Vec<f64> = (-5..=5)
         .map(|i: i32| (-(i * i) as f64 / (2.0 * 1.5 * 1.5)).exp())
@@ -172,7 +173,13 @@ fn ssim_y_full(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
     acc / (w * h) as f64
 }
 
+/// SSIMULACRA2 (versión por filas de `ssim2`: mismo resultado, poca memoria).
 pub fn ssimulacra2(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
+    crate::ssim2::ssimulacra2(a, b, w, h)
+}
+
+/// SSIMULACRA2 del crate original, para comprobar la versión por filas.
+pub fn ssimulacra2_reference(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
     let conv = |d: &[u8]| {
         let px: Vec<[f32; 3]> = d
             .chunks_exact(3)
@@ -198,6 +205,49 @@ pub fn ssimulacra2(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ssimulacra2_por_filas_igual_que_el_crate() {
+        let mut seed = 12345u32;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            (seed >> 16) as u8
+        };
+        for (w, h) in [
+            (8, 8),
+            (9, 8),
+            (8, 13),
+            (15, 9),
+            (16, 16),
+            (33, 17),
+            (64, 40),
+            (100, 77),
+            (129, 65),
+            (257, 31),
+        ] {
+            // Imagen suave más ruido, y una versión distorsionada.
+            let a: Vec<u8> = (0..w * h * 3)
+                .map(|i| {
+                    ((i / 3 % w) * 255 / w + (i / 3 / w) * 3 + (rnd() as usize % 20)).min(255) as u8
+                })
+                .collect();
+            let b: Vec<u8> = a
+                .iter()
+                .map(|&v| v.saturating_add(rnd() % 9).saturating_sub(4))
+                .collect();
+            for (x, y) in [(&a, &b), (&a, &a), (&b, &a)] {
+                let (r, n) = (
+                    super::ssimulacra2_reference(x, y, w, h),
+                    super::ssimulacra2(x, y, w, h),
+                );
+                assert_eq!(
+                    r.to_bits(),
+                    n.to_bits(),
+                    "{w}x{h}: crate {r}, por filas {n}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ssim_por_filas_igual_que_completo() {
         for (w, h) in [(1, 1), (7, 3), (16, 16), (37, 23)] {
