@@ -16,18 +16,24 @@ Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
 
 ## Pruébalo en tu ordenador
 
-**Comparador con tus fotos.** Solo necesitas Python 3 o cualquier servidor web estático; no hace
-falta Rust.
+**Comparador con tus fotos.** Solo necesitas Git y Python 3; no hace falta Rust.
 
 ```sh
 git clone -b ccr-17dbeae9-yi88ht https://github.com/davidpalmerojara/FVD.git tesela
 cd tesela
-python3 -m http.server -d web 8000
+python web/serve.py        # en macOS/Linux/WSL puede ser python3
 ```
 
 Abre <http://localhost:8000/compare/> y arrastra tus fotos. Se procesan en tu navegador; nada sale
 de tu ordenador. Tiene que ser a través de `http://`: abriendo el archivo directamente
 (`file://`), el navegador bloquea WebAssembly y los workers.
+
+- **Windows (PowerShell).** Se instala con `winget install Git.Git Python.Python.3.12`.
+  Si `python` abre la Microsoft Store, usa `py web/serve.py`. Usa `web/serve.py` y no
+  `python -m http.server`: en algunos Windows este último sirve los `.js` con un tipo incorrecto
+  y el comparador no carga.
+- **WSL.** Los mismos comandos que en Linux. Clona dentro de WSL (`~/tesela`), no en `/mnt/c`, y
+  abre `http://localhost:8000/compare/` en el navegador de Windows: WSL 2 redirige localhost.
 
 **Línea de comandos.** Necesita [Rust](https://rustup.rs) y acepta PNG y JPEG.
 
@@ -37,6 +43,10 @@ cargo build --release
 ./target/release/tesela decode foto.tsl foto_decodificada.png
 ./target/release/tesela roundtrip foto.jpg -q 85            # tamaño y métricas en JSON
 ```
+
+En PowerShell el ejecutable es `.\target\release\tesela.exe`. Compilar en Windows nativo
+requiere las *Build Tools* de Visual Studio, que `rustup` ofrece instalar; en WSL basta con
+`rustup` y `sudo apt install build-essential`.
 
 ## Resultados
 
@@ -225,7 +235,7 @@ const url = await toObjectURL(bytes);                  // para cualquier <img>
 Para probarlo en local:
 
 ```sh
-python3 -m http.server -d web 8000
+python3 web/serve.py
 # http://localhost:8000/            portada
 # http://localhost:8000/compare/    comparador
 # http://localhost:8000/demo/       demo de <tesela-img>
