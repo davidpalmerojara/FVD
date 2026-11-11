@@ -25,6 +25,11 @@ La versión 1 del flujo de bits está **congelada**:
 - Cada archivo lleva su número de versión: las mejoras futuras que cambien el flujo de bits irán
   en una versión nueva, y un `.tsl` v1 seguirá abriéndose.
 
+La **versión 2** está en desarrollo y es la que escribe el codificador por defecto (`--v1` escribe
+la v1). Añade particiones rectangulares y tablas de probabilidad nuevas. Sus diferencias con la v1
+están en [`docs/especificacion-v2-borrador.md`](docs/especificacion-v2-borrador.md). Hasta que se
+congele, puede cambiar.
+
 ## Pruébalo en tu ordenador
 
 **Comparador con tus fotos.** Solo necesitas Git y Python 3; no hace falta Rust.
@@ -128,7 +133,7 @@ Tamaño total de 10 imágenes (3 fotos, 4 capturas y 3 ilustraciones):
 |---|---|
 | Contenedor | Cabecera y teselas independientes de 2048×2048 que se codifican y decodifican en paralelo (rayon en nativo, Web Workers en el navegador); dentro de cada tesela, el codificador decide los superbloques en frente de onda con varios hilos. En imágenes de hasta 2048 px no hay ninguna pérdida por teselas. |
 | Color | YCbCr. Croma 4:2:0 centrado con interpolación bilineal, o 4:4:4 a calidades muy altas. |
-| Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. Cada decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
+| Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. En la v2, cada nodo que no se divide en cuatro puede partirse en dos mitades rectangulares (horizontales o verticales). Cada decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
 | Predicción | Planar, DC y 33 direcciones angulares con filtrado de referencias. Para croma también hay **CCLM**: la croma se predice desde la luma, con parámetros deducidos de los vecinos que no se transmiten. La búsqueda de modos se hace en dos fases. |
 | Transformada | DCT-II ortonormal de 4 a 64 puntos: por producto de matrices en 4 y 8, y con el algoritmo rápido de Lee (O(n log n)) desde 16. Si el bloque solo tiene DC, se usa un atajo. |
 | Cuantización | Matriz perceptual (`1 + s·r²`), cuantización adaptativa por actividad en celdas de 32×32 y **RDOQ**. |
@@ -198,6 +203,36 @@ pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
   candidatos. Ninguna de estas optimizaciones cambió la compresión.
 - **SIMD en WebAssembly:** probado y **descartado**; no mejoraba nada.
 
+**Versión 2: particiones rectangulares** (Kodak-8, BD-rate frente a WebP en SSIMULACRA2):
+
+| Cambio | SSIMULACRA2 | Resultado |
+|---|---|---|
+| Base (solo quadtree) | −28,4 % | |
+| Mitades rectangulares 2:1 en todos los tamaños, con RDO | −29,7 % | Mejora clara |
+| Sin rectángulos en los nodos de 64×64 (poda A) | −29,9 % | **Adoptado**: igual o mejor y con menos búsqueda |
+| Transformadas múltiples (estilo MTS) | sin ganancia neta | **Descartado** |
+| Tablas de probabilidad entrenadas con DIV2K | sin ganancia neta | **Descartado**; se siguen usando BSD100 e imágenes sintéticas |
+| Tablas v2 entrenadas (incluyen los contextos nuevos) | −0,2 a −0,3 % en recortes de validación | **Adoptado** |
+
+**Codificador multihilo.** Dentro de cada tesela, los superbloques de 64×64 se deciden en
+*frente de onda*: el (x, y) puede empezar en cuanto están el (x−1, y) y el (x+1, y−1). Para que
+el resultado no dependa del número de hilos, cada superbloque solo ve lo que es seguro que ya está
+decidido, y estima el coste con las probabilidades de su propia fila (cada fila arranca con las de
+la anterior tras su segundo superbloque, como el WPP de HEVC). La escritura sigue siendo
+secuencial y con los contextos reales, así que el formato y el decodificador no cambian.
+
+| Paso | kodim05, 4 núcleos | Notas |
+|---|---|---|
+| Un hilo | 3,19 s | Base |
+| Contextos de la fila y−2 | 2,26 s | Solo 2 superbloques a la vez: cada fila esperaba a que se escribiera entera la de dos más arriba |
+| Contextos por fila (WPP) y reparto por diagonales | 1,19 s | Los hilos dejaron de esperarse entre sí en la misma fila |
+| Cada hilo copia solo la ventana que lee | 1,04 s | Antes clonaba el plano entero por superbloque (15 MB en una foto de 12 MP) |
+
+El coste en compresión es mínimo (−29,8 % frente a −29,9 % del codificador secuencial). Como ya no
+hace falta trocear la imagen para paralelizar, las teselas pasan de 1024 a 2048 en nativo, lo
+que ahorra un 1,35 % en una foto de 12 MP. En WebAssembly se mantienen las de 1024, porque allí el
+paralelismo son los Web Workers, uno por tesela.
+
 ## Uso
 
 ```sh
@@ -215,7 +250,9 @@ Opciones de `encode`:
 | `-q 1..100` | Calidad, en una escala parecida a la de JPEG. |
 | `-e 1..9` | Esfuerzo de búsqueda. |
 | `--tune balanced\|perceptual\|psnr` | Perfil de ajuste. |
-| `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). |
+| `--tile N` | Tamaño de las teselas en píxeles (múltiplo de 64). Por defecto, 2048. |
+| `--threads N` | Hilos del codificador (0 = todos). El resultado es idéntico con cualquier número. |
+| `--v1` | Escribe la versión 1 (congelada) en lugar de la 2. |
 | `--420` / `--444` | Fuerza el submuestreo de croma. |
 | `--no-restore` | Desactiva el filtro de restauración. |
 | `--lossless` | Compresión sin pérdida. |
@@ -316,13 +353,15 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 ## Limitaciones
 
 - **Soporte nativo.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
-  `tesela.js` y WebAssembly (515 KB). Conviene servir un `fallback` en JPEG.
+  `tesela.js` y WebAssembly (630 KB). Conviene servir un `fallback` en JPEG.
 - **Fotos a tasas bajas.** Por debajo de ~0,4 bpp AVIF sigue siendo mejor. En fotos grandes la
   compresión está empatada con AVIF.
 - **Sin pérdida en fotos.** Ocupa más que WebP y JPEG XL.
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
   (un alfa con degradados suaves cuesta bastante). No tiene animación ni metadatos ICC o EXIF.
-- **Velocidad de codificación.** En capturas, codificar es más lento (~5 s por imagen de 1,3 MP).
+- **Velocidad de codificación.** Codificar sigue siendo más lento que AVIF: ~1 s por foto de
+  0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador no hay hilos dentro del módulo
+  y solo se paraleliza por teselas.
 - **Licencias de los datos.** Las imágenes de prueba (Kodak, DIV2K) y de entrenamiento (BSD100) no
   se redistribuyen, salvo `web/compare/sample.png` (kodim23). Las capturas e ilustraciones se
   generan con `bench/gen_synthetic.js`.
