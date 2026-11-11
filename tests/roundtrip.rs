@@ -255,3 +255,50 @@ fn alpha_roundtrip() {
             .is_none()
     );
 }
+
+#[test]
+fn metadata_roundtrip() {
+    use tesela::codec::{Metadata, decode_preview};
+    let (w, h) = (96, 64);
+    let img = synthetic(w, h, 7);
+    let meta = Metadata {
+        icc: Some((0..=255u8).cycle().take(600).collect()),
+        exif: Some(b"MM\0*\0\0\0\x08\0\0".to_vec()),
+    };
+    for preview in [false, true] {
+        let p = Params {
+            quality: 70.0,
+            preview,
+            meta: meta.clone(),
+            ..Default::default()
+        };
+        let e = encode(&img, w, h, &p);
+        let d = decode(&e.bytes).expect("decodifica");
+        assert_eq!(d.meta, meta, "metadatos (vista previa: {preview})");
+        assert_eq!(d.rgb, e.recon_rgb, "píxeles (vista previa: {preview})");
+        // La vista previa se encuentra detrás de los metadatos.
+        assert_eq!(decode_preview(&e.bytes).unwrap().is_some(), preview);
+        // Los mismos píxeles que sin metadatos: solo cambia el contenedor.
+        let bare = encode(
+            &img,
+            w,
+            h,
+            &Params {
+                quality: 70.0,
+                preview,
+                ..Default::default()
+            },
+        );
+        assert_eq!(decode(&bare.bytes).unwrap().rgb, d.rgb);
+        assert_eq!(e.bytes.len(), bare.bytes.len() + 4 + 8 + 600 + 8 + 10);
+    }
+    // La v1 no tiene metadatos: se ignoran al codificar.
+    let p = Params {
+        quality: 70.0,
+        version: 1,
+        meta,
+        ..Default::default()
+    };
+    let d = decode(&encode(&img, w, h, &p).bytes).unwrap();
+    assert!(d.meta.is_empty());
+}

@@ -96,11 +96,14 @@ fn main() {
     let iters: u64 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(20_000);
     let seed: u64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0x5eed);
     let mut seeds = Vec::new();
-    for dir in ["tests/vectors", "web/demo"] {
+    for dir in ["tests/vectors", "web/demo", "fuzz/semillas"] {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
                 if e.path().extension().is_some_and(|x| x == "tsl") {
-                    seeds.push((e.path().display().to_string(), std::fs::read(e.path()).unwrap()));
+                    seeds.push((
+                        e.path().display().to_string(),
+                        std::fs::read(e.path()).unwrap(),
+                    ));
                 }
             }
         }

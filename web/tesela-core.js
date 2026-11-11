@@ -135,7 +135,31 @@ export const MIN_VERSION = 1;
 export const VERSION = 2;
 export const TOOL_ALPHA = 4;
 export const TOOL_PREVIEW = 8;
+export const TOOL_META = 32;
 const HEADER = 23;
+
+/**
+ * Sección de metadatos (v2): `u32` de longitud y fragmentos
+ * `etiqueta (4 B) | u32 | datos`. Devuelve { icc, exif, end } o undefined si
+ * aún no han llegado sus bytes.
+ */
+export function readMetadata(bytes, pos = HEADER) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < pos + 4) return undefined;
+  const end = pos + 4 + dv.getUint32(pos, true);
+  if (bytes.length < end) return undefined;
+  const out = { icc: null, exif: null, end };
+  for (let p = pos + 4; p + 8 <= end; ) {
+    const tag = String.fromCharCode(...bytes.subarray(p, p + 4));
+    const n = dv.getUint32(p + 4, true);
+    if (p + 8 + n > end) break;
+    const data = bytes.subarray(p + 8, p + 8 + n);
+    if (tag === 'ICCP') out.icc = data;
+    else if (tag === 'EXIF') out.exif = data;
+    p += 8 + n;
+  }
+  return out;
+}
 
 /**
  * Si ya han llegado suficientes bytes, devuelve el rango de la vista previa
@@ -144,8 +168,15 @@ const HEADER = 23;
 export function previewRange(bytes) {
   if (bytes.length < HEADER + 4) return undefined;
   if (!(bytes[22] & TOOL_PREVIEW)) return null;
-  const len = new DataView(bytes.buffer, bytes.byteOffset).getUint32(HEADER, true);
-  const r = { start: HEADER + 4, end: HEADER + 4 + len };
+  let base = HEADER;
+  if (bytes[22] & TOOL_META) {
+    const m = readMetadata(bytes);
+    if (!m) return undefined;
+    base = m.end;
+  }
+  if (bytes.length < base + 4) return undefined;
+  const len = new DataView(bytes.buffer, bytes.byteOffset).getUint32(base, true);
+  const r = { start: base + 4, end: base + 4 + len };
   return bytes.length >= r.end ? r : undefined;
 }
 
@@ -171,7 +202,17 @@ export function parseTesela(buffer) {
   // bytes no puede obligar a reservar gigas ni a recorrer millones de teselas.
   if (width * height > 2 ** 28) throw new Error(`imagen demasiado grande para decodificar (${width}×${height})`);
   let base = HEADER;
-  if (tools & TOOL_PREVIEW) base += 4 + dv.getUint32(HEADER, true);
+  let meta = { icc: null, exif: null };
+  if (tools & TOOL_META) {
+    const m = readMetadata(bytes);
+    if (!m) throw new Error('archivo Tesela truncado');
+    meta = m;
+    base = m.end;
+  }
+  if (tools & TOOL_PREVIEW) {
+    if (bytes.length < base + 4) throw new Error('archivo Tesela truncado');
+    base += 4 + dv.getUint32(base, true);
+  }
   const tiles = [];
   for (let y = 0; y < height; y += tile) {
     for (let x = 0; x < width; x += tile) {
@@ -187,5 +228,5 @@ export function parseTesela(buffer) {
     pos += len;
   });
   if (pos > bytes.length) throw new Error('archivo Tesela truncado');
-  return { width, height, tile, tools, tiles, header: bytes.subarray(0, HEADER), bytes };
+  return { width, height, tile, tools, tiles, header: bytes.subarray(0, HEADER), bytes, icc: meta.icc, exif: meta.exif };
 }

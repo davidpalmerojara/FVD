@@ -161,6 +161,7 @@ tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodi
             <tr><td><code>--tune balanced|perceptual|psnr</code></td><td style="text-align:left;white-space:normal">Perfil de ajuste: equilibrado, calidad visual o fidelidad numérica.</td></tr>
             <tr><td><code>--lossless</code></td><td style="text-align:left;white-space:normal">Compresión sin pérdida, exacta bit a bit.</td></tr>
             <tr><td><code>--preview</code></td><td style="text-align:left;white-space:normal">Añade la vista previa progresiva (~300 bytes).</td></tr>
+            <tr><td><code>--sin-metadatos</code></td><td style="text-align:left;white-space:normal">No guarda el perfil de color ni el EXIF. Por defecto se conservan, y la orientación EXIF se aplica a los píxeles.</td></tr>
             <tr><td><code>--screen</code> / <code>--no-screen</code></td><td style="text-align:left;white-space:normal">Fuerza o desactiva las herramientas de contenido sintético (por defecto se detecta solo).</td></tr>
             <tr><td><code>--threads N</code></td><td style="text-align:left;white-space:normal">Hilos del codificador (0 = todos). El resultado es idéntico con cualquier número.</td></tr>
             <tr><td><code>--tile N</code></td><td style="text-align:left;white-space:normal">Tamaño de las teselas en píxeles (múltiplo de 64, por defecto 1024).</td></tr>
@@ -186,7 +187,7 @@ tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodi
             <tr><td><b>Entropía</b></td><td style="text-align:left;white-space:normal">Codificador aritmético binario con modelos adaptativos y probabilidades iniciales entrenadas por tipo de contenido y calidad.</td></tr>
             <tr><td><b>Restauración</b></td><td style="text-align:left;white-space:normal">Filtro adaptativo por clases (estilo ALF) que el codificador estima por mínimos cuadrados.</td></tr>
             <tr><td><b>Contenido sintético</b></td><td style="text-align:left;white-space:normal">Paleta, copia intra de bloques con índice hash y residuo sin transformada.</td></tr>
-            <tr><td><b>Extras</b></td><td style="text-align:left;white-space:normal">Canal alfa sin pérdida, modo sin pérdida y vista previa progresiva.</td></tr>
+            <tr><td><b>Extras</b></td><td style="text-align:left;white-space:normal">Canal alfa sin pérdida, modo sin pérdida, vista previa progresiva y metadatos: perfil de color ICC (por ejemplo, Display P3 de las fotos de móvil) y EXIF.</td></tr>
           </tbody>
         </table>
       </div>
@@ -251,7 +252,8 @@ tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodi
         <dt>¿Y el modo sin pérdida?</dt>
         <dd>Es exacto bit a bit y mejora a PNG con claridad, pero en fotos ocupa más que WebP sin pérdida y que JPEG XL.</dd>
         <dt>¿Qué limitaciones tiene?</dt>
-        <dd>8 bits por canal, sin animación ni metadatos de color (ICC/EXIF), y el alfa siempre es sin pérdida. Es un
+        <dd>8 bits por canal, sin animación ni HDR, y el alfa siempre es sin pérdida. El perfil de color se respeta con
+          <code>tesela-auto.js</code>; el elemento <code>&lt;tesela-img&gt;</code> pinta en sRGB. Es un
           proyecto experimental, sin una auditoría de patentes.</dd>
         <dt>¿Cómo se ha medido?</dt>
         <dd>Con curvas de calidad para cada formato en conjuntos públicos (Kodak, DIV2K) y propios (capturas e

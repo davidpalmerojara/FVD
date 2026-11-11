@@ -63,12 +63,38 @@ function crc32(buf, start, end, crc = 0xffffffff) {
   return crc;
 }
 
-function encodePng(width, height, rgba) {
+/** Perfil ICC del archivo .tsl (sección de metadatos de la v2), o null. */
+function teselaIcc(bytes) {
+  const HEADER = 23;
+  if (bytes.length < HEADER + 4 || bytes[3] < 2 || !(bytes[22] & 32)) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const end = HEADER + 4 + dv.getUint32(HEADER, true);
+  for (let p = HEADER + 4; p + 8 <= Math.min(end, bytes.length); ) {
+    const n = dv.getUint32(p + 4, true);
+    if (p + 8 + n > end) break;
+    if (String.fromCharCode(...bytes.subarray(p, p + 4)) === 'ICCP') return bytes.slice(p + 8, p + 8 + n);
+    p += 8 + n;
+  }
+  return null;
+}
+
+/** Contenido de un fragmento iCCP: nombre, método 0 y el perfil comprimido con zlib. */
+async function iccpChunk(icc) {
+  if (!icc || typeof CompressionStream === 'undefined') return null;
+  const z = new Uint8Array(await new Response(new Blob([icc]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+  const name = new TextEncoder().encode('ICC profile');
+  const out = new Uint8Array(name.length + 2 + z.length);
+  out.set(name, 0);
+  out.set(z, name.length + 2); // separador 0 y método de compresión 0
+  return out;
+}
+
+function encodePng(width, height, rgba, iccp = null) {
   const rowLen = width * 4 + 1;
   const raw = height * rowLen;
   const nblocks = Math.max(1, Math.ceil(raw / 65535));
   const idatLen = 2 + raw + nblocks * 5 + 4;
-  const out = new Uint8Array(8 + 25 + 12 + idatLen + 12);
+  const out = new Uint8Array(8 + 25 + (iccp ? 12 + iccp.length : 0) + 12 + idatLen + 12);
   const dv = new DataView(out.buffer);
   out.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
   let p = 8;
@@ -87,6 +113,13 @@ function encodePng(width, height, rgba) {
     out.set([8, 6, 0, 0, 0], p + 8); // 8 bits, RGBA, deflate, sin filtro, sin entrelazado
     p += 13;
   });
+  // Perfil de color: el navegador gestiona el color como con cualquier PNG.
+  if (iccp) {
+    chunk('iCCP', iccp.length, () => {
+      out.set(iccp, p);
+      p += iccp.length;
+    });
+  }
   chunk('IDAT', idatLen, () => {
     out[p++] = 0x78;
     out[p++] = 0x01;
@@ -136,11 +169,13 @@ self.addEventListener('fetch', (event) => {
       const res = await fetch(event.request);
       if (!res.ok) return res;
       try {
-        const img = await decodeTesela(new Uint8Array(await res.arrayBuffer()));
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        const img = await decodeTesela(bytes);
+        const iccp = await iccpChunk(teselaIcc(bytes));
         const headers = { 'Content-Type': 'image/png' };
         const cc = res.headers.get('Cache-Control');
         if (cc) headers['Cache-Control'] = cc;
-        return new Response(encodePng(img.width, img.height, img.rgba), { headers });
+        return new Response(encodePng(img.width, img.height, img.rgba, iccp), { headers });
       } catch (e) {
         return new Response('Tesela: ' + e.message, { status: 415 });
       }

@@ -25,6 +25,8 @@ pub const VERSION: u8 = 2;
 pub const MIN_VERSION: u8 = 1;
 /// Bits de `tools` definidos en la v1.
 const KNOWN_TOOLS: u8 = 1 | 2 | 4 | 8;
+/// Bits añadidos en la v2.
+const KNOWN_TOOLS_V2: u8 = KNOWN_TOOLS | TOOL_META;
 const SB: usize = 64;
 /// Granularidad de la cuantización adaptativa (AQ).
 const AQ: usize = 32;
@@ -37,6 +39,8 @@ pub const TOOL_LOSSLESS: u8 = 2;
 pub const TOOL_ALPHA: u8 = 4;
 /// Vista previa diminuta al principio del archivo (para mostrar algo mientras llega el resto).
 pub const TOOL_PREVIEW: u8 = 8;
+/// v2: sección de metadatos (perfil de color ICC, EXIF) tras la cabecera.
+pub const TOOL_META: u8 = 32;
 /// Lado mayor de la vista previa, en píxeles.
 const PREVIEW_SIDE: usize = 48;
 
@@ -75,6 +79,71 @@ pub struct Params {
     pub threads: usize,
     /// Incluir vista previa progresiva.
     pub preview: bool,
+    /// Metadatos que se guardan en el archivo (solo en la v2).
+    pub meta: Metadata,
+}
+
+/// Metadatos de la imagen: se guardan tal cual, sin interpretarlos.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Metadata {
+    /// Perfil de color ICC (por ejemplo, Display P3 en las fotos de móvil).
+    pub icc: Option<Vec<u8>>,
+    /// Bloque EXIF (formato TIFF, como en el segmento APP1 de JPEG sin «Exif\0\0»).
+    pub exif: Option<Vec<u8>>,
+}
+
+impl Metadata {
+    pub fn is_empty(&self) -> bool {
+        self.icc.is_none() && self.exif.is_none()
+    }
+
+    /// Sección de metadatos: `u32` de longitud y fragmentos `etiqueta (4 B) | u32 | datos`.
+    fn write(&self, out: &mut Vec<u8>) {
+        let mut body = Vec::new();
+        for (tag, data) in [(b"ICCP", &self.icc), (b"EXIF", &self.exif)] {
+            if let Some(d) = data {
+                body.extend_from_slice(tag);
+                body.extend_from_slice(&(d.len() as u32).to_le_bytes());
+                body.extend_from_slice(d);
+            }
+        }
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+    }
+
+    /// Lee la sección que empieza en `pos`. Devuelve los metadatos y dónde acaba.
+    /// Las etiquetas desconocidas se ignoran (compatibilidad hacia delante).
+    fn read(data: &[u8], pos: usize) -> Result<(Metadata, usize), String> {
+        let len = data
+            .get(pos..pos + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .ok_or("archivo truncado")?;
+        let end = (pos + 4)
+            .checked_add(len)
+            .filter(|&e| e <= data.len())
+            .ok_or("archivo truncado")?;
+        let mut m = Metadata::default();
+        let mut p = pos + 4;
+        while p < end {
+            let tag = data.get(p..p + 4).ok_or("metadatos no válidos")?;
+            let n = data
+                .get(p + 4..p + 8)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+                .ok_or("metadatos no válidos")?;
+            let q = (p + 8)
+                .checked_add(n)
+                .filter(|&e| e <= end)
+                .ok_or("metadatos no válidos")?;
+            let d = data[p + 8..q].to_vec();
+            match tag {
+                b"ICCP" => m.icc = Some(d),
+                b"EXIF" => m.exif = Some(d),
+                _ => {}
+            }
+            p = q;
+        }
+        Ok((m, end))
+    }
 }
 
 impl Default for Params {
@@ -96,6 +165,7 @@ impl Default for Params {
             preview: false,
             version: VERSION,
             threads: 0,
+            meta: Metadata::default(),
         }
     }
 }
@@ -218,7 +288,12 @@ impl Header {
         if d[12] > 1 || d[18] > 1 || h.deblock != 0 || h.qstep == 0 || h.chroma_q == 0 {
             return Err("cabecera no válida para la v1".into());
         }
-        if h.tools & !KNOWN_TOOLS != 0 {
+        let known = if h.version >= 2 {
+            KNOWN_TOOLS_V2
+        } else {
+            KNOWN_TOOLS
+        };
+        if h.tools & !known != 0 {
             return Err(format!(
                 "herramientas desconocidas (0x{:02x}): archivo de una versión posterior",
                 h.tools
@@ -1443,6 +1518,16 @@ pub fn assemble_with_preview(
     preview: Option<&[u8]>,
     payloads: &[Vec<u8>],
 ) -> Vec<u8> {
+    assemble_full(header, &Metadata::default(), preview, payloads)
+}
+
+/// Archivo completo: cabecera, metadatos (v2), vista previa y teselas.
+pub fn assemble_full(
+    header: &Header,
+    meta: &Metadata,
+    preview: Option<&[u8]>,
+    payloads: &[Vec<u8>],
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut h = header.clone();
     if preview.is_some() {
@@ -1450,7 +1535,16 @@ pub fn assemble_with_preview(
     } else {
         h.tools &= !TOOL_PREVIEW;
     }
+    let with_meta = h.version >= 2 && !meta.is_empty();
+    if with_meta {
+        h.tools |= TOOL_META;
+    } else {
+        h.tools &= !TOOL_META;
+    }
     h.write(&mut bytes);
+    if with_meta {
+        meta.write(&mut bytes);
+    }
     if let Some(pv) = preview {
         bytes.extend_from_slice(&(pv.len() as u32).to_le_bytes());
         bytes.extend_from_slice(pv);
@@ -1516,7 +1610,7 @@ fn encode_with_alpha(
     let preview = (p.preview && width.max(height) > PREVIEW_SIDE)
         .then(|| make_preview(rgb, alpha, width, height));
     Encoded {
-        bytes: assemble_with_preview(&header, preview.as_deref(), &payloads),
+        bytes: assemble_full(&header, &p.meta, preview.as_deref(), &payloads),
         recon_rgb,
         recon_alpha,
     }
@@ -2113,6 +2207,8 @@ pub struct Decoded {
     pub rgb: Vec<u8>,
     /// Canal alfa, si la imagen lo tiene.
     pub alpha: Option<Vec<u8>>,
+    /// Metadatos del archivo (perfil ICC, EXIF).
+    pub meta: Metadata,
 }
 
 impl Decoded {
@@ -2135,6 +2231,8 @@ pub struct Info {
     pub ranges: Vec<std::ops::Range<usize>>,
     /// Rango de la vista previa (un .tsl completo), si la hay.
     pub preview: Option<std::ops::Range<usize>>,
+    /// Metadatos (perfil ICC, EXIF).
+    pub meta: Metadata,
 }
 
 /// Máximo de píxeles que acepta el decodificador. El formato admite hasta
@@ -2157,6 +2255,10 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
         header.tile_size(),
     );
     let mut base = HEADER_LEN;
+    let mut meta = Metadata::default();
+    if header.tools & TOOL_META != 0 {
+        (meta, base) = Metadata::read(data, base)?;
+    }
     let mut preview = None;
     if header.tools & TOOL_PREVIEW != 0 {
         let len = data
@@ -2190,6 +2292,7 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
         tiles,
         ranges,
         preview,
+        meta,
     })
 }
 
@@ -2199,12 +2302,17 @@ pub fn decode_preview(data: &[u8]) -> Result<Option<Decoded>, String> {
     if header.tools & TOOL_PREVIEW == 0 {
         return Ok(None);
     }
+    let base = if header.tools & TOOL_META != 0 {
+        Metadata::read(data, HEADER_LEN)?.1
+    } else {
+        HEADER_LEN
+    };
     let len = data
-        .get(HEADER_LEN..HEADER_LEN + 4)
+        .get(base..base + 4)
         .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
         .ok_or("archivo truncado")?;
     let pv = data
-        .get(HEADER_LEN + 4..HEADER_LEN + 4 + len)
+        .get(base + 4..base + 4 + len)
         .ok_or("archivo truncado")?;
     let inner = Header::read(pv)?;
     if inner.tools & TOOL_PREVIEW != 0 {
@@ -2351,5 +2459,6 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         height: ht,
         rgb,
         alpha,
+        meta: inf.meta.clone(),
     })
 }

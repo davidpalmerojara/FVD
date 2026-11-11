@@ -10,7 +10,34 @@ normativa en caso de duda.
 
 ## 1. Cabecera
 
-El byte de versión vale **2**. El resto de la cabecera no cambia.
+El byte de versión vale **2**. El resto de la cabecera no cambia, salvo un bit nuevo en `tools`:
+
+| Bit | Nombre | Significado |
+|---|---|---|
+| 32 | `META` | Hay una sección de metadatos tras la cabecera (sección 1.1). |
+
+Un decodificador v1 rechaza un archivo con un bit de `tools` que no conoce.
+
+### 1.1 Sección de metadatos
+
+Si `tools & META`, justo después de la cabecera (antes de la vista previa, si la hay) viene:
+
+```
+u32  L                     longitud del resto de la sección
+L bytes de fragmentos:
+  4 bytes  etiqueta (ASCII)
+  u32      n
+  n bytes  datos
+```
+
+| Etiqueta | Contenido |
+|---|---|
+| `ICCP` | Perfil de color ICC, tal cual. Los valores RGB decodificados están en ese espacio de color; sin perfil, en sRGB. |
+| `EXIF` | Bloque EXIF en formato TIFF (como el segmento APP1 de JPEG, sin el prefijo `Exif\0\0`). |
+
+Las etiquetas desconocidas se ignoran, así que se pueden añadir otras sin cambiar de versión. Los
+metadatos no afectan a la decodificación de los píxeles. La orientación EXIF no se aplica al
+decodificar: el codificador de referencia la aplica a los píxeles y deja la etiqueta en 1.
 
 ## 2. Bloques rectangulares
 
@@ -87,6 +114,6 @@ que el prefijo coincide con la lista de modelos de la v1.
 
 ## 5. Pendiente antes de congelar
 
-- Vectores de conformidad v2.
+- Vectores de conformidad v2 (incluido uno con metadatos y vista previa).
 - Fijar en este texto la parte angular y CCLM con fórmulas completas, como en la v1.
 - Decidir si se añaden más herramientas a la v2 antes de congelarla.

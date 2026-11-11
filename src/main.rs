@@ -7,7 +7,7 @@ tesela - códec de imagen (formato .tsl)
 
 USO:
   tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--v1] [--444|--420]
-             [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F]
+             [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F] [--sin-metadatos]
   tesela decode <entrada.tsl> <salida.png>
   tesela compare <original.png> <distorsionada.png>      (imprime JSON)
   tesela roundtrip <entrada.png> [opciones de encode]     (imprime JSON con bpp y métricas)
@@ -21,30 +21,101 @@ fn load_png(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
     Ok((img.into_raw(), w as usize, h as usize))
 }
 
-/// Carga RGBA (alfa 255 si la imagen no tiene transparencia).
-fn load_rgba(path: &str) -> Result<(Vec<u8>, usize, usize), String> {
-    let img = image::open(path)
+/// Carga RGBA (alfa 255 si la imagen no tiene transparencia) con sus
+/// metadatos. La orientación EXIF se aplica a los píxeles (la foto nunca sale
+/// girada) y en el EXIF guardado queda como «normal».
+fn load_rgba(path: &str) -> Result<(Vec<u8>, usize, usize, tesela::codec::Metadata), String> {
+    use image::ImageDecoder;
+    let err = |e: image::ImageError| format!("{path}: {e}");
+    let mut dec = image::ImageReader::open(path)
         .map_err(|e| format!("{path}: {e}"))?
-        .to_rgba8();
+        .with_guessed_format()
+        .map_err(|e| format!("{path}: {e}"))?
+        .into_decoder()
+        .map_err(err)?;
+    let icc = dec.icc_profile().ok().flatten();
+    let mut exif = dec.exif_metadata().ok().flatten();
+    let orientation = dec
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(dec).map_err(err)?;
+    img.apply_orientation(orientation);
+    if let Some(e) = exif.as_mut() {
+        reset_exif_orientation(e);
+    }
+    let img = img.to_rgba8();
     let (w, h) = img.dimensions();
-    Ok((img.into_raw(), w as usize, h as usize))
+    Ok((
+        img.into_raw(),
+        w as usize,
+        h as usize,
+        tesela::codec::Metadata { icc, exif },
+    ))
 }
 
-fn save_decoded(path: &str, d: &tesela::Decoded) -> Result<(), String> {
-    if d.alpha.is_some() {
-        image::RgbaImage::from_raw(d.width as u32, d.height as u32, d.rgba())
-            .ok_or("buffer")?
-            .save(path)
-            .map_err(|e| format!("{path}: {e}"))
+/// Pone a 1 («normal») la etiqueta de orientación (0x0112) del IFD0 de un
+/// bloque EXIF, que puede empezar por «Exif\0\0» o directamente por la
+/// cabecera TIFF.
+fn reset_exif_orientation(exif: &mut [u8]) {
+    let base = if exif.starts_with(b"Exif\0\0") { 6 } else { 0 };
+    let t = &mut exif[base..];
+    if t.len() < 8 {
+        return;
+    }
+    let le = match &t[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return,
+    };
+    let rd16 = |b: &[u8], i: usize| {
+        if le {
+            u16::from_le_bytes([b[i], b[i + 1]])
+        } else {
+            u16::from_be_bytes([b[i], b[i + 1]])
+        }
+    };
+    let ifd = if le {
+        u32::from_le_bytes(t[4..8].try_into().unwrap())
     } else {
-        save_png(path, d.rgb.clone(), d.width, d.height)
+        u32::from_be_bytes(t[4..8].try_into().unwrap())
+    } as usize;
+    if ifd + 2 > t.len() {
+        return;
+    }
+    let n = rd16(t, ifd) as usize;
+    for k in 0..n {
+        let e = ifd + 2 + 12 * k;
+        if e + 12 > t.len() {
+            return;
+        }
+        if rd16(t, e) == 0x0112 {
+            let one = if le {
+                1u16.to_le_bytes()
+            } else {
+                1u16.to_be_bytes()
+            };
+            t[e + 8..e + 10].copy_from_slice(&one);
+        }
     }
 }
 
-fn save_png(path: &str, rgb: Vec<u8>, w: usize, h: usize) -> Result<(), String> {
-    image::RgbImage::from_raw(w as u32, h as u32, rgb)
-        .ok_or("buffer")?
-        .save(path)
+/// Guarda en PNG, con el perfil de color y el EXIF del archivo si los tiene.
+fn save_decoded(path: &str, d: &tesela::Decoded) -> Result<(), String> {
+    use image::ImageEncoder;
+    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut enc = image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file));
+    if let Some(icc) = &d.meta.icc {
+        enc.set_icc_profile(icc.clone()).ok();
+    }
+    if let Some(exif) = &d.meta.exif {
+        enc.set_exif_metadata(exif.clone()).ok();
+    }
+    let (buf, ty) = if d.alpha.is_some() {
+        (d.rgba(), image::ExtendedColorType::Rgba8)
+    } else {
+        (d.rgb.clone(), image::ExtendedColorType::Rgb8)
+    };
+    enc.write_image(&buf, d.width as u32, d.height as u32, ty)
         .map_err(|e| format!("{path}: {e}"))
 }
 
@@ -132,8 +203,18 @@ fn metrics_json(a: &[u8], b: &[u8], w: usize, h: usize) -> String {
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("encode") if args.len() >= 3 => {
-            let (rgba, w, h) = load_rgba(&args[1])?;
-            let p = parse_params(&args[3..])?;
+            let (rgba, w, h, meta) = load_rgba(&args[1])?;
+            // --sin-metadatos: no guarda el perfil de color ni el EXIF.
+            let strip = args[3..].iter().any(|a| a == "--sin-metadatos");
+            let rest: Vec<String> = args[3..]
+                .iter()
+                .filter(|a| *a != "--sin-metadatos")
+                .cloned()
+                .collect();
+            let mut p = parse_params(&rest)?;
+            if !strip {
+                p.meta = meta;
+            }
             let t = Instant::now();
             let e = tesela::encode_rgba(&rgba, w, h, &p);
             std::fs::write(&args[2], &e.bytes).map_err(|e| e.to_string())?;
@@ -163,7 +244,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{{{}}}", metrics_json(&a, &b, w, h));
         }
         Some("roundtrip") if args.len() >= 2 => {
-            let (rgba, w, h) = load_rgba(&args[1])?;
+            let (rgba, w, h, _) = load_rgba(&args[1])?;
             let rgb: Vec<u8> = rgba
                 .chunks_exact(4)
                 .flat_map(|p| [p[0], p[1], p[2]])

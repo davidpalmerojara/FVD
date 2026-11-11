@@ -145,6 +145,7 @@ Tamaño total de 10 imágenes (3 fotos, 4 capturas y 3 ilustraciones):
 | Restauración | Filtro tipo ALF. Cada bloque 4×4 se clasifica en una de 12 clases (actividad × dirección). Cada clase tiene un filtro simétrico de 15 taps que el codificador estima por mínimos cuadrados y activa por superbloque. |
 | Contenido sintético | Si la imagen parece sintética (pocos valores por bloque), el codificador activa tres herramientas, que en fotos no cuestan ni un bit. **Paleta**: hasta 8 colores, con índices codificados por rango según los vecinos. **Copia intra de bloques**: el codificador busca candidatos con un índice hash de bloques de 8×8. **Transform skip** en bloques de hasta 16×16. Además, el croma pasa a 4:4:4. |
 | Alfa y sin pérdida | El alfa es un plano adicional sin pérdida con contextos propios. El modo sin pérdida codifica los planos G, B y R con residuo exacto, y predice B y R desde G con CCLM. |
+| Metadatos (v2) | Perfil de color ICC (por ejemplo, Display P3 de las fotos de móvil) y EXIF. Al codificar se aplica la orientación EXIF a los píxeles. `tesela decode` escribe el perfil en el PNG, y el Service Worker lo incluye en el PNG que entrega al navegador, que gestiona el color como con cualquier imagen. `--sin-metadatos` no los guarda. |
 | Vista previa | Opcional (`--preview`): una miniatura de ~300 bytes al principio del archivo. `<tesela-img>` la muestra desenfocada en cuanto llega, mientras se descarga el resto. |
 | Determinismo | El decodificador WebAssembly produce **exactamente** los mismos bytes que el nativo, y lo comprueba el CI. |
 
@@ -294,6 +295,7 @@ Opciones de `encode`:
 | `--no-restore` | Desactiva el filtro de restauración. |
 | `--lossless` | Compresión sin pérdida. |
 | `--preview` | Añade una vista previa progresiva (~300 bytes). |
+| `--sin-metadatos` | No guarda el perfil de color ni el EXIF de la imagen original. |
 | `--screen` / `--no-screen` | Fuerza o desactiva las herramientas de contenido sintético. |
 | `--aq`, `--cq`, `--qm`, `--qmc`, `--lambda` | Ajustes finos. |
 
@@ -415,7 +417,8 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
   ~7 % en los tres tramos.
 - **Sin pérdida en fotos.** Ocupa más que WebP y JPEG XL.
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
-  (un alfa con degradados suaves cuesta bastante). No tiene animación ni metadatos ICC o EXIF.
+  (un alfa con degradados suaves cuesta bastante). No tiene animación ni HDR. En la web, el perfil de
+  color se respeta con `tesela-auto.js`, pero `<tesela-img>` pinta en sRGB.
 - **Velocidad de codificación.** Codificar sigue siendo más lento que AVIF: ~1 s por foto de
   0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador va con hilos solo si la página
   está aislada entre orígenes (ver el comparador); la librería `tesela.js` aún codifica con uno.
