@@ -20,7 +20,9 @@ pub const MAGIC: &[u8; 3] = b"TSL";
 /// Versión del flujo de bits. La v1 está congelada: cualquier cambio que
 /// altere la decodificación de un archivo v1 debe ir en una versión nueva
 /// (los vectores de `tests/vectors` lo comprueban).
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
+/// Versión más antigua que este decodificador sabe leer.
+pub const MIN_VERSION: u8 = 1;
 /// Bits de `tools` definidos en la v1.
 const KNOWN_TOOLS: u8 = 1 | 2 | 4 | 8;
 const SB: usize = 64;
@@ -66,6 +68,8 @@ pub struct Params {
     pub screen: Option<bool>,
     /// Compresión sin pérdida.
     pub lossless: bool,
+    /// Versión del flujo de bits a escribir (1 o 2; la 2 añade particiones rectangulares).
+    pub version: u8,
     /// Incluir vista previa progresiva.
     pub preview: bool,
 }
@@ -87,6 +91,7 @@ impl Default for Params {
             screen: None,
             lossless: false,
             preview: false,
+            version: VERSION,
         }
     }
 }
@@ -129,6 +134,8 @@ pub fn quality_to_qstep(q: f32) -> f32 {
 /// Cabecera: todo lo que el decodificador necesita para reconstruir.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Header {
+    /// Versión del flujo de bits (1 o 2).
+    pub version: u8,
     pub width: u32,
     pub height: u32,
     pub subsample: bool,
@@ -151,7 +158,7 @@ impl Header {
 
     fn write(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(MAGIC);
-        out.push(VERSION);
+        out.push(self.version);
         out.extend_from_slice(&self.width.to_le_bytes());
         out.extend_from_slice(&self.height.to_le_bytes());
         out.push(self.subsample as u8);
@@ -170,7 +177,7 @@ impl Header {
             return Err("no es un archivo Tesela".into());
         }
         match d[3] {
-            VERSION => {}
+            MIN_VERSION..=VERSION => {}
             b'1' => {
                 return Err(
                     "archivo de una versión de desarrollo anterior a la v1: vuelve a codificarlo"
@@ -179,7 +186,7 @@ impl Header {
             }
             v => {
                 return Err(format!(
-                    "versión {v} del formato no soportada (este decodificador lee la v{VERSION})"
+                    "versión {v} del formato no soportada (este decodificador lee de la v{MIN_VERSION} a la v{VERSION})"
                 ));
             }
         }
@@ -188,6 +195,7 @@ impl Header {
         }
         let u32le = |i: usize| u32::from_le_bytes(d[i..i + 4].try_into().unwrap());
         let h = Header {
+            version: d[3],
             width: u32le(4),
             height: u32le(8),
             subsample: d[12] != 0,
@@ -240,6 +248,8 @@ struct Ctx {
     pal_or_ibc: [Model; 2],
     pal: PalCtx,
     bv: BvCtx,
+    rect: Vec<Model>,
+    rect_dir: Vec<Model>,
 }
 
 impl Visit for Ctx {
@@ -258,6 +268,9 @@ impl Visit for Ctx {
         self.pal_or_ibc.visit(f);
         self.pal.visit(f);
         self.bv.visit(f);
+        // v2 (al final para que las tablas de la v1 sigan aplicándose igual)
+        self.rect.visit(f);
+        self.rect_dir.visit(f);
     }
 }
 
@@ -278,18 +291,28 @@ pub fn quality_band(qstep: f32) -> usize {
 pub static UNTRAINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Ctx {
-    fn trained(qstep: f32, screen: bool) -> Self {
+    fn trained(qstep: f32, screen: bool, version: u8) -> Self {
         let mut c = Ctx::new();
-        let t = crate::init_probs::TABLES[screen as usize][quality_band(qstep)];
+        let (s, b) = (screen as usize, quality_band(qstep));
+        let t2 = crate::init_probs_v2::TABLES[s][b];
+        let t = if version >= 2 && !t2.is_empty() {
+            t2
+        } else {
+            crate::init_probs::TABLES[s][b]
+        };
         if UNTRAINED.load(std::sync::atomic::Ordering::Relaxed) {
             return c;
         }
         let mut n = 0;
         c.visit(&mut |_| n += 1);
-        if t.len() == n {
+        // Una tabla más corta que el nº de modelos se aplica a los primeros
+        // (los modelos añadidos en versiones posteriores van al final).
+        if !t.is_empty() && t.len() <= n {
             let mut i = 0;
             c.visit(&mut |m| {
-                m.set_init(t[i]);
+                if i < t.len() {
+                    m.set_init(t[i]);
+                }
                 i += 1;
             });
         }
@@ -319,6 +342,8 @@ impl Ctx {
             pal_or_ibc: Default::default(),
             pal: PalCtx::default(),
             bv: BvCtx::default(),
+            rect: vec![Model::new(); 2 * 4],
+            rect_dir: vec![Model::new(); 2 * 4],
         }
     }
 }
@@ -399,28 +424,42 @@ fn cbf_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
 
 // ------------------------------------------------------------- Cuantización
 
-/// Pesos de la matriz de cuantización por tamaño de bloque.
+/// Pesos de la matriz de cuantización por tamaño de bloque `w × h`.
 struct QuantTables {
-    w: [[Vec<f32>; 5]; 2],
+    w: [Vec<Vec<f32>>; 2],
 }
 
 impl QuantTables {
     fn new(qm_luma: f32, qm_chroma: f32) -> Self {
         let make = |s: f32| {
-            dct::SIZES.map(|n| {
-                let mut v = vec![0f32; n * n];
-                for y in 0..n {
-                    for x in 0..n {
-                        let r = ((x * x + y * y) as f32).sqrt() / n as f32;
-                        v[y * n + x] = 1.0 + s * r * r;
+            let mut all = Vec::with_capacity(25);
+            for &bh in &dct::SIZES {
+                for &bw in &dct::SIZES {
+                    let mut v = vec![0f32; bw * bh];
+                    for y in 0..bh {
+                        for x in 0..bw {
+                            v[y * bw + x] = if bw == bh {
+                                // Fórmula de la v1 (cuadrados), sin cambios.
+                                let r = ((x * x + y * y) as f32).sqrt() / bw as f32;
+                                1.0 + s * r * r
+                            } else {
+                                let (rx, ry) = (x as f32 / bw as f32, y as f32 / bh as f32);
+                                1.0 + s * (rx * rx + ry * ry)
+                            };
+                        }
                     }
+                    all.push(v);
                 }
-                v
-            })
+            }
+            all
         };
         QuantTables {
             w: [make(qm_luma), make(qm_chroma)],
         }
+    }
+
+    fn get(&self, pc: usize, w: usize, h: usize) -> &[f32] {
+        &self.w[pc][size_index(h) * 5 + size_index(w)]
     }
 }
 
@@ -441,11 +480,11 @@ struct QMap {
 impl QMap {
     /// Paso de cuantización de un bloque: media redondeada del dq de las
     /// celdas de luma que cubre.
-    fn q(&self, pc: usize, x0: usize, y0: usize, n: usize) -> f32 {
+    fn q(&self, pc: usize, x0: usize, y0: usize, bw: usize, bh: usize) -> f32 {
         let f = if pc == 1 && self.sub { 2 } else { 1 };
         let (cx0, cy0) = ((x0 * f / AQ).min(self.w - 1), (y0 * f / AQ).min(self.h - 1));
-        let cx1 = ((x0 + n) * f).div_ceil(AQ).clamp(cx0 + 1, self.w);
-        let cy1 = ((y0 + n) * f).div_ceil(AQ).clamp(cy0 + 1, self.h);
+        let cx1 = ((x0 + bw) * f).div_ceil(AQ).clamp(cx0 + 1, self.w);
+        let cy1 = ((y0 + bh) * f).div_ceil(AQ).clamp(cy0 + 1, self.h);
         let mut sum = 0;
         let mut cnt = 0;
         for cy in cy0..cy1 {
@@ -502,9 +541,38 @@ struct Leaf {
 enum Node {
     Split(Box<[Node; 4]>),
     Leaf(Box<Leaf>),
+    /// Partición rectangular (v2): dos mitades, arriba/abajo si `true`
+    /// (horizontal) o izquierda/derecha si `false` (vertical).
+    Rect(bool, Box<[Leaf; 2]>),
 }
 
 const CHILDREN: [(usize, usize); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
+
+/// (x, y, ancho, alto) de las dos mitades de un nodo rectangular.
+fn rect_halves(x0: usize, y0: usize, n: usize, horz: bool) -> [(usize, usize, usize, usize); 2] {
+    let h = n / 2;
+    if horz {
+        [(x0, y0, n, h), (x0, y0 + h, n, h)]
+    } else {
+        [(x0, y0, h, n), (x0 + h, y0, h, n)]
+    }
+}
+
+/// Sintaxis de la partición rectangular (v2), tras `split = 0` en nodos N ≥ 8.
+/// Devuelve None (sin partición) o Some(horizontal).
+fn code_rect<C: Coder>(
+    ctx: &mut Ctx,
+    c: &mut C,
+    pc: usize,
+    n: usize,
+    rect: Option<bool>,
+) -> Option<bool> {
+    let i = pc * 4 + size_index(n) - 1;
+    if !c.bit(&mut ctx.rect[i], rect.is_some()) {
+        return None;
+    }
+    Some(c.bit(&mut ctx.rect_dir[i], rect == Some(true)))
+}
 
 /// Estado de las herramientas sintéticas compartido por codificador y
 /// decodificador dentro de un plano (última paleta y último vector).
@@ -519,8 +587,9 @@ fn special_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
     sp(p.neighbor(x0, y0, true)) + sp(p.neighbor(x0, y0, false))
 }
 
-/// Sintaxis de la cabecera de una hoja (clase de predicción y transform
-/// skip). Simétrica: el decodificador pasa una hoja ficticia.
+/// Sintaxis de la cabecera de una hoja `w × h` (clase de predicción y
+/// transform skip). Simétrica: el decodificador pasa una hoja ficticia.
+/// Los contextos usan el lado mayor del bloque.
 #[allow(clippy::too_many_arguments)]
 fn code_leaf_head<C: Coder>(
     ctx: &mut Ctx,
@@ -529,12 +598,14 @@ fn code_leaf_head<C: Coder>(
     pc: usize,
     x0: usize,
     y0: usize,
-    n: usize,
+    w: usize,
+    h: usize,
     screen: bool,
     lossless: bool,
     leaf: &Leaf,
     st: &mut ScState,
 ) -> (Kind, bool) {
+    let n = w.max(h);
     let sz = size_index(n);
     let mut kind = None;
     if screen {
@@ -556,7 +627,7 @@ fn code_leaf_head<C: Coder>(
                     Kind::Palette(pl) => pl,
                     _ => &dummy,
                 };
-                Kind::Palette(ctx.pal.code(c, pc, n, n, pal, &mut st.last_pal))
+                Kind::Palette(ctx.pal.code(c, pc, w, h, pal, &mut st.last_pal))
             } else {
                 let bv = match leaf.kind {
                     Kind::Ibc(b) => b,
@@ -577,35 +648,42 @@ fn code_leaf_head<C: Coder>(
     (kind, ts)
 }
 
-/// Reconstruye un bloque: descuantiza, transformada inversa (salvo
+/// Reconstruye un bloque `bw × bh`: descuantiza, transformada inversa (salvo
 /// transform skip) y suma la predicción.
+#[allow(clippy::too_many_arguments)]
 fn reconstruct(
     levels: &[i32],
     pred: &[i32],
     q: f32,
-    w: &[f32],
-    n: usize,
+    wt: &[f32],
+    bw: usize,
+    bh: usize,
     ts: bool,
     out: &mut [u8],
 ) {
-    let mut buf = vec![0f32; n * n];
+    let nn = bw * bh;
+    let mut buf = vec![0f32; nn];
     let mut any = false;
-    for i in 0..n * n {
+    for i in 0..nn {
         if levels[i] != 0 {
-            buf[i] = levels[i] as f32 * q * if ts { 1.0 } else { w[i] };
+            buf[i] = levels[i] as f32 * q * if ts { 1.0 } else { wt[i] };
             any = true;
         }
     }
     if any && !ts {
-        if levels[1..n * n].iter().all(|&l| l == 0) {
-            // Solo DC: la inversa es constante (base DC ortonormal = 1/n).
-            let v = buf[0] / n as f32;
+        if levels[1..nn].iter().all(|&l| l == 0) {
+            // Solo DC: la inversa es constante (base DC ortonormal = 1/√(w·h)).
+            let v = if bw == bh {
+                buf[0] / bw as f32
+            } else {
+                buf[0] / (nn as f32).sqrt()
+            };
             buf.fill(v);
         } else {
-            dct::inverse(&mut buf[..n * n], n);
+            dct::transform_rect(&mut buf, bw, bh, true);
         }
     }
-    for i in 0..n * n {
+    for i in 0..nn {
         out[i] = (pred[i] as f32 + buf[i]).round().clamp(0.0, 255.0) as u8;
     }
 }
@@ -640,6 +718,7 @@ impl LumaRef {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn predict_mode(
     p: &Plane,
     refs: &predict::Refs,
@@ -647,14 +726,15 @@ fn predict_mode(
     mode: u8,
     x0: usize,
     y0: usize,
-    n: usize,
+    w: usize,
+    h: usize,
     out: &mut [i32],
 ) {
     if mode == MODE_CCLM {
         let l = lref.expect("CCLM solo en croma");
-        predict::predict_cclm(p, &l.data, l.w, l.h, x0, y0, n, n, out);
+        predict::predict_cclm(p, &l.data, l.w, l.h, x0, y0, w, h, out);
     } else {
-        predict::predict(refs, mode, n, n, out);
+        predict::predict(refs, mode, w, h, out);
     }
 }
 
@@ -666,17 +746,18 @@ fn predict_leaf(
     kind: &Kind,
     x0: usize,
     y0: usize,
-    n: usize,
+    w: usize,
+    h: usize,
     out: &mut [i32],
 ) {
     match kind {
-        Kind::Intra(m) => predict_mode(p, refs, lref, *m, x0, y0, n, out),
+        Kind::Intra(m) => predict_mode(p, refs, lref, *m, x0, y0, w, h, out),
         Kind::Palette(pal) => tools::predict_palette(pal, out),
         Kind::Ibc(bv) => {
-            if tools::bv_valid(p, x0, y0, n, n, *bv) {
-                tools::predict_ibc(p, x0, y0, n, n, *bv, out)
+            if tools::bv_valid(p, x0, y0, w, h, *bv) {
+                tools::predict_ibc(p, x0, y0, w, h, *bv, out)
             } else {
-                out[..n * n].fill(128)
+                out[..w * h].fill(128)
             }
         }
     }
@@ -701,6 +782,8 @@ struct EncState {
     topk: usize,
     screen: bool,
     lossless: bool,
+    /// Flujo de bits v2 (particiones rectangulares).
+    v2: bool,
 }
 
 /// Resultado de evaluar una hoja.
@@ -719,7 +802,8 @@ impl EncState {
         pe: &PlaneEnc,
         x0: usize,
         y0: usize,
-        n: usize,
+        w: usize,
+        h: usize,
         kind: &Kind,
         ts: bool,
     ) -> f32 {
@@ -737,7 +821,8 @@ impl EncState {
             pe.pc,
             x0,
             y0,
-            n,
+            w,
+            h,
             self.screen,
             self.lossless,
             &leaf,
@@ -752,7 +837,8 @@ impl EncState {
     fn rd_residual(
         &self,
         pc: usize,
-        n: usize,
+        w: usize,
+        h: usize,
         cctx: usize,
         src: &[f32],
         pred: &[i32],
@@ -761,7 +847,7 @@ impl EncState {
         try_ts: bool,
         allow_dct: bool,
     ) -> (f32, Vec<i32>, bool) {
-        let nn = n * n;
+        let nn = w * h;
         let mut res = vec![0f32; nn];
         let mut best = (f32::INFINITY, Vec::new(), false);
         let mut levels = vec![0i32; nn];
@@ -770,20 +856,19 @@ impl EncState {
             for i in 0..nn {
                 levels[i] = (src[i] - pred[i] as f32).round() as i32;
             }
-            let bits = self.ctx.coef_ts.block_cost(pc, n, n, cctx, &levels);
+            let bits = self.ctx.coef_ts.block_cost(pc, w, h, cctx, &levels);
             return (lambda * bits, levels, true);
         }
         if allow_dct {
             for i in 0..nn {
                 res[i] = src[i] - pred[i] as f32;
             }
-            dct::forward(&mut res[..nn], n);
-            let w = &self.qt.w[pc][size_index(n)];
-            let qs: Vec<f32> = w.iter().map(|&wi| wi * q).collect();
+            dct::transform_rect(&mut res, w, h, false);
+            let qs: Vec<f32> = self.qt.get(pc, w, h).iter().map(|&wi| wi * q).collect();
             let (d, bits) =
                 self.ctx
                     .coef
-                    .quantize_rdo(pc, n, n, cctx, &res[..nn], &qs, lambda, &mut levels);
+                    .quantize_rdo(pc, w, h, cctx, &res, &qs, lambda, &mut levels);
             best = (d + lambda * bits, levels.clone(), false);
         }
         if try_ts {
@@ -794,7 +879,7 @@ impl EncState {
             let (d, bits) =
                 self.ctx
                     .coef_ts
-                    .quantize_rdo(pc, n, n, cctx, &res[..nn], &qs, lambda, &mut levels);
+                    .quantize_rdo(pc, w, h, cctx, &res, &qs, lambda, &mut levels);
             let j = d + lambda * bits;
             if j < best.0 {
                 best = (j, levels.clone(), true);
@@ -803,26 +888,29 @@ impl EncState {
         best
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn eval_leaf(
         &mut self,
         pe: &mut PlaneEnc,
         lref: Option<&LumaRef>,
         x0: usize,
         y0: usize,
-        n: usize,
+        w: usize,
+        h: usize,
         q: f32,
     ) -> LeafEval {
         let lambda = self.lambda_k * q * q;
         let slam = lambda.sqrt();
         let pc = pe.pc;
-        let nn = n * n;
+        let n = w.max(h);
+        let nn = w * h;
         let mut src = vec![0f32; nn];
-        for y in 0..n {
-            for x in 0..n {
-                src[y * n + x] = pe.src[(y0 + y) * pe.plane.w + x0 + x];
+        for y in 0..h {
+            for x in 0..w {
+                src[y * w + x] = pe.src[(y0 + y) * pe.plane.w + x0 + x];
             }
         }
-        let refs = predict::build_refs(&pe.plane, x0, y0, n, n);
+        let refs = predict::build_refs(&pe.plane, x0, y0, w, h);
         let mpm = mpm_list(&pe.plane, x0, y0);
         let cctx = cbf_ctx(&pe.plane, x0, y0);
         let nmodes = if pc == 1 && lref.is_some() {
@@ -866,13 +954,13 @@ impl EncState {
                     continue;
                 }
                 done[mode as usize] = true;
-                predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
+                predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
                 for i in 0..nn {
                     res[i] = src[i] - pred[i] as f32;
                 }
                 let mut cc = CostCounter::default();
                 code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
-                let s = dct::satd(&res[..nn], n);
+                let s = dct::satd_rect(&res, w, h);
                 cands.push((s + slam * cc.bits, mode, cc.bits));
             }
         }
@@ -894,61 +982,63 @@ impl EncState {
             if sc > satd_limit {
                 break;
             }
-            predict_mode(&pe.plane, &refs, lref, mode, x0, y0, n, &mut pred);
-            let (jr, lv, ts) = self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
+            predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
+            let (jr, lv, ts) =
+                self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
             let kind = Kind::Intra(mode);
-            let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
+            let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
             consider(&mut best, jr + lambda * hb, kind, lv, ts);
         }
         if self.screen && n <= 32 {
             // Paleta
-            for pal in tools::palette_candidates(&src, n, n) {
+            for pal in tools::palette_candidates(&src, w, h) {
                 tools::predict_palette(&pal, &mut pred);
                 let (jr, lv, ts) =
-                    self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
                 let kind = Kind::Palette(pal);
-                let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
+                let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
             }
             // Copia intra de bloques
-            if n >= 8 {
+            if w.min(h) >= 8 {
                 let mut bvs: Vec<(i32, i32)> =
-                    vec![pe.sc.last_bv, (-(n as i32), 0), (0, -(n as i32))];
-                if let Some(h) = &pe.hash {
-                    bvs.extend(h.candidates(pe.src, pe.plane.w, x0, y0));
+                    vec![pe.sc.last_bv, (-(w as i32), 0), (0, -(h as i32))];
+                if let Some(hi) = &pe.hash {
+                    bvs.extend(hi.candidates(pe.src, pe.plane.w, x0, y0));
                 }
                 let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
                 for bv in bvs {
                     if scored.iter().any(|s| s.1 == bv)
-                        || !tools::bv_valid(&pe.plane, x0, y0, n, n, bv)
+                        || !tools::bv_valid(&pe.plane, x0, y0, w, h, bv)
                     {
                         continue;
                     }
-                    tools::predict_ibc(&pe.plane, x0, y0, n, n, bv, &mut pred);
+                    tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
                     let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
                     let bits = self.ctx.bv.cost(pc, bv, pe.sc.last_bv);
                     scored.push((sad + slam * bits, bv));
                 }
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 for &(_, bv) in scored.iter().take(2) {
-                    tools::predict_ibc(&pe.plane, x0, y0, n, n, bv, &mut pred);
+                    tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
                     let (jr, lv, ts) =
-                        self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
+                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
                     let kind = Kind::Ibc(bv);
-                    let hb = self.head_bits(pe, x0, y0, n, &kind, ts);
+                    let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                     consider(&mut best, jr + lambda * hb, kind, lv, ts);
                 }
             }
         }
         let (j, kind, levels, ts) = best.expect("al menos un candidato");
-        predict_leaf(&pe.plane, &refs, lref, &kind, x0, y0, n, &mut pred);
+        predict_leaf(&pe.plane, &refs, lref, &kind, x0, y0, w, h, &mut pred);
         let mut recon = vec![0u8; nn];
         reconstruct(
             &levels,
             &pred,
             q,
-            &self.qt.w[pc][size_index(n)],
-            n,
+            self.qt.get(pc, w, h),
+            w,
+            h,
             ts,
             &mut recon,
         );
@@ -962,9 +1052,9 @@ impl EncState {
     }
 
     /// Aplica una hoja elegida al plano y al estado sintético aproximado.
-    fn commit_leaf(pe: &mut PlaneEnc, x0: usize, y0: usize, n: usize, ev: &LeafEval) {
-        pe.plane.write_block(x0, y0, n, n, &ev.recon);
-        pe.plane.set_block(x0, y0, n, n, ev.leaf.kind.mark(), ev.nz);
+    fn commit_leaf(pe: &mut PlaneEnc, x0: usize, y0: usize, w: usize, h: usize, ev: &LeafEval) {
+        pe.plane.write_block(x0, y0, w, h, &ev.recon);
+        pe.plane.set_block(x0, y0, w, h, ev.leaf.kind.mark(), ev.nz);
         match &ev.leaf.kind {
             Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
             Kind::Ibc(bv) => pe.sc.last_bv = *bv,
@@ -972,6 +1062,8 @@ impl EncState {
         }
     }
 
+    /// Decide la partición de un nodo N×N por RDO: hoja, dos mitades
+    /// (horizontal o vertical, solo v2) o cuatro hijos.
     fn rdo_node(
         &mut self,
         pe: &mut PlaneEnc,
@@ -981,39 +1073,120 @@ impl EncState {
         y0: usize,
         n: usize,
     ) -> (f32, Node) {
-        let q = qm.q(pe.pc, x0, y0, n);
+        let pc = pe.pc;
+        let q = qm.q(pc, x0, y0, n, n);
         let lambda = self.lambda_k * q * q;
         let sc_before = pe.sc.clone();
-        let mut ev = self.eval_leaf(pe, lref, x0, y0, n, q);
+        let mut ev = self.eval_leaf(pe, lref, x0, y0, n, n, q);
         if n == 4 {
-            Self::commit_leaf(pe, x0, y0, n, &ev);
+            Self::commit_leaf(pe, x0, y0, n, n, &ev);
             let j = ev.j;
             return (j, Node::Leaf(Box::new(ev.leaf)));
         }
-        let sctx = split_ctx(&pe.plane, x0, y0, n, pe.pc);
-        ev.j += lambda * self.ctx.split[sctx].cost(false);
+        let sctx = split_ctx(&pe.plane, x0, y0, n, pc);
+        let split0 = lambda * self.ctx.split[sctx].cost(false);
+        let split1 = lambda * self.ctx.split[sctx].cost(true);
+        let ri = pc * 4 + size_index(n) - 1;
+        ev.j += split0;
+        if self.v2 {
+            ev.j += lambda * self.ctx.rect[ri].cost(false);
+        }
+        // 0 = hoja, 1 = mitades horizontales, 2 = mitades verticales.
+        let mut best_j = ev.j;
+        let mut best = 0;
+        let mut rect_best: Option<[LeafEval; 2]> = None;
+        if self.v2 {
+            for (opt, horz) in [(1, true), (2, false)] {
+                pe.plane.clear_avail(x0, y0, n, n);
+                pe.sc = sc_before.clone();
+                let mut j = split0
+                    + lambda * (self.ctx.rect[ri].cost(true) + self.ctx.rect_dir[ri].cost(horz));
+                let mut evs: Vec<LeafEval> = Vec::with_capacity(2);
+                for (hx, hy, hw, hh) in rect_halves(x0, y0, n, horz) {
+                    if j >= best_j {
+                        break; // poda exacta
+                    }
+                    let e = self.eval_leaf(pe, lref, hx, hy, hw, hh, qm.q(pc, hx, hy, hw, hh));
+                    j += e.j;
+                    Self::commit_leaf(pe, hx, hy, hw, hh, &e);
+                    evs.push(e);
+                }
+                if evs.len() == 2 && j < best_j {
+                    best_j = j;
+                    best = opt;
+                    let b = evs.pop().unwrap();
+                    let a = evs.pop().unwrap();
+                    rect_best = Some([a, b]);
+                }
+            }
+            pe.plane.clear_avail(x0, y0, n, n);
+            pe.sc = sc_before.clone();
+        }
         let h = n / 2;
-        let mut jb = lambda * self.ctx.split[sctx].cost(true);
+        let mut jb = split1;
         let mut kids: Vec<Node> = Vec::with_capacity(4);
         for (dx, dy) in CHILDREN {
             let (j, node) = self.rdo_node(pe, lref, qm, x0 + dx * h, y0 + dy * h, h);
             jb += j;
             kids.push(node);
             // Poda exacta: los costes son no negativos, así que si la suma
-            // parcial ya supera al bloque sin dividir, dividir no puede ganar.
-            if jb >= ev.j {
+            // parcial ya supera a la mejor alternativa, dividir no puede ganar.
+            if jb >= best_j {
                 break;
             }
         }
-        if ev.j <= jb {
-            pe.sc = sc_before;
-            Self::commit_leaf(pe, x0, y0, n, &ev);
-            let j = ev.j;
-            (j, Node::Leaf(Box::new(ev.leaf)))
-        } else {
+        if kids.len() == 4 && jb < best_j {
             let arr: [Node; 4] = kids.try_into().ok().unwrap();
-            (jb, Node::Split(Box::new(arr)))
+            return (jb, Node::Split(Box::new(arr)));
         }
+        pe.sc = sc_before;
+        if best == 0 {
+            Self::commit_leaf(pe, x0, y0, n, n, &ev);
+            let j = ev.j;
+            return (j, Node::Leaf(Box::new(ev.leaf)));
+        }
+        let horz = best == 1;
+        let [a, b] = rect_best.expect("mitades evaluadas");
+        let halves = rect_halves(x0, y0, n, horz);
+        Self::commit_leaf(pe, halves[0].0, halves[0].1, halves[0].2, halves[0].3, &a);
+        Self::commit_leaf(pe, halves[1].0, halves[1].1, halves[1].2, halves[1].3, &b);
+        (best_j, Node::Rect(horz, Box::new([a.leaf, b.leaf])))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_leaf(
+        &mut self,
+        enc: &mut Encoder,
+        p: &Plane,
+        pc: usize,
+        st: &mut ScState,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+        leaf: &Leaf,
+    ) {
+        code_leaf_head(
+            &mut self.ctx,
+            enc,
+            p,
+            pc,
+            x0,
+            y0,
+            w,
+            h,
+            self.screen,
+            self.lossless,
+            leaf,
+            st,
+        );
+        let mut l = leaf.levels.clone();
+        let coef = if leaf.ts {
+            &mut self.ctx.coef_ts
+        } else {
+            &mut self.ctx.coef
+        };
+        coef.code_block(enc, pc, w, h, cbf_ctx(p, x0, y0), &mut l);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1030,7 +1203,15 @@ impl EncState {
     ) {
         if n > 4 {
             let sctx = split_ctx(p, x0, y0, n, pc);
-            enc.bit(&mut self.ctx.split[sctx], matches!(node, Node::Split(_)));
+            let split = matches!(node, Node::Split(_));
+            enc.bit(&mut self.ctx.split[sctx], split);
+            if !split && self.v2 {
+                let r = match node {
+                    Node::Rect(horz, _) => Some(*horz),
+                    _ => None,
+                };
+                code_rect(&mut self.ctx, enc, pc, n, r);
+            }
         }
         match node {
             Node::Split(kids) => {
@@ -1039,27 +1220,11 @@ impl EncState {
                     self.write_node(enc, p, pc, st, x0 + dx * h, y0 + dy * h, h, &kids[k]);
                 }
             }
-            Node::Leaf(leaf) => {
-                code_leaf_head(
-                    &mut self.ctx,
-                    enc,
-                    p,
-                    pc,
-                    x0,
-                    y0,
-                    n,
-                    self.screen,
-                    self.lossless,
-                    leaf,
-                    st,
-                );
-                let mut l = leaf.levels.clone();
-                let coef = if leaf.ts {
-                    &mut self.ctx.coef_ts
-                } else {
-                    &mut self.ctx.coef
-                };
-                coef.code_block(enc, pc, n, n, cbf_ctx(p, x0, y0), &mut l);
+            Node::Leaf(leaf) => self.write_leaf(enc, p, pc, st, x0, y0, n, n, leaf),
+            Node::Rect(horz, leaves) => {
+                for (k, (hx, hy, hw, hh)) in rect_halves(x0, y0, n, *horz).into_iter().enumerate() {
+                    self.write_leaf(enc, p, pc, st, hx, hy, hw, hh, &leaves[k]);
+                }
             }
         }
     }
@@ -1182,6 +1347,7 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
     let tile = (p.tile.clamp(64, 65535 * 64) / 64) as u16;
     if p.lossless {
         return Header {
+            version: p.version,
             width: width as u32,
             height: height as u32,
             subsample: false,
@@ -1196,6 +1362,7 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
         };
     }
     Header {
+        version: p.version,
         width: width as u32,
         height: height as u32,
         subsample: p.subsample.unwrap_or(!screen && base_q > 1.04),
@@ -1425,13 +1592,14 @@ pub fn encode_tile_stats(
         ctx: if lossless {
             Ctx::new()
         } else {
-            Ctx::trained(base_q, header.tools & TOOL_SCREEN != 0)
+            Ctx::trained(base_q, header.tools & TOOL_SCREEN != 0, header.version)
         },
         qt: QuantTables::new(header.qm_luma as f32 / 16.0, header.qm_chroma as f32 / 16.0),
         lambda_k: p.lambda_k,
         topk: (p.effort.clamp(1, 9) as usize) + 1,
         screen: header.tools & TOOL_SCREEN != 0,
         lossless,
+        v2: header.version >= 2,
     };
     let mut enc = Encoder::new();
     let mut planes: Vec<Plane> = Vec::new();
@@ -1499,6 +1667,7 @@ pub fn encode_tile_stats(
             topk: st.topk,
             screen: true,
             lossless: true,
+            v2: header.version >= 2,
         };
         let mut aq = unit_qmap(width, height);
         let (plane, _) = encode_plane(
@@ -1558,6 +1727,8 @@ struct DecState {
     qt: QuantTables,
     screen: bool,
     lossless: bool,
+    /// Flujo de bits v2 (particiones rectangulares).
+    v2: bool,
 }
 
 impl DecState {
@@ -1583,7 +1754,32 @@ impl DecState {
                 }
                 return;
             }
+            if self.v2
+                && let Some(horz) = code_rect(&mut self.ctx, dec, pc, n, None)
+            {
+                for (hx, hy, hw, hh) in rect_halves(x0, y0, n, horz) {
+                    self.read_leaf(dec, p, lref, qm, pc, st, hx, hy, hw, hh);
+                }
+                return;
+            }
         }
+        self.read_leaf(dec, p, lref, qm, pc, st, x0, y0, n, n);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_leaf(
+        &mut self,
+        dec: &mut Decoder,
+        p: &mut Plane,
+        lref: Option<&LumaRef>,
+        qm: &QMap,
+        pc: usize,
+        st: &mut ScState,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+    ) {
         let dummy = Leaf {
             kind: Kind::Intra(MODE_DC),
             ts: false,
@@ -1596,7 +1792,8 @@ impl DecState {
             pc,
             x0,
             y0,
-            n,
+            w,
+            h,
             self.screen,
             self.lossless,
             &dummy,
@@ -1607,29 +1804,30 @@ impl DecState {
             Kind::Intra(m) if m > MODE_CCLM => Kind::Intra(MODE_DC),
             k => k,
         };
-        let mut levels = vec![0i32; n * n];
+        let mut levels = vec![0i32; w * h];
         let coef = if ts {
             &mut self.ctx.coef_ts
         } else {
             &mut self.ctx.coef
         };
-        let nz = coef.code_block(dec, pc, n, n, cbf_ctx(p, x0, y0), &mut levels);
-        let refs = predict::build_refs(p, x0, y0, n, n);
-        let mut pred = vec![0i32; n * n];
-        predict_leaf(p, &refs, lref, &kind, x0, y0, n, &mut pred);
-        let mut recon = vec![0u8; n * n];
-        let q = qm.q(pc, x0, y0, n);
+        let nz = coef.code_block(dec, pc, w, h, cbf_ctx(p, x0, y0), &mut levels);
+        let refs = predict::build_refs(p, x0, y0, w, h);
+        let mut pred = vec![0i32; w * h];
+        predict_leaf(p, &refs, lref, &kind, x0, y0, w, h, &mut pred);
+        let mut recon = vec![0u8; w * h];
+        let q = qm.q(pc, x0, y0, w, h);
         reconstruct(
             &levels,
             &pred,
             q,
-            &self.qt.w[pc][size_index(n)],
-            n,
+            self.qt.get(pc, w, h),
+            w,
+            h,
             ts,
             &mut recon,
         );
-        p.write_block(x0, y0, n, n, &recon);
-        p.set_block(x0, y0, n, n, kind.mark(), nz);
+        p.write_block(x0, y0, w, h, &recon);
+        p.set_block(x0, y0, w, h, kind.mark(), nz);
     }
 }
 
@@ -1780,11 +1978,12 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
         ctx: if lossless {
             Ctx::new()
         } else {
-            Ctx::trained(base_q, h.tools & TOOL_SCREEN != 0)
+            Ctx::trained(base_q, h.tools & TOOL_SCREEN != 0, h.version)
         },
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
         screen: h.tools & TOOL_SCREEN != 0,
         lossless,
+        v2: h.version >= 2,
     };
     let mut dec = Decoder::new(payload);
     let mut planes = Vec::new();
@@ -1834,6 +2033,7 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
             qt: QuantTables::new(0.0, 0.0),
             screen: true,
             lossless: true,
+            v2: h.version >= 2,
         };
         let mut aq = unit_qmap(w, ht);
         let plane = decode_plane(&mut ast, &mut dec, w, ht, 0, None, &mut aq, false);

@@ -6,7 +6,7 @@ const USAGE: &str = "\
 tesela - códec de imagen (formato .tsl)
 
 USO:
-  tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--444|--420]
+  tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--v1] [--444|--420]
              [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F]
   tesela decode <entrada.tsl> <salida.png>
   tesela compare <original.png> <distorsionada.png>      (imprime JSON)
@@ -80,6 +80,7 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
             "--screen" => p.screen = Some(true),
             "--lossless" => p.lossless = true,
             "--preview" => p.preview = true,
+            "--v1" => p.version = 1,
             "--no-screen" => p.screen = Some(false),
             "--444" => p.subsample = Some(false),
             "--420" => p.subsample = Some(true),
@@ -276,9 +277,8 @@ fn train(out: &str, imgs: &[String]) -> Result<(), String> {
         }
     }
     let mut s = String::from(
-        "//! Probabilidades iniciales entrenadas (generado con `tesela train`).\n\
-         //! TABLES[sintético][banda de calidad]; una tabla que no coincide con el\n\
-         //! nº de modelos actual se ignora y los contextos empiezan en 0,5.\n\n\
+        "//! Probabilidades iniciales de la v2 (generado con `tesela train`).\n\
+         //! TABLES[sintético][banda de calidad], en el orden de visita de los modelos.\n\n\
          pub static TABLES: [[&[u16]; 4]; 2] = [\n",
     );
     for kind in &tables {

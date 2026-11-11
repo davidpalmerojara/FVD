@@ -7,6 +7,7 @@ pub mod color;
 pub mod dct;
 pub mod deblock;
 pub mod init_probs;
+pub mod init_probs_v2;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod predict;

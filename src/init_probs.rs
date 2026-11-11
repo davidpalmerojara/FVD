@@ -1,4 +1,4 @@
-//! Probabilidades iniciales entrenadas (generado con `tesela train`).
+//! Probabilidades iniciales de la **v1** (congeladas: forman parte del formato v1).
 //! TABLES[sintético][banda de calidad]; una tabla que no coincide con el
 //! nº de modelos actual se ignora y los contextos empiezan en 0,5.
 

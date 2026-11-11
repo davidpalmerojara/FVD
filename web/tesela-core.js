@@ -130,8 +130,9 @@ export class Core {
 
 export const TUNES = { balanced: 0, perceptual: 1, psnr: 2 };
 
-/** Versión del flujo de bits que entiende este decodificador. */
-export const VERSION = 1;
+/** Versiones del flujo de bits que entiende este decodificador. */
+export const MIN_VERSION = 1;
+export const VERSION = 2;
 export const TOOL_ALPHA = 4;
 export const TOOL_PREVIEW = 8;
 const HEADER = 23;
@@ -154,10 +155,10 @@ export function parseTesela(buffer) {
   if (bytes.length < 4 || String.fromCharCode(...bytes.subarray(0, 3)) !== 'TSL') {
     throw new Error('no es un archivo Tesela (.tsl)');
   }
-  if (bytes[3] !== VERSION) {
+  if (bytes[3] < MIN_VERSION || bytes[3] > VERSION) {
     throw new Error(bytes[3] === 0x31
       ? 'archivo de una versión de desarrollo anterior a la v1: vuelve a codificarlo'
-      : `versión ${bytes[3]} del formato Tesela no soportada (se admite la v${VERSION})`);
+      : `versión ${bytes[3]} del formato Tesela no soportada (se admiten de la v${MIN_VERSION} a la v${VERSION})`);
   }
   if (bytes.length < HEADER) throw new Error('archivo Tesela truncado');
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
