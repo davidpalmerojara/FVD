@@ -89,7 +89,7 @@ impl Default for Params {
             qm_chroma: 3.0,
             lambda_k: 0.11,
             deblock: Some(0),
-            tile: 1024,
+            tile: 2048,
             restore: true,
             screen: None,
             lossless: false,
@@ -1465,10 +1465,12 @@ fn encode_with_alpha(
         header.tools |= TOOL_ALPHA;
     }
     let tiles = tile_grid(width, height, header.tile_size());
-    // Hilos por tesela: las teselas ya van en paralelo entre sí.
+    // Hilos por tesela: todos los disponibles aunque las teselas también vayan
+    // en paralelo, porque suelen ser de tamaños distintos (las del borde son
+    // más pequeñas) y el frente de onda de cada una tiene esperas.
     let mut p2 = p.clone();
     if p2.threads == 0 {
-        p2.threads = (available_threads() / tiles.len()).max(1);
+        p2.threads = available_threads();
     }
     let p = &p2;
     let res = par_map(&tiles, |t| {

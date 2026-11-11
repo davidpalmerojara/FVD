@@ -126,7 +126,7 @@ Tamaño total de 10 imágenes (3 fotos, 4 capturas y 3 ilustraciones):
 
 | Etapa | Técnica |
 |---|---|
-| Contenedor | Cabecera y teselas independientes de 1024×1024 que se codifican y decodifican en paralelo (rayon en nativo, Web Workers en el navegador). En imágenes de hasta 1024 px no hay ninguna pérdida. |
+| Contenedor | Cabecera y teselas independientes de 2048×2048 que se codifican y decodifican en paralelo (rayon en nativo, Web Workers en el navegador); dentro de cada tesela, el codificador decide los superbloques en frente de onda con varios hilos. En imágenes de hasta 2048 px no hay ninguna pérdida por teselas. |
 | Color | YCbCr. Croma 4:2:0 centrado con interpolación bilineal, o 4:4:4 a calidades muy altas. |
 | Partición | Superbloques de 64×64 divididos en un quadtree hasta 4×4. Cada decisión se toma por RDO (`D + λ·R`) con la tasa estimada a partir de los contextos reales. |
 | Predicción | Planar, DC y 33 direcciones angulares con filtrado de referencias. Para croma también hay **CCLM**: la croma se predice desde la luma, con parámetros deducidos de los vecinos que no se transmiten. La búsqueda de modos se hace en dos fases. |
