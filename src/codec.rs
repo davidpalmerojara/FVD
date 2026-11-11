@@ -925,8 +925,20 @@ pub struct RefCanvas {
 impl RefCanvas {
     /// `recon`: lienzo anterior decodificado (RGB). `src`: lienzo anterior
     /// original (solo el codificador, para buscar coincidencias exactas).
-    fn new(recon: &[u8], src: Option<&[u8]>, w: usize, h: usize, header: &Header, x: usize, y: usize) -> Self {
-        let to_u8 = |p: &[f32]| p.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect::<Vec<u8>>();
+    fn new(
+        recon: &[u8],
+        src: Option<&[u8]>,
+        w: usize,
+        h: usize,
+        header: &Header,
+        x: usize,
+        y: usize,
+    ) -> Self {
+        let to_u8 = |p: &[f32]| {
+            p.iter()
+                .map(|v| v.round().clamp(0.0, 255.0) as u8)
+                .collect::<Vec<u8>>()
+        };
         let planes = color_planes(recon, w, h, header)
             .into_iter()
             .map(|(p, pw, ph)| (to_u8(&p), pw, ph))
@@ -938,14 +950,27 @@ impl RefCanvas {
                 .collect(),
             None => vec![None, None, None],
         };
-        RefCanvas { planes, hashes, x, y, sub: header.subsample && header.tools & TOOL_LOSSLESS == 0 }
+        RefCanvas {
+            planes,
+            hashes,
+            x,
+            y,
+            sub: header.subsample && header.tools & TOOL_LOSSLESS == 0,
+        }
     }
 
     /// Plano `pi` para la tesela que empieza en (tx, ty) dentro del fotograma.
     fn plane(&self, pi: usize, tx: usize, ty: usize) -> InterPlane<'_> {
         let d = if pi > 0 && self.sub { 2 } else { 1 };
         let (data, w, h) = &self.planes[pi];
-        InterPlane { data, w: *w, h: *h, ox: (self.x + tx) / d, oy: (self.y + ty) / d, hash: self.hashes[pi].as_ref() }
+        InterPlane {
+            data,
+            w: *w,
+            h: *h,
+            ox: (self.x + tx) / d,
+            oy: (self.y + ty) / d,
+            hash: self.hashes[pi].as_ref(),
+        }
     }
 }
 
@@ -1244,7 +1269,10 @@ impl EncState {
             // por pasos alrededor del mejor), ordenados por SAD + bits.
             let mut seen: Vec<(i32, i32)> = Vec::new();
             let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
-            let mut score = |mv: (i32, i32), this: &mut Self, scored: &mut Vec<(f32, (i32, i32))>, pred: &mut [i32]| {
+            let mut score = |mv: (i32, i32),
+                             this: &mut Self,
+                             scored: &mut Vec<(f32, (i32, i32))>,
+                             pred: &mut [i32]| {
                 if seen.contains(&mv) || mv.0.abs() > 4096 || mv.1.abs() > 4096 {
                     return f32::INFINITY;
                 }
@@ -1257,7 +1285,11 @@ impl EncState {
             };
             let mut start = vec![(0, 0), pe.sc.last_mv];
             if let Some(hi) = ip.hash.filter(|_| w.min(h) >= 8) {
-                for c in hi.candidates(pe.src, pe.plane.w, x0, y0).into_iter().take(8) {
+                for c in hi
+                    .candidates(pe.src, pe.plane.w, x0, y0)
+                    .into_iter()
+                    .take(8)
+                {
                     start.push((c.0 - ip.ox as i32, c.1 - ip.oy as i32));
                 }
             }
@@ -1274,7 +1306,16 @@ impl EncState {
                     while improved {
                         improved = false;
                         let c = best_mv.1;
-                        for (dx, dy) in [(step, 0), (-step, 0), (0, step), (0, -step), (step, step), (-step, -step), (step, -step), (-step, step)] {
+                        for (dx, dy) in [
+                            (step, 0),
+                            (-step, 0),
+                            (0, step),
+                            (0, -step),
+                            (step, step),
+                            (-step, -step),
+                            (step, -step),
+                            (-step, step),
+                        ] {
                             let mv = (c.0 + dx, c.1 + dy);
                             let s = score(mv, self, &mut scored, &mut pred);
                             if s < best_mv.0 {
@@ -1288,14 +1329,26 @@ impl EncState {
             scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             for &(_, mv) in scored.iter().take(2) {
                 ip.predict(x0, y0, w, h, mv, &mut pred);
-                let (jr, lv, ts) = self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
+                let (jr, lv, ts) =
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
                 let kind = Kind::Inter(mv);
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
             }
         }
         let (j, kind, levels, ts) = best.expect("al menos un candidato");
-        predict_leaf(&pe.plane, &refs, lref, &kind, x0, y0, w, h, pe.inter.as_ref(), &mut pred);
+        predict_leaf(
+            &pe.plane,
+            &refs,
+            lref,
+            &kind,
+            x0,
+            y0,
+            w,
+            h,
+            pe.inter.as_ref(),
+            &mut pred,
+        );
         let mut recon = vec![0u8; nn];
         reconstruct(
             &levels,
@@ -2731,7 +2784,15 @@ fn decode_with_ref(data: &[u8], rc: Option<std::sync::Arc<RefCanvas>>) -> Result
     let idx: Vec<usize> = (0..inf.tiles.len()).collect();
     let parts = par_map(&idx, |&i| {
         let t = inf.tiles[i];
-        decode_tile_ref(&data[inf.ranges[i].clone()], t.w, t.h, &inf.header, rc.clone(), t.x, t.y)
+        decode_tile_ref(
+            &data[inf.ranges[i].clone()],
+            t.w,
+            t.h,
+            &inf.header,
+            rc.clone(),
+            t.x,
+            t.y,
+        )
     });
     let mut rgb = vec![0u8; w * ht * 3];
     let mut alpha = (inf.header.tools & TOOL_ALPHA != 0).then(|| vec![255u8; w * ht]);
@@ -2867,7 +2928,10 @@ pub fn decode_frame(
     if h.subsample && (f.x | f.y) & 1 != 0 {
         return Err("fotograma con predicción en coordenadas impares".into());
     }
-    let rgb: Vec<u8> = canvas.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let rgb: Vec<u8> = canvas
+        .chunks_exact(4)
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect();
     let rc = std::sync::Arc::new(RefCanvas::new(&rgb, None, cw, ch, &h, f.x, f.y));
     decode_with_ref(inner, Some(rc))
 }
@@ -2950,9 +3014,18 @@ pub fn encode_animation(
     };
     // Predicción entre fotogramas (TESELA_NOINTER=1 la desactiva, para comparar).
     let use_inter = std::env::var_os("TESELA_NOINTER").is_none();
-    let rgb_of = |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|px| [px[0], px[1], px[2]]).collect() };
+    let rgb_of = |f: &[u8]| -> Vec<u8> {
+        f.chunks_exact(4)
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .collect()
+    };
     // Lienzo tal como lo verá el decodificador (RGBA).
     let mut recon = vec![0u8; width * height * 4];
+    // ¿Contenido fotográfico? Se decide una vez con el primer fotograma
+    // completo (los rectángulos que cambian pueden ser muy pequeños).
+    let photo = !p
+        .screen
+        .unwrap_or_else(|| tools::looks_synthetic(&rgb_of(&frames[0]), width, height));
     // (duración, x, y, w, h, datos)
     let mut list: Vec<(u32, usize, usize, usize, usize, Vec<u8>)> = Vec::new();
     for (i, f) in frames.iter().enumerate() {
@@ -2982,7 +3055,25 @@ pub fn encode_animation(
                     x,
                     y,
                 });
-                let e = encode_with_alpha_ref(&crgb, has_alpha.then_some(&alpha[..]), w, h, &sub, rsrc);
+                // En contenido fotográfico, los fotogramas que predicen del
+                // anterior se cuantizan más gruesos: su residuo es sobre todo el
+                // error del fotograma previo, y corregirlo cuesta bits sin
+                // mejorar lo que se ve (como hacen los códecs de vídeo). En
+                // capturas no: el residuo es contenido nuevo (texto).
+                let dq: f32 = std::env::var("TESELA_INTER_DQ")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(if photo { 20.0 } else { 0.0 });
+                let pf = if rsrc.is_some() && dq != 0.0 {
+                    Params {
+                        quality: (sub.quality - dq).max(1.0),
+                        ..sub.clone()
+                    }
+                } else {
+                    sub.clone()
+                };
+                let e =
+                    encode_with_alpha_ref(&crgb, has_alpha.then_some(&alpha[..]), w, h, &pf, rsrc);
                 let d = Decoded {
                     width: w,
                     height: h,
@@ -2990,7 +3081,14 @@ pub fn encode_animation(
                     alpha: e.recon_alpha.clone(),
                     meta: Metadata::default(),
                 };
-                let fi = FrameInfo { duration_ms: 0, x, y, w, h, range: 0..0 };
+                let fi = FrameInfo {
+                    duration_ms: 0,
+                    x,
+                    y,
+                    w,
+                    h,
+                    range: 0..0,
+                };
                 compose(&mut recon, width, &d, &fi);
                 list.push((durations_ms[i], x, y, w, h, e.bytes));
             }
