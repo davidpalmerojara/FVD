@@ -789,6 +789,8 @@ struct EncState {
     lossless: bool,
     /// Flujo de bits v2 (particiones rectangulares).
     v2: bool,
+    /// Esfuerzo (1..9): los niveles bajos recortan la búsqueda para ir más rápido.
+    effort: u8,
 }
 
 /// Resultado de evaluar una hoja.
@@ -810,6 +812,7 @@ impl EncState {
             screen: self.screen,
             lossless: self.lossless,
             v2: self.v2,
+            effort: self.effort,
         }
     }
 
@@ -948,7 +951,8 @@ impl EncState {
         if nmodes > predict::NUM_ANGULAR_MODES {
             todo.push(MODE_CCLM);
         }
-        for pass in 0..2 {
+        let passes = if self.effort >= 3 { 2 } else { 1 };
+        for pass in 0..passes {
             if pass == 1 {
                 let mut ang: Vec<(f32, u8)> = cands
                     .iter()
@@ -1096,7 +1100,18 @@ impl EncState {
         let lambda = self.lambda_k * q * q;
         let sc_before = pe.sc.clone();
         let mut ev = self.eval_leaf(pe, lref, x0, y0, n, n, q);
-        if n == 4 {
+        // Modos rápidos: sin bloques de 4×4 (esfuerzo 1) y sin probar a
+        // dividir un bloque pequeño que ya se predice bien sin residuo.
+        let min_n = if self.effort <= 1 { 8 } else { 4 };
+        let early = self.effort <= 2 && !ev.nz && n <= 16;
+        if n <= min_n || early {
+            if n > 4 {
+                let sctx = split_ctx(&pe.plane, x0, y0, n, pc);
+                ev.j += lambda * self.ctx.split[sctx].cost(false);
+                if self.v2 {
+                    ev.j += lambda * self.ctx.rect[pc * 4 + size_index(n) - 1].cost(false);
+                }
+            }
             Self::commit_leaf(pe, x0, y0, n, n, &ev);
             let j = ev.j;
             return (j, Node::Leaf(Box::new(ev.leaf)));
@@ -1114,7 +1129,7 @@ impl EncState {
         let mut best = 0;
         let mut rect_best: Option<[LeafEval; 2]> = None;
         // Las mitades de 64×64 casi nunca ganan y son las más caras de evaluar.
-        if self.v2 && n < 64 {
+        if self.v2 && n < 64 && self.effort >= 4 {
             for (opt, horz) in [(1, true), (2, false)] {
                 pe.plane.clear_avail(x0, y0, n, n);
                 pe.sc = sc_before.clone();
@@ -1849,6 +1864,7 @@ pub fn encode_tile_stats(
         screen: header.tools & TOOL_SCREEN != 0,
         lossless,
         v2: header.version >= 2,
+        effort: p.effort.clamp(1, 9),
     };
     let mut enc = Encoder::new();
     let mut planes: Vec<Plane> = Vec::new();
@@ -1918,6 +1934,7 @@ pub fn encode_tile_stats(
             screen: true,
             lossless: true,
             v2: header.version >= 2,
+            effort: st.effort,
         };
         let mut aq = unit_qmap(width, height);
         let (plane, _) = encode_plane(
@@ -2120,8 +2137,20 @@ pub struct Info {
     pub preview: Option<std::ops::Range<usize>>,
 }
 
+/// Máximo de píxeles que acepta el decodificador. El formato admite hasta
+/// 65 536 × 65 536, pero un archivo de pocos bytes podría declarar esas
+/// dimensiones y obligar a reservar decenas de GB: por encima de este límite
+/// (268 MP, p. ej. 16 384 × 16 384) se rechaza antes de reservar nada.
+pub const MAX_DECODE_PIXELS: u64 = 1 << 28;
+
 pub fn info(data: &[u8]) -> Result<Info, String> {
     let header = Header::read(data)?;
+    if header.width as u64 * header.height as u64 > MAX_DECODE_PIXELS {
+        return Err(format!(
+            "imagen demasiado grande para decodificar ({}×{}; máximo {} píxeles)",
+            header.width, header.height, MAX_DECODE_PIXELS
+        ));
+    }
     let tiles = tile_grid(
         header.width as usize,
         header.height as usize,

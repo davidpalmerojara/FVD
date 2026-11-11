@@ -2,3 +2,6 @@
 /bench/data
 *.whl
 bench/__pycache__/
+
+# Fuzzing
+/fuzz-fallos/

@@ -14,6 +14,8 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip1-threads
       - name: Tests
         run: cargo test --release
+      - name: Fuzzing breve del decodificador (archivos mutados; no puede caerse)
+        run: cargo run --profile fuzz --example fuzz_decode -- 20000 ${{ github.run_number }}
       - name: Compilar WebAssembly
         run: cargo build --release --target wasm32-unknown-unknown --lib --no-default-features --features metrics
       - name: Determinismo nativo vs WebAssembly

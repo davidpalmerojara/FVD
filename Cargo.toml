@@ -26,3 +26,9 @@ required-features = ["cli"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
+
+# Para el fuzzer: optimizado, pero con comprobación de desbordamientos.
+[profile.fuzz]
+inherits = "release"
+overflow-checks = true
+debug-assertions = true

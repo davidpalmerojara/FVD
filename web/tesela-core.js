@@ -166,7 +166,10 @@ export function parseTesela(buffer) {
   const height = dv.getUint32(8, true);
   const tile = dv.getUint16(20, true) * 64;
   const tools = bytes[22];
-  if (!width || !height || !tile) throw new Error('cabecera Tesela no válida');
+  if (!width || !height || !tile || width > 65536 || height > 65536) throw new Error('cabecera Tesela no válida');
+  // Mismo límite que el decodificador (MAX_DECODE_PIXELS): un archivo de pocos
+  // bytes no puede obligar a reservar gigas ni a recorrer millones de teselas.
+  if (width * height > 2 ** 28) throw new Error(`imagen demasiado grande para decodificar (${width}×${height})`);
   let base = HEADER;
   if (tools & TOOL_PREVIEW) base += 4 + dv.getUint32(HEADER, true);
   const tiles = [];
