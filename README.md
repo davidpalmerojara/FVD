@@ -78,7 +78,7 @@ imágenes sintéticas propias, nunca con las imágenes de evaluación.
 |---|---|---|---|---|
 | **CLIC 2020**: 41 fotos profesionales de 2,2 MP (conjunto de referencia en investigación) | **−35,0 %** | −28,5 % | −22,2 % | 0,46 s / 1,11 s |
 | Kodak: 24 fotos de 768×512 | **−30,3 %** | −24,8 % | −12,1 % | 67 ms / 164 ms |
-| Fotos grandes: 12 DIV2K de 2,7 MP | **−32,4 %** | −30,2 % | −21,2 % | 0,47 s / 2,36 s |
+| **DIV2K**: 50 fotos de validación de 2,7 MP ([informe](bench/results/div2k-50/REPORT.md)) | **−34,0 %** | −32,5 % | −20,3 % | 0,70 s / 1,71 s |
 | Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−59,9 %** | −50,6 % | −36,0 % | 0,12 s / 0,18 s |
 | Ilustraciones: 6 (emojis, vectorial, gráficos) | **−61,8 %** | −53,9 % | +9,5 % | 0,10 s / 0,09 s |
 
