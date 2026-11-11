@@ -26,7 +26,7 @@ pub const MIN_VERSION: u8 = 1;
 /// Bits de `tools` definidos en la v1.
 const KNOWN_TOOLS: u8 = 1 | 2 | 4 | 8;
 /// Bits añadidos en la v2.
-const KNOWN_TOOLS_V2: u8 = KNOWN_TOOLS | TOOL_META;
+const KNOWN_TOOLS_V2: u8 = KNOWN_TOOLS | TOOL_META | TOOL_ANIM;
 const SB: usize = 64;
 /// Granularidad de la cuantización adaptativa (AQ).
 const AQ: usize = 32;
@@ -41,6 +41,8 @@ pub const TOOL_ALPHA: u8 = 4;
 pub const TOOL_PREVIEW: u8 = 8;
 /// v2: sección de metadatos (perfil de color ICC, EXIF) tras la cabecera.
 pub const TOOL_META: u8 = 32;
+/// v2: animación (lista de fotogramas en lugar de tabla de teselas).
+pub const TOOL_ANIM: u8 = 64;
 /// Lado mayor de la vista previa, en píxeles.
 const PREVIEW_SIDE: usize = 48;
 
@@ -2254,6 +2256,9 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
         header.height as usize,
         header.tile_size(),
     );
+    if header.tools & TOOL_ANIM != 0 {
+        return Err("es una animación: usa anim_info / decode_animation".into());
+    }
     let mut base = HEADER_LEN;
     let mut meta = Metadata::default();
     if header.tools & TOOL_META != 0 {
@@ -2439,6 +2444,11 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
 }
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
+    // Una animación se decodifica como su primer fotograma (que cubre todo el lienzo).
+    if let Some(a) = anim_info(data)? {
+        let d = decode_frame(data, &a.frames[0])?;
+        return Ok(Decoded { meta: a.meta, ..d });
+    }
     let inf = info(data)?;
     let (w, ht) = (inf.header.width as usize, inf.header.height as usize);
     let idx: Vec<usize> = (0..inf.tiles.len()).collect();
@@ -2461,4 +2471,241 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         alpha,
         meta: inf.meta.clone(),
     })
+}
+
+// ------------------------------------------------------------- Animación
+
+/// Un fotograma de una animación: cuánto dura y qué rectángulo del lienzo
+/// sustituye. Los datos son un archivo `.tsl` completo de ese rectángulo.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrameInfo {
+    pub duration_ms: u32,
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub range: std::ops::Range<usize>,
+}
+
+/// Estructura de un archivo animado.
+#[derive(Clone, Debug)]
+pub struct AnimInfo {
+    pub width: usize,
+    pub height: usize,
+    /// Repeticiones (0 = sin fin).
+    pub loops: u16,
+    pub frames: Vec<FrameInfo>,
+    pub meta: Metadata,
+}
+
+/// Lee la estructura de una animación. `Ok(None)` si el archivo no es animado.
+///
+/// Sección (v2, bit ANIM), tras la cabecera y los metadatos:
+/// `u16 repeticiones | u16 reservado (0) | u32 n` y, por fotograma,
+/// `u32 duración (ms) | u32 x | u32 y | u32 ancho | u32 alto | u32 longitud | datos`.
+/// El primer fotograma cubre todo el lienzo; los demás, un rectángulo dentro de él.
+pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
+    let header = Header::read(data)?;
+    if header.tools & TOOL_ANIM == 0 {
+        return Ok(None);
+    }
+    let (w, h) = (header.width as usize, header.height as usize);
+    if w as u64 * h as u64 > MAX_DECODE_PIXELS {
+        return Err("lienzo demasiado grande".into());
+    }
+    if header.tools & TOOL_PREVIEW != 0 {
+        return Err("una animación no lleva vista previa".into());
+    }
+    let mut pos = HEADER_LEN;
+    let mut meta = Metadata::default();
+    if header.tools & TOOL_META != 0 {
+        (meta, pos) = Metadata::read(data, pos)?;
+    }
+    let u16_at = |p: usize| data.get(p..p + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |p: usize| {
+        data.get(p..p + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let loops = u16_at(pos).ok_or("archivo truncado")?;
+    if u16_at(pos + 2).ok_or("archivo truncado")? != 0 {
+        return Err("animación no válida".into());
+    }
+    let n = u32_at(pos + 4).ok_or("archivo truncado")? as usize;
+    pos += 8;
+    // Cada fotograma ocupa al menos 24 + 23 bytes: n no puede ser absurdo.
+    if n == 0 || n > (data.len() - pos.min(data.len())) / 47 {
+        return Err("animación no válida".into());
+    }
+    let mut frames = Vec::with_capacity(n);
+    for i in 0..n {
+        let f: Vec<usize> = (0..6)
+            .map(|k| u32_at(pos + 4 * k).map(|v| v as usize))
+            .collect::<Option<_>>()
+            .ok_or("archivo truncado")?;
+        let (dur, fx, fy, fw, fh, len) = (f[0], f[1], f[2], f[3], f[4], f[5]);
+        let start = pos + 24;
+        let end = start
+            .checked_add(len)
+            .filter(|&e| e <= data.len())
+            .ok_or("archivo truncado")?;
+        let full = fx == 0 && fy == 0 && fw == w && fh == h;
+        if fw == 0 || fh == 0 || fx + fw > w || fy + fh > h || (i == 0 && !full) {
+            return Err("fotograma fuera del lienzo".into());
+        }
+        frames.push(FrameInfo {
+            duration_ms: dur as u32,
+            x: fx,
+            y: fy,
+            w: fw,
+            h: fh,
+            range: start..end,
+        });
+        pos = end;
+    }
+    Ok(Some(AnimInfo {
+        width: w,
+        height: h,
+        loops,
+        frames,
+        meta,
+    }))
+}
+
+/// Decodifica el rectángulo de un fotograma (sin componer).
+pub fn decode_frame(data: &[u8], f: &FrameInfo) -> Result<Decoded, String> {
+    let inner = &data[f.range.clone()];
+    let h = Header::read(inner)?;
+    if h.tools & TOOL_ANIM != 0 || h.width as usize != f.w || h.height as usize != f.h {
+        return Err("fotograma no válido".into());
+    }
+    decode(inner)
+}
+
+/// Pega un fotograma decodificado en el lienzo RGBA.
+pub fn compose(canvas: &mut [u8], width: usize, frame: &Decoded, f: &FrameInfo) {
+    let rgba = frame.rgba();
+    for y in 0..f.h {
+        let dst = ((f.y + y) * width + f.x) * 4;
+        canvas[dst..dst + f.w * 4].copy_from_slice(&rgba[y * f.w * 4..(y + 1) * f.w * 4]);
+    }
+}
+
+/// Decodifica todos los fotogramas ya compuestos (lienzos RGBA completos),
+/// con su duración. `max_pixels` limita la memoria: fotogramas × píxeles del lienzo.
+#[allow(clippy::type_complexity)]
+pub fn decode_animation(
+    data: &[u8],
+    max_pixels: u64,
+) -> Result<(AnimInfo, Vec<(Vec<u8>, u32)>), String> {
+    let a = anim_info(data)?.ok_or("no es una animación")?;
+    if a.frames.len() as u64 * (a.width * a.height) as u64 > max_pixels {
+        return Err("animación demasiado grande para decodificarla entera".into());
+    }
+    let mut canvas = vec![0u8; a.width * a.height * 4];
+    let mut out = Vec::with_capacity(a.frames.len());
+    for f in &a.frames {
+        let d = decode_frame(data, f)?;
+        compose(&mut canvas, a.width, &d, f);
+        out.push((canvas.clone(), f.duration_ms));
+    }
+    Ok((a, out))
+}
+
+/// Rectángulo mínimo que contiene los píxeles distintos entre dos fotogramas RGBA.
+fn changed_rect(a: &[u8], b: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for y in 0..h {
+        let ra = &a[y * w * 4..(y + 1) * w * 4];
+        let rb = &b[y * w * 4..(y + 1) * w * 4];
+        if ra == rb {
+            continue;
+        }
+        let first = (0..w)
+            .find(|&x| ra[x * 4..x * 4 + 4] != rb[x * 4..x * 4 + 4])
+            .unwrap();
+        let last = (0..w)
+            .rev()
+            .find(|&x| ra[x * 4..x * 4 + 4] != rb[x * 4..x * 4 + 4])
+            .unwrap();
+        x0 = x0.min(first);
+        x1 = x1.max(last + 1);
+        y0 = y0.min(y);
+        y1 = y + 1;
+    }
+    (x1 > x0).then(|| (x0, y0, x1 - x0, y1 - y0))
+}
+
+/// Codifica una animación. `frames` son lienzos RGBA completos de `width ×
+/// height`. Cada fotograma solo guarda el rectángulo que cambia respecto al
+/// anterior; los que no cambian alargan la duración del anterior.
+pub fn encode_animation(
+    frames: &[Vec<u8>],
+    durations_ms: &[u32],
+    width: usize,
+    height: usize,
+    loops: u16,
+    p: &Params,
+) -> Result<Vec<u8>, String> {
+    if frames.is_empty() || frames.len() != durations_ms.len() {
+        return Err("hace falta al menos un fotograma, cada uno con su duración".into());
+    }
+    if p.version < 2 {
+        return Err("la animación necesita la versión 2 del formato".into());
+    }
+    let sub = Params {
+        meta: Metadata::default(),
+        preview: false,
+        ..p.clone()
+    };
+    // (duración, x, y, w, h, datos)
+    let mut list: Vec<(u32, usize, usize, usize, usize, Vec<u8>)> = Vec::new();
+    for (i, f) in frames.iter().enumerate() {
+        let rect = if i == 0 {
+            Some((0, 0, width, height))
+        } else {
+            changed_rect(&frames[i - 1], f, width, height)
+        };
+        match rect {
+            None => list.last_mut().unwrap().0 += durations_ms[i],
+            Some((x, y, w, h)) => {
+                let mut crop = Vec::with_capacity(w * h * 4);
+                for yy in y..y + h {
+                    crop.extend_from_slice(&f[(yy * width + x) * 4..(yy * width + x + w) * 4]);
+                }
+                let e = encode_rgba(&crop, w, h, &sub);
+                list.push((durations_ms[i], x, y, w, h, e.bytes));
+            }
+        }
+    }
+    let rgb: Vec<u8> = frames[0]
+        .chunks_exact(4)
+        .flat_map(|px| [px[0], px[1], px[2]])
+        .collect();
+    let mut header = make_header(&rgb, width, height, &sub);
+    header.tools = (header.tools & !(TOOL_PREVIEW | TOOL_META)) | TOOL_ANIM;
+    if !p.meta.is_empty() {
+        header.tools |= TOOL_META;
+    }
+    let mut out = Vec::new();
+    header.write(&mut out);
+    if !p.meta.is_empty() {
+        p.meta.write(&mut out);
+    }
+    out.extend_from_slice(&loops.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&(list.len() as u32).to_le_bytes());
+    for (d, x, y, w, h, bytes) in &list {
+        for v in [
+            *d,
+            *x as u32,
+            *y as u32,
+            *w as u32,
+            *h as u32,
+            bytes.len() as u32,
+        ] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(bytes);
+    }
+    Ok(out)
 }

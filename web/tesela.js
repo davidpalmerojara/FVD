@@ -83,6 +83,12 @@ function getPool() {
 /** Decodifica un archivo .tsl (ArrayBuffer/Uint8Array) a ImageData. */
 export async function decode(buffer) {
   const info = parseTesela(buffer);
+  if (info.animated) {
+    // Primer fotograma de una animación.
+    const bytes = info.bytes.slice();
+    const d = await getPool().run('decodeFull', { bytes }, [bytes.buffer]);
+    return new ImageData(new Uint8ClampedArray(d.rgba.buffer), d.width, d.height);
+  }
   const out = new Uint8ClampedArray(info.width * info.height * 4);
   await Promise.all(
     info.tiles.map(async (t) => {
@@ -136,6 +142,26 @@ export async function encode(imageData, { quality = 75, effort = 4, tune = 'bala
   return out;
 }
 
+/**
+ * Decodifica una animación: { width, height, loops (0 = sin fin), frames: [{ image: ImageData, duration }] }.
+ * Si el archivo no es animado, devuelve un único fotograma.
+ */
+export async function decodeAnimation(buffer) {
+  const info = parseTesela(buffer);
+  if (!info.animated) {
+    const image = await decode(buffer);
+    return { width: image.width, height: image.height, loops: 0, frames: [{ image, duration: 0 }] };
+  }
+  const bytes = info.bytes.slice();
+  const a = await getPool().run('decodeAnim', { bytes }, [bytes.buffer]);
+  return {
+    width: a.width,
+    height: a.height,
+    loops: a.loops,
+    frames: a.frames.map((f) => ({ image: new ImageData(new Uint8ClampedArray(f.rgba.buffer), a.width, a.height), duration: f.duration })),
+  };
+}
+
 /** Decodifica la vista previa (si el archivo la tiene y ya han llegado sus bytes). */
 export async function decodePreview(bytes) {
   const r = previewRange(bytes);
@@ -183,6 +209,10 @@ class TeselaImage extends HTMLElement {
     }
   }
 
+  disconnectedCallback() {
+    clearTimeout(this._timer);
+  }
+
   attributeChangedCallback(name, oldV, newV) {
     if (name === 'src' && oldV !== null && oldV !== newV && this.isConnected) this.load();
   }
@@ -215,7 +245,18 @@ class TeselaImage extends HTMLElement {
           }
         }
       }
-      const img = await decode(concat(chunks, got));
+      const all = concat(chunks, got);
+      clearTimeout(this._timer);
+      if (parseTesela(all).animated) {
+        const anim = await decodeAnimation(all).catch(() => null);
+        if (anim) {
+          this._full = true;
+          this.play(anim);
+          this.dispatchEvent(new Event('load'));
+          return;
+        }
+      }
+      const img = await decode(all);
       this._full = true;
       this.canvas.style.filter = '';
       this.canvas.width = img.width;
@@ -244,6 +285,31 @@ function concat(chunks, total) {
   }
   return out;
 }
+
+/** Reproduce una animación en el lienzo, con sus duraciones y repeticiones. */
+TeselaImage.prototype.play = function (anim) {
+  const c = this.canvas;
+  c.style.filter = '';
+  c.width = anim.width;
+  c.height = anim.height;
+  const ctx = c.getContext('2d');
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let i = 0;
+  let round = 0;
+  const step = () => {
+    ctx.putImageData(anim.frames[i].image, 0, 0);
+    if (still || anim.frames.length < 2) return;
+    const delay = Math.max(20, anim.frames[i].duration);
+    i++;
+    if (i === anim.frames.length) {
+      i = 0;
+      round++;
+      if (anim.loops && round >= anim.loops) return;
+    }
+    this._timer = setTimeout(step, delay);
+  };
+  step();
+};
 
 TeselaImage.prototype.showPreview = async function (bytes) {
   try {

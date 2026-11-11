@@ -89,69 +89,113 @@ async function iccpChunk(icc) {
   return out;
 }
 
-function encodePng(width, height, rgba, iccp = null) {
+/** Flujo zlib con bloques «stored» (sin comprimir) de las filas RGBA con filtro 0. */
+function zlibRows(width, height, rgba) {
   const rowLen = width * 4 + 1;
   const raw = height * rowLen;
   const nblocks = Math.max(1, Math.ceil(raw / 65535));
-  const idatLen = 2 + raw + nblocks * 5 + 4;
-  const out = new Uint8Array(8 + 25 + (iccp ? 12 + iccp.length : 0) + 12 + idatLen + 12);
-  const dv = new DataView(out.buffer);
-  out.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
-  let p = 8;
-  const chunk = (type, len, write) => {
-    dv.setUint32(p, len);
-    const start = p + 4;
-    for (let i = 0; i < 4; i++) out[start + i] = type.charCodeAt(i);
-    p = start + 4;
-    write();
-    dv.setUint32(p, (crc32(out, start, p) ^ 0xffffffff) >>> 0);
-    p += 4;
-  };
-  chunk('IHDR', 13, () => {
-    dv.setUint32(p, width);
-    dv.setUint32(p + 4, height);
-    out.set([8, 6, 0, 0, 0], p + 8); // 8 bits, RGBA, deflate, sin filtro, sin entrelazado
-    p += 13;
-  });
-  // Perfil de color: el navegador gestiona el color como con cualquier PNG.
-  if (iccp) {
-    chunk('iCCP', iccp.length, () => {
-      out.set(iccp, p);
-      p += iccp.length;
-    });
-  }
-  chunk('IDAT', idatLen, () => {
-    out[p++] = 0x78;
-    out[p++] = 0x01;
-    let a = 1;
-    let b = 0;
-    let left = raw;
-    let row = 0;
-    let col = 0; // posición dentro de la fila (0 = byte de filtro)
-    while (left > 0) {
-      const n = Math.min(65535, left);
-      left -= n;
-      out[p++] = left === 0 ? 1 : 0;
-      out[p++] = n & 0xff;
-      out[p++] = n >> 8;
-      out[p++] = ~n & 0xff;
-      out[p++] = (~n >> 8) & 0xff;
-      for (let i = 0; i < n; i++) {
-        const v = col === 0 ? 0 : rgba[row * width * 4 + col - 1];
-        out[p++] = v;
-        a = (a + v) % 65521;
-        b = (b + a) % 65521;
-        if (++col === rowLen) {
-          col = 0;
-          row++;
-        }
+  const out = new Uint8Array(2 + raw + nblocks * 5 + 4);
+  let p = 0;
+  out[p++] = 0x78;
+  out[p++] = 0x01;
+  let a = 1;
+  let b = 0;
+  let left = raw;
+  let row = 0;
+  let col = 0; // posición dentro de la fila (0 = byte de filtro)
+  while (left > 0) {
+    const n = Math.min(65535, left);
+    left -= n;
+    out[p++] = left === 0 ? 1 : 0;
+    out[p++] = n & 0xff;
+    out[p++] = n >> 8;
+    out[p++] = ~n & 0xff;
+    out[p++] = (~n >> 8) & 0xff;
+    for (let i = 0; i < n; i++) {
+      const v = col === 0 ? 0 : rgba[row * width * 4 + col - 1];
+      out[p++] = v;
+      a = (a + v) % 65521;
+      b = (b + a) % 65521;
+      if (++col === rowLen) {
+        col = 0;
+        row++;
       }
     }
-    dv.setUint32(p, ((b << 16) | a) >>> 0);
-    p += 4;
-  });
-  chunk('IEND', 0, () => {});
+  }
+  new DataView(out.buffer).setUint32(p, ((b << 16) | a) >>> 0);
   return out;
+}
+
+/**
+ * PNG RGBA sin comprimir; con varios fotogramas, APNG (lo reproducen todos los
+ * navegadores actuales en un <img>). `frames`: [{ rgba, duration }].
+ */
+function encodePng(width, height, frames, loops = 0, iccp = null) {
+  const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])];
+  const chunk = (type, data) => {
+    const c = new Uint8Array(12 + data.length);
+    const dv = new DataView(c.buffer);
+    dv.setUint32(0, data.length);
+    for (let i = 0; i < 4; i++) c[4 + i] = type.charCodeAt(i);
+    c.set(data, 8);
+    dv.setUint32(8 + data.length, (crc32(c, 4, 8 + data.length) ^ 0xffffffff) >>> 0);
+    parts.push(c);
+  };
+  const u32 = (...v) => {
+    const b = new Uint8Array(4 * v.length);
+    v.forEach((x, i) => new DataView(b.buffer).setUint32(4 * i, x));
+    return b;
+  };
+  const ihdr = new Uint8Array(13);
+  ihdr.set(u32(width, height), 0);
+  ihdr.set([8, 6, 0, 0, 0], 8); // 8 bits, RGBA, deflate, sin filtro, sin entrelazado
+  chunk('IHDR', ihdr);
+  // Perfil de color: el navegador gestiona el color como con cualquier PNG.
+  if (iccp) chunk('iCCP', iccp);
+  const anim = frames.length > 1;
+  if (anim) chunk('acTL', u32(frames.length, loops));
+  let seq = 0;
+  frames.forEach((f, k) => {
+    if (anim) {
+      const fc = new Uint8Array(26);
+      fc.set(u32(seq++, width, height, 0, 0), 0);
+      new DataView(fc.buffer).setUint16(20, Math.min(65535, f.duration));
+      new DataView(fc.buffer).setUint16(22, 1000);
+      // dispose 0, blend 0 (cada fotograma es el lienzo completo)
+      chunk('fcTL', fc);
+    }
+    const z = zlibRows(width, height, f.rgba);
+    if (k === 0) chunk('IDAT', z);
+    else {
+      const fd = new Uint8Array(4 + z.length);
+      fd.set(u32(seq++), 0);
+      fd.set(z, 4);
+      chunk('fdAT', fd);
+    }
+  });
+  chunk('IEND', new Uint8Array(0));
+  return new Blob(parts, { type: 'image/png' });
+}
+
+/** Fotogramas de una animación .tsl (o null si no cabe). */
+async function decodeTeselaAnimation(bytes) {
+  const ex = await loadWasm();
+  const ptr = ex.tsl_alloc(bytes.length);
+  new Uint8Array(ex.memory.buffer).set(bytes, ptr);
+  const out = ex.tsl_decode_animation(ptr, bytes.length);
+  ex.tsl_free(ptr, bytes.length);
+  if (out === 0) return null;
+  const len = new DataView(ex.memory.buffer).getUint32(out, true);
+  const d = new Uint8Array(ex.memory.buffer).slice(out + 4, out + len);
+  ex.tsl_free(out, len);
+  const dv = new DataView(d.buffer);
+  const [width, height, loops, n] = [0, 4, 8, 12].map((o) => dv.getUint32(o, true));
+  const size = width * height * 4;
+  const frames = [];
+  for (let i = 0, p = 16; i < n; i++, p += 4 + size) {
+    frames.push({ duration: dv.getUint32(p, true), rgba: d.subarray(p + 4, p + 4 + size) });
+  }
+  return { width, height, loops, frames };
 }
 
 // ---------------------------------------------------------------- Eventos
@@ -170,12 +214,19 @@ self.addEventListener('fetch', (event) => {
       if (!res.ok) return res;
       try {
         const bytes = new Uint8Array(await res.arrayBuffer());
-        const img = await decodeTesela(bytes);
         const iccp = await iccpChunk(teselaIcc(bytes));
         const headers = { 'Content-Type': 'image/png' };
         const cc = res.headers.get('Cache-Control');
         if (cc) headers['Cache-Control'] = cc;
-        return new Response(encodePng(img.width, img.height, img.rgba, iccp), { headers });
+        // Animación (bit 64 de tools en la v2): APNG si cabe (≤ 96 MB sin comprimir).
+        if (bytes.length > 23 && bytes[3] >= 2 && bytes[22] & 64) {
+          const a = await decodeTeselaAnimation(bytes);
+          if (a && a.frames.length * a.width * a.height * 4 <= 96 << 20) {
+            return new Response(encodePng(a.width, a.height, a.frames, a.loops, iccp), { headers });
+          }
+        }
+        const img = await decodeTesela(bytes);
+        return new Response(encodePng(img.width, img.height, [{ rgba: img.rgba, duration: 0 }], 0, iccp), { headers });
       } catch (e) {
         return new Response('Tesela: ' + e.message, { status: 415 });
       }

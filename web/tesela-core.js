@@ -113,6 +113,24 @@ export class Core {
     }
   }
 
+  /** Todos los fotogramas de una animación: { width, height, loops, frames: [{ rgba, duration }] }. */
+  decodeAnimation(bytes) {
+    const d = this.put(bytes);
+    try {
+      const out = this.take(this.ex.tsl_decode_animation(d[0], d[1]));
+      const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+      const [width, height, loops, n] = [0, 4, 8, 12].map((o) => dv.getUint32(o, true));
+      const size = width * height * 4;
+      const frames = [];
+      for (let i = 0, p = 16; i < n; i++, p += 4 + size) {
+        frames.push({ duration: dv.getUint32(p, true), rgba: out.slice(p + 4, p + 4 + size) });
+      }
+      return { width, height, loops, frames };
+    } finally {
+      this.free(d);
+    }
+  }
+
   /** Métricas entre dos RGBA del mismo tamaño. */
   metrics(a, b, w, h) {
     const pa = this.put(a);
@@ -136,6 +154,7 @@ export const VERSION = 2;
 export const TOOL_ALPHA = 4;
 export const TOOL_PREVIEW = 8;
 export const TOOL_META = 32;
+export const TOOL_ANIM = 64;
 const HEADER = 23;
 
 /**
@@ -201,6 +220,8 @@ export function parseTesela(buffer) {
   // Mismo límite que el decodificador (MAX_DECODE_PIXELS): un archivo de pocos
   // bytes no puede obligar a reservar gigas ni a recorrer millones de teselas.
   if (width * height > 2 ** 28) throw new Error(`imagen demasiado grande para decodificar (${width}×${height})`);
+  // Animación: no hay tabla de teselas (se decodifica entera con decodeAnimation).
+  if (tools & TOOL_ANIM) return { width, height, tile, tools, tiles: [], header: bytes.subarray(0, HEADER), bytes, animated: true };
   let base = HEADER;
   let meta = { icc: null, exif: null };
   if (tools & TOOL_META) {

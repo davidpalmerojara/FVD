@@ -15,6 +15,7 @@ El byte de versión vale **2**. El resto de la cabecera no cambia, salvo un bit 
 | Bit | Nombre | Significado |
 |---|---|---|
 | 32 | `META` | Hay una sección de metadatos tras la cabecera (sección 1.1). |
+| 64 | `ANIM` | Animación: lista de fotogramas en lugar de la tabla de teselas (sección 1.2). |
 
 Un decodificador v1 rechaza un archivo con un bit de `tools` que no conoce.
 
@@ -38,6 +39,30 @@ L bytes de fragmentos:
 Las etiquetas desconocidas se ignoran, así que se pueden añadir otras sin cambiar de versión. Los
 metadatos no afectan a la decodificación de los píxeles. La orientación EXIF no se aplica al
 decodificar: el codificador de referencia la aplica a los píxeles y deja la etiqueta en 1.
+
+### 1.2 Animación
+
+Si `tools & ANIM`, el ancho y el alto de la cabecera son los del lienzo, el archivo no lleva vista
+previa (`PREVIEW` debe ser 0) y, tras la cabecera y los metadatos, viene:
+
+```
+u16  repeticiones          0 = sin fin
+u16  reservado             0
+u32  n                     número de fotogramas (≥ 1)
+n veces:
+  u32  duración (ms)
+  u32  x, u32 y, u32 ancho, u32 alto     rectángulo dentro del lienzo
+  u32  longitud
+  datos: un archivo .tsl completo del rectángulo (sin ANIM)
+```
+
+El lienzo empieza vacío y cada fotograma sustituye su rectángulo (RGBA, también el alfa); el
+resultado tras cada uno es la imagen que se muestra durante su duración. El primer fotograma cubre
+todo el lienzo. Un decodificador que solo muestre imágenes fijas usa el primer fotograma.
+
+No hay predicción entre fotogramas: cada rectángulo se codifica como una imagen fija. El
+codificador de referencia guarda solo el rectángulo que cambia respecto al fotograma anterior y une
+los fotogramas idénticos sumando sus duraciones.
 
 ## 2. Bloques rectangulares
 

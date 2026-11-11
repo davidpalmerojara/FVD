@@ -17,6 +17,10 @@ self.onmessage = async (ev) => {
       const d = core.decode(args.bytes);
       result = { width: d.width, height: d.height, rgba: d.rgba.slice() };
       transfer = [result.rgba.buffer];
+    } else if (op === 'decodeAnim') {
+      const a = core.decodeAnimation(args.bytes);
+      result = a;
+      transfer = a.frames.map((f) => f.rgba.buffer);
     } else if (op === 'header') {
       result = core.header(args.rgba, args.w, args.h, args.quality, args.effort, args.tune);
     } else {

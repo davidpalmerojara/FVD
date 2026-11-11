@@ -302,3 +302,58 @@ fn metadata_roundtrip() {
     let d = decode(&encode(&img, w, h, &p).bytes).unwrap();
     assert!(d.meta.is_empty());
 }
+
+#[test]
+fn animation_roundtrip() {
+    use tesela::codec::{anim_info, decode_animation, encode_animation};
+    let (w, h) = (80, 48);
+    // Fondo fijo y un cuadrado que se mueve; el fotograma 3 repite el 2.
+    let frame = |t: usize| -> Vec<u8> {
+        let mut f = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let sq = x >= 10 + 8 * t.min(2) && x < 22 + 8 * t.min(2) && (16..28).contains(&y);
+                if sq {
+                    f.extend_from_slice(&[230, 40, 30, 255]);
+                } else {
+                    f.extend_from_slice(&[
+                        (x * 3) as u8,
+                        (y * 5) as u8,
+                        120,
+                        if x < 4 { 0 } else { 255 },
+                    ]);
+                }
+            }
+        }
+        f
+    };
+    let frames: Vec<Vec<u8>> = (0..4).map(frame).collect();
+    let durations = [100, 100, 100, 250];
+    for lossless in [true, false] {
+        let p = Params {
+            lossless,
+            quality: 80.0,
+            ..Default::default()
+        };
+        let bytes = encode_animation(&frames, &durations, w, h, 0, &p).unwrap();
+        let a = anim_info(&bytes).unwrap().expect("animada");
+        assert_eq!((a.width, a.height, a.loops), (w, h, 0));
+        // El último fotograma no cambia nada: alarga el anterior.
+        assert_eq!(
+            a.frames.iter().map(|f| f.duration_ms).collect::<Vec<_>>(),
+            [100, 100, 350]
+        );
+        // Solo se guarda el rectángulo que cambia.
+        assert!(a.frames[1].w < w && a.frames[1].h < h);
+        let (_, dec) = decode_animation(&bytes, 1 << 26).unwrap();
+        assert_eq!(dec.len(), 3);
+        if lossless {
+            for (k, (canvas, _)) in dec.iter().enumerate() {
+                assert_eq!(canvas, &frames[k], "fotograma {k} exacto");
+            }
+        }
+        // decode() da el primer fotograma.
+        let first = decode(&bytes).unwrap();
+        assert_eq!((first.width, first.height), (w, h));
+    }
+}

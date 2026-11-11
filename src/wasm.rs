@@ -231,6 +231,39 @@ pub unsafe extern "C" fn tsl_decode(data: *const u8, len: usize) -> *mut u8 {
     }
 }
 
+/// Decodifica todos los fotogramas de una animación, ya compuestos:
+/// `[u32 ancho][u32 alto][u32 repeticiones][u32 n]` y, por fotograma,
+/// `[u32 duración ms][RGBA del lienzo]`. Como mucho 2^25 píxeles en total
+/// (128 MB); si no cabe, error (y la página puede mostrar el primer fotograma).
+///
+/// # Safety
+/// `data` debe apuntar a `len` bytes válidos.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tsl_decode_animation(data: *const u8, len: usize) -> *mut u8 {
+    match codec::decode_animation(unsafe { slice(data, len) }, 1 << 25) {
+        Ok((a, frames)) => {
+            let mut body = Vec::with_capacity(16 + frames.len() * (4 + a.width * a.height * 4));
+            for v in [
+                a.width as u32,
+                a.height as u32,
+                a.loops as u32,
+                frames.len() as u32,
+            ] {
+                body.extend_from_slice(&v.to_le_bytes());
+            }
+            for (rgba, ms) in frames {
+                body.extend_from_slice(&ms.to_le_bytes());
+                body.extend_from_slice(&rgba);
+            }
+            give(&body)
+        }
+        Err(e) => {
+            set_error(&e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Métricas entre dos imágenes RGBA: [psnr, psnr_y, ssim_y, ssimulacra2] (f64).
 ///
 /// # Safety

@@ -127,6 +127,7 @@ fn main() {
         let r = catch_unwind(AssertUnwindSafe(|| {
             let a = tesela::decode(&data).is_ok();
             let _ = tesela::codec::decode_preview(&data);
+            let _ = tesela::codec::decode_animation(&data, 1 << 22);
             a
         }));
         let dt = t.elapsed();

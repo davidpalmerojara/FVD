@@ -6,9 +6,9 @@ const USAGE: &str = "\
 tesela - códec de imagen (formato .tsl)
 
 USO:
-  tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--v1] [--444|--420]
+  tesela encode <entrada.png|jpg|gif|webp> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--v1] [--444|--420]
              [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F] [--sin-metadatos]
-  tesela decode <entrada.tsl> <salida.png>
+  tesela decode <entrada.tsl> <salida.png|salida.gif>   (.gif: todos los fotogramas de una animación)
   tesela compare <original.png> <distorsionada.png>      (imprime JSON)
   tesela roundtrip <entrada.png> [opciones de encode]     (imprime JSON con bpp y métricas)
 ";
@@ -51,6 +51,80 @@ fn load_rgba(path: &str) -> Result<(Vec<u8>, usize, usize, tesela::codec::Metada
         h as usize,
         tesela::codec::Metadata { icc, exif },
     ))
+}
+
+/// Fotogramas de una animación (GIF, APNG o WebP animado), ya compuestos sobre
+/// el lienzo completo, con su duración en ms. `None` si la imagen no es animada.
+#[allow(clippy::type_complexity)]
+fn load_animation(path: &str) -> Result<Option<(Vec<Vec<u8>>, Vec<u32>, usize, usize)>, String> {
+    use image::AnimationDecoder;
+    let err = |e: image::ImageError| format!("{path}: {e}");
+    let open = || -> Result<std::io::BufReader<std::fs::File>, String> {
+        Ok(std::io::BufReader::new(
+            std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?,
+        ))
+    };
+    let mut head = [0u8; 16];
+    {
+        use std::io::Read;
+        let _ = open()?.read(&mut head);
+    }
+    let frames = if head.starts_with(b"GIF8") {
+        image::codecs::gif::GifDecoder::new(open()?)
+            .map_err(err)?
+            .into_frames()
+    } else if head.starts_with(b"RIFF") && &head[8..12] == b"WEBP" {
+        let d = image::codecs::webp::WebPDecoder::new(open()?).map_err(err)?;
+        if !d.has_animation() {
+            return Ok(None);
+        }
+        d.into_frames()
+    } else if head.starts_with(b"\x89PNG") {
+        let d = image::codecs::png::PngDecoder::new(open()?).map_err(err)?;
+        if !d.is_apng().map_err(err)? {
+            return Ok(None);
+        }
+        d.apng().map_err(err)?.into_frames()
+    } else {
+        return Ok(None);
+    };
+    let frames = frames.collect_frames().map_err(err)?;
+    if frames.len() < 2 {
+        return Ok(None);
+    }
+    let (w, h) = frames[0].buffer().dimensions();
+    let durations = frames
+        .iter()
+        .map(|f| {
+            let (n, d) = f.delay().numer_denom_ms();
+            (n / d.max(1)).max(10)
+        })
+        .collect();
+    let rgba = frames
+        .into_iter()
+        .map(|f| f.into_buffer().into_raw())
+        .collect();
+    Ok(Some((rgba, durations, w as usize, h as usize)))
+}
+
+/// Guarda todos los fotogramas en un GIF animado (para verlos en cualquier visor).
+fn save_gif(path: &str, data: &[u8]) -> Result<(), String> {
+    let (a, frames) = tesela::codec::decode_animation(data, 1 << 30)?;
+    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut enc = image::codecs::gif::GifEncoder::new_with_speed(std::io::BufWriter::new(file), 10);
+    enc.set_repeat(if a.loops == 0 {
+        image::codecs::gif::Repeat::Infinite
+    } else {
+        image::codecs::gif::Repeat::Finite(a.loops)
+    })
+    .map_err(|e| e.to_string())?;
+    for (rgba, ms) in frames {
+        let buf =
+            image::RgbaImage::from_raw(a.width as u32, a.height as u32, rgba).ok_or("buffer")?;
+        let frame = image::Frame::from_parts(buf, 0, 0, image::Delay::from_numer_denom_ms(ms, 1));
+        enc.encode_frame(frame).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Pone a 1 («normal») la etiqueta de orientación (0x0112) del IFD0 de un
@@ -216,6 +290,19 @@ fn run(args: &[String]) -> Result<(), String> {
                 p.meta = meta;
             }
             let t = Instant::now();
+            if let Some((frames, durations, w, h)) = load_animation(&args[1])? {
+                let bytes = tesela::codec::encode_animation(&frames, &durations, w, h, 0, &p)?;
+                std::fs::write(&args[2], &bytes).map_err(|e| e.to_string())?;
+                let a = tesela::codec::anim_info(&bytes)?.ok_or("animación")?;
+                eprintln!(
+                    "animación de {} fotogramas ({} guardados), {} bytes, {:.2} s",
+                    frames.len(),
+                    a.frames.len(),
+                    bytes.len(),
+                    t.elapsed().as_secs_f64()
+                );
+                return Ok(());
+            }
             let e = tesela::encode_rgba(&rgba, w, h, &p);
             std::fs::write(&args[2], &e.bytes).map_err(|e| e.to_string())?;
             eprintln!(
@@ -227,6 +314,30 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("decode") if args.len() == 3 => {
             let data = std::fs::read(&args[1]).map_err(|e| e.to_string())?;
+            if let Some(a) = tesela::codec::anim_info(&data)? {
+                if args[2].ends_with(".gif") {
+                    return save_gif(&args[2], &data);
+                }
+                if args[2].ends_with('/') {
+                    // Carpeta: un PNG por fotograma (000.png, 001.png…) y sus duraciones.
+                    let (an, frames) = tesela::codec::decode_animation(&data, 1 << 30)?;
+                    std::fs::create_dir_all(&args[2]).map_err(|e| e.to_string())?;
+                    let mut durs = String::new();
+                    for (i, (rgba, ms)) in frames.into_iter().enumerate() {
+                        image::RgbaImage::from_raw(an.width as u32, an.height as u32, rgba)
+                            .ok_or("buffer")?
+                            .save(format!("{}{i:03}.png", args[2]))
+                            .map_err(|e| e.to_string())?;
+                        durs += &format!("{ms}\n");
+                    }
+                    return std::fs::write(format!("{}duraciones_ms", args[2]), durs)
+                        .map_err(|e| e.to_string());
+                }
+                eprintln!(
+                    "animación de {} fotogramas: se guarda el primero (usa una salida .gif para verlos todos)",
+                    a.frames.len()
+                );
+            }
             let d = tesela::decode(&data)?;
             if args[2].ends_with(".rgb") {
                 // RGB crudo (para pruebas de determinismo)

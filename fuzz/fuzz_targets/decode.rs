@@ -17,4 +17,5 @@ fuzz_target!(|data: &[u8]| {
     }
     let _ = tesela::decode(data);
     let _ = tesela::codec::decode_preview(data);
+    let _ = tesela::codec::decode_animation(data, 1 << 22);
 });
