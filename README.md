@@ -234,6 +234,18 @@ secuencial y con los contextos reales, así que el formato y el decodificador no
 
 El coste en compresión es mínimo (−29,8 % frente a −29,9 % del codificador secuencial).
 
+**Hilos en el navegador.** El módulo con hilos se compila para `wasm32-wasip1-threads`: cada hilo
+de Rust corre en un Web Worker con su propia instancia y la misma memoria compartida. En el
+comparador, kodim23 pasa de 2,4 a 1,3 s con 4 núcleos (compartidos con los otros formatos, que
+se codifican a la vez); en Node, con la máquina libre, de 2,2 a 0,93 s. Por el camino aparecieron
+tres problemas:
+
+| Problema | Síntoma | Solución |
+|---|---|---|
+| `malloc` de wasi-libc con un único cerrojo | Con más de 2 hilos iba **más lento** | Caché de bloques pequeños por hilo (`src/talloc.rs`) |
+| La biblioteca no tiene `_start`, y nadie inicializaba la estructura del hilo principal de wasi-libc | Se bloqueaba al crear el primer hilo | La página llama a `__wasi_init_tp` y a los constructores |
+| En V8, si un hilo hace crecer la memoria compartida, los demás pueden seguir viendo el tamaño anterior | «memory access out of bounds» aleatorio, 1 de cada 2 veces | Antes de crear los hilos de cada plano se reserva la memoria que necesitarán, y así no crece mientras trabajan |
+
 **Teselas de 2048: probadas y no adoptadas por defecto.** Con el frente de onda ya no hace falta
 trocear la imagen para codificar en paralelo, y una tesela grande comprime algo mejor: −1,4 % en
 las 12 fotos de 2,7 MP. Pero el decodificador solo paraleliza por teselas, y esas fotos pasan de
@@ -339,6 +351,12 @@ cualquiera, además de descargas de cada archivo. Los códecs de referencia son 
 oficiales compiladas a WebAssembly ([jSquash](https://github.com/jamsinclair/jSquash), Apache-2.0,
 incluidas en `web/vendor/`) y se ejecutan con un hilo por formato. Nada sale del navegador.
 
+Tesela codifica con **varios hilos** en el comparador (`web/tesela-mt.wasm`), con el mismo
+resultado byte a byte que con uno. Para eso el navegador exige que la página esté aislada entre
+orígenes: `web/serve.py` envía las cabeceras necesarias, y donde el servidor no las envía (GitHub
+Pages) las añade un service worker (`compare/coi-sw.js`), que recarga la página una vez. Si nada de
+eso es posible, se codifica con un hilo y la página lo indica.
+
 ## Banco de pruebas
 
 ```sh
@@ -360,7 +378,7 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 ## Limitaciones
 
 - **Soporte nativo.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
-  `tesela.js` y WebAssembly (630 KB). Conviene servir un `fallback` en JPEG.
+  `tesela.js` y WebAssembly (630 KB; 730 KB más la versión con hilos, solo para codificar). Conviene servir un `fallback` en JPEG.
 - **Fotos grandes a calidad baja.** Con SSIMULACRA2 entre 30 y 50, Tesela y AVIF empatan
   (−0,1 %); la ventaja de Tesela está en calidad media y alta (−3 % y −6 %). En Kodak gana por
   ~7 % en los tres tramos.
@@ -368,8 +386,8 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
   (un alfa con degradados suaves cuesta bastante). No tiene animación ni metadatos ICC o EXIF.
 - **Velocidad de codificación.** Codificar sigue siendo más lento que AVIF: ~1 s por foto de
-  0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador no hay hilos dentro del módulo
-  y solo se paraleliza por teselas.
+  0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador va con hilos solo si la página
+  está aislada entre orígenes (ver el comparador); la librería `tesela.js` aún codifica con uno.
 - **Licencias de los datos.** Las imágenes de prueba (Kodak, DIV2K) y de entrenamiento (BSD100) no
   se redistribuyen, salvo `web/compare/sample.png` (kodim23). Las capturas e ilustraciones se
   generan con `bench/gen_synthetic.js`.

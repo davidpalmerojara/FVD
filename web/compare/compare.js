@@ -294,6 +294,9 @@ function renderDetail() {
     p.mode === 'target'
       ? 'Cada formato se codifica varias veces hasta rodear la calidad objetivo; el tamaño se interpola en ese punto exacto. El botón de descarga entrega el archivo real más cercano por encima del objetivo.'
       : 'Las escalas de calidad no son equivalentes entre formatos: compara tamaño y métricas a la vez.';
+  $('d-note').textContent += self.crossOriginIsolated
+    ? ' Tesela codifica con varios hilos; los demás formatos, con uno.'
+    : ' Tesela codifica con un solo hilo: abre la página con web/serve.py (o recárgala) para usar varios.';
   renderViewer(p);
 }
 

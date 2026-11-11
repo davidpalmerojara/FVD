@@ -4,6 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Comparador Tesela</title>
+  <script>
+    // Donde el servidor no envía COOP/COEP (GitHub Pages), un service worker
+    // las añade para que Tesela pueda codificar con varios hilos. Recarga una vez.
+    if (!self.crossOriginIsolated && 'serviceWorker' in navigator && location.protocol !== 'file:') {
+      navigator.serviceWorker.register('coi-sw.js').then((reg) => {
+        let tried = false;
+        try { tried = sessionStorage.getItem('tsl-coi') === '1'; sessionStorage.setItem('tsl-coi', '1'); } catch {}
+        if (tried) return;
+        if (navigator.serviceWorker.controller) location.reload();
+        else navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+      }, () => {});
+    }
+  </script>
   <link rel="stylesheet" href="../style.css">
   <link rel="stylesheet" href="compare.css">
 </head>

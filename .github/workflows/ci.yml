@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32-wasip1-threads
       - name: Tests
         run: cargo test --release
       - name: Compilar WebAssembly
@@ -24,3 +24,11 @@ jobs:
           node web/test-wasm.mjs /tmp/s.tsl /tmp/s.rgb
       - name: Vectores de conformidad v1 en WebAssembly
         run: node web/test-vectors.mjs
+      - name: WebAssembly con hilos igual que nativo
+        run: |
+          cargo build --release --target wasm32-wasip1-threads --lib --no-default-features --features metrics
+          cp target/wasm32-wasip1-threads/release/tesela.wasm web/tesela-mt.wasm
+          ./target/release/tesela encode web/compare/sample.png /tmp/l.tsl --lossless
+          ./target/release/tesela decode /tmp/l.tsl /tmp/l.rgb
+          ./target/release/tesela encode web/compare/sample.png /tmp/n.tsl -q 80
+          TH=1,2,4 node web/test-wasm-mt.mjs /tmp/l.rgb 768 512 /tmp/n.tsl

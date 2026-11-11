@@ -1330,8 +1330,20 @@ pub fn tile_grid(width: usize, height: usize, tile: usize) -> Vec<TileRect> {
     v
 }
 
+static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Fija los hilos que usa el codificador cuando `Params::threads` es 0
+/// (0 = los que diga el sistema). Sirve en WebAssembly, donde el sistema no
+/// lo sabe y lo indica la página (`navigator.hardwareConcurrency`).
+pub fn set_default_threads(n: usize) {
+    THREADS.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn available_threads() -> usize {
-    if cfg!(feature = "parallel") {
+    let n = THREADS.load(std::sync::atomic::Ordering::Relaxed);
+    if n > 0 {
+        n
+    } else if cfg!(feature = "parallel") {
         std::thread::available_parallelism().map_or(1, |n| n.get())
     } else {
         1
@@ -1752,23 +1764,45 @@ fn encode_plane(
         let mut order: Vec<usize> = (0..total).collect();
         order.sort_by_key(|&k| (k % cols + 2 * (k / cols), k / cols));
         let order = &order;
-        std::thread::scope(|scope| {
-            for _ in 0..threads.min(total) {
-                scope.spawn(|| {
-                    let mut mine = None;
-                    loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if i >= total {
-                            break;
-                        }
-                        rdo(order[i], &mut mine);
-                    }
-                });
+        let task = || {
+            let mut mine = None;
+            loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= total {
+                    break;
+                }
+                rdo(order[i], &mut mine);
             }
+            drop(mine);
+            #[cfg(target_os = "wasi")]
+            crate::talloc::flush();
+        };
+        let n = threads.min(total);
+        #[cfg(target_os = "wasi")]
+        crate::talloc::reserve(n, pw * ph, total);
+        std::thread::scope(|scope| {
+            // Se esperan con join para que ninguno siga vivo al salir.
+            let handles: Vec<_> = (0..n)
+                .map(|_| {
+                    // Pila explícita: en WebAssembly la de los hilos es pequeña
+                    // por defecto y no hay páginas de guarda.
+                    std::thread::Builder::new()
+                        .stack_size(4 << 20)
+                        .spawn_scoped(scope, task)
+                        .expect("no se pudo crear un hilo del codificador")
+                })
+                .collect();
             for k in 0..total {
                 write(k, st, enc);
             }
+            for h in handles {
+                h.join().expect("un hilo del codificador falló");
+            }
         });
+        // El hilo principal ha liberado lo que crearon los otros (árboles,
+        // probabilidades): que vuelva a malloc para el plano siguiente.
+        #[cfg(target_os = "wasi")]
+        crate::talloc::flush();
     }
     let plane = shared.into_inner().unwrap().plane;
     (plane, src)

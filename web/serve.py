@@ -9,6 +9,10 @@ Funciona igual en Windows, macOS, Linux y WSL:
 Fuerza los tipos MIME de .js y .wasm: en algunos Windows el registro hace que
 el servidor de Python los sirva como text/plain y el navegador se niega a
 cargar los módulos.
+
+Además envía las cabeceras de aislamiento entre orígenes (COOP y COEP), que
+el navegador exige para compartir memoria entre workers: con ellas, Tesela
+codifica con varios hilos en el comparador.
 """
 
 import functools
@@ -29,6 +33,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".mjs": "text/javascript",
         ".wasm": "application/wasm",
     }
+
+    def end_headers(self):
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        super().end_headers()
 
 
 def main():

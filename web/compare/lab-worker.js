@@ -1,7 +1,9 @@
 // Worker del comparador: codifica, decodifica y mide una imagen con un códec.
-// Todos los códecs se ejecutan aquí en WebAssembly (un hilo por worker).
+// Todos los códecs se ejecutan aquí en WebAssembly. Tesela codifica con varios
+// hilos si la página está aislada (crossOriginIsolated); los demás, con uno.
 
 import { loadWasm } from '../tesela-core.js';
+import { loadEncoder } from '../tesela-threads.js';
 
 const TUNES = { balanced: 0, perceptual: 1, psnr: 2 };
 const mods = {};
@@ -14,7 +16,7 @@ async function jsq(name, kind) {
 const CODECS = {
   tesela: {
     async encode(img, q, o) {
-      const core = await loadWasm();
+      const core = await loadEncoder();
       return core.encode(img.data, img.width, img.height, q, o.teselaEffort ?? 4, TUNES[o.teselaTune] ?? 0);
     },
     async decode(bytes) {

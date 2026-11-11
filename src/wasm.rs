@@ -37,6 +37,17 @@ pub extern "C" fn tsl_alloc(len: usize) -> *mut u8 {
     Box::into_raw(vec![0u8; len.max(1)].into_boxed_slice()) as *mut u8
 }
 
+/// Hilos del codificador (solo tienen efecto en la compilación con hilos,
+/// `wasm32-wasip1-threads`; en la normal no se pueden crear).
+#[unsafe(no_mangle)]
+pub extern "C" fn tsl_set_threads(n: u32) {
+    codec::set_default_threads(if cfg!(target_os = "wasi") {
+        n as usize
+    } else {
+        1
+    });
+}
+
 /// Libera un búfer de `tsl_alloc` (con su longitud) o devuelto por otra función
 /// (con la longitud leída de su cabecera).
 ///

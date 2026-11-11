@@ -19,3 +19,9 @@ pub use codec::{Decoded, Encoded, Params, decode, encode, encode_rgba};
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+
+#[cfg(target_os = "wasi")]
+pub mod talloc;
+#[cfg(target_os = "wasi")]
+#[global_allocator]
+static ALLOC: talloc::ThreadCache = talloc::ThreadCache;
