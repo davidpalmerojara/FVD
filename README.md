@@ -1,10 +1,10 @@
 # Tesela
 
 **Tesela** es un formato de imagen escrito desde cero en Rust. Divide cada imagen en *teselas*
-de tamaño adaptativo, como un mosaico. A igual calidad ocupa menos que WebP y JPEG XL en todos los
-tipos de contenido probados. Frente a AVIF gana con claridad en capturas de pantalla e
-ilustraciones, gana en fotos pequeñas y empata en fotos grandes. Decodifica de 3 a 8 veces más
-rápido que AVIF y funciona en cualquier navegador gracias a WebAssembly.
+de tamaño adaptativo, como un mosaico. A igual calidad ocupa menos que WebP, AVIF y JPEG XL en todos los
+tipos de contenido probados: fotos pequeñas y grandes, capturas de pantalla e ilustraciones. En
+fotos decodifica de 2 a 5 veces más rápido que AVIF, y funciona en cualquier navegador gracias a
+WebAssembly.
 
 Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
 
@@ -76,17 +76,21 @@ imágenes sintéticas propias, nunca con las imágenes de evaluación.
 
 | Conjunto | Tesela | AVIF | JPEG XL | Decodificación Tesela / AVIF |
 |---|---|---|---|---|
-| Kodak: 24 fotos de 768×512 | **−26,6 %** | −24,8 % | −12,1 % | 46 ms / 164 ms |
-| Fotos grandes: 12 DIV2K de 2,7 MP | −29,2 % | **−30,2 %** | −21,2 % | 0,28 s / 2,36 s |
-| Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−57,9 %** | −50,6 % | −36,0 % | 0,11 s / 0,18 s |
-| Ilustraciones: 6 (emojis, vectorial, gráficos) | **−60,2 %** | −53,9 % | +9,5 % | 0,08 s / 0,09 s |
+| Kodak: 24 fotos de 768×512 | **−30,3 %** | −24,8 % | −12,1 % | 67 ms / 164 ms |
+| Fotos grandes: 12 DIV2K de 2,7 MP | **−32,4 %** | −30,2 % | −21,2 % | 0,47 s / 2,36 s |
+| Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−59,9 %** | −50,6 % | −36,0 % | 0,12 s / 0,18 s |
+| Ilustraciones: 6 (emojis, vectorial, gráficos) | **−61,8 %** | −53,9 % | +9,5 % | 0,10 s / 0,09 s |
+
+Son resultados de la v2. Con la v1, Tesela sacaba −26,6 %, −29,2 %, −57,9 % y −60,2 %. Los
+tiempos son los del banco, que codifica y decodifica cuatro imágenes a la vez; con la máquina
+libre, Tesela decodifica una foto de Kodak en ~40 ms.
 
 ### Kodak, todas las métricas
 
 | Formato | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Codificación | Decodificación |
 |---|---|---|---|---|---|---|---|
-| **Tesela** (por defecto) | **−26,6 %** | **−23,4 %** | **−17,7 %** | **−24,2 %** | **−22,8 %** | 1,06 s | **46 ms** |
-| Tesela `--tune psnr` | −7,6 % | −7,6 % | −25,8 % | −20,3 % | −25,6 % | 1,07 s | 42 ms |
+| **Tesela** (por defecto) | **−30,3 %** | **−25,7 %** | −20,7 % | **−26,4 %** | −25,7 % | 1,98 s | **67 ms** |
+| Tesela `--tune psnr` | −15,6 % | −12,8 % | **−29,2 %** | −23,8 % | **−29,3 %** | 2,15 s | 65 ms |
 | AVIF (libavif 1.4 + aom, `speed=4`) | −24,8 % | −19,7 % | −16,4 % | −22,1 % | −17,4 % | 1,42 s | 164 ms |
 | JPEG XL (libjxl 0.12, `effort=7`) | −12,1 % | −13,4 % | +9,4 % | +4,4 % | +12,2 % | 0,19 s | 146 ms |
 | WebP (libwebp 1.6, `method=6`) | 0 % | 0 % | 0 % | 0 % | 0 % | 0,13 s | 115 ms |
@@ -95,16 +99,16 @@ imágenes sintéticas propias, nunca con las imágenes de evaluación.
 
 **Cómo leer estos resultados:**
 
-- **Fotos.** En Kodak, Tesela supera a AVIF en todas las columnas, aunque por poco en SSIMULACRA2
-  (−2,5 % relativo). En fotos grandes hay **empate técnico**:
-  - Tesela gana en SSIMULACRA2 de alta calidad (−25,8 % frente a −23,5 %), SSIM y PSNR RGB.
-  - AVIF gana por ~1 punto en SSIMULACRA2 global y PSNR-Y.
-  - **A tasas muy bajas (< 0,4 bpp), AVIF sigue siendo mejor.**
-- **Contenido sintético.** Tesela supera a AVIF por 7 puntos en capturas e ilustraciones. Lo
+- **Fotos.** Tesela supera a AVIF en todas las columnas, en Kodak y en fotos grandes. En Kodak
+  la ventaja en SSIMULACRA2 es de 5,5 puntos; en fotos grandes, de 2,2 (con la v1 había empate).
+  Las particiones rectangulares de la v2 explican la mayor parte del salto.
+- **Contenido sintético.** Tesela supera a AVIF por 8–9 puntos en capturas e ilustraciones. Lo
   consigue con la paleta, la copia intra de bloques, el transform skip y la elección automática
   de 4:4:4.
-- **Velocidad.** Tesela decodifica entre 3 y 8 veces más rápido que AVIF y, en fotos grandes,
-  codifica 3,4 veces más rápido.
+- **Velocidad.** En fotos, Tesela decodifica de 2 a 5 veces más rápido que AVIF; en contenido
+  sintético, más o menos igual. Codificar cuesta más CPU que en la v1 (la búsqueda de particiones
+  rectangulares), pero el codificador usa todos los núcleos: una foto de Kodak tarda ~1 s con 4.
+  La columna de codificación del banco mide una imagen por núcleo, no ese caso.
 - **Calibración de la escala.** La escala de calidad imita la de JPEG: `-q 85` se ve parecido a un
   JPEG q85, y en las imágenes de la demo Tesela ocupa entre un 27 % y un 55 % menos.
 
@@ -357,8 +361,9 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 
 - **Soporte nativo.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
   `tesela.js` y WebAssembly (630 KB). Conviene servir un `fallback` en JPEG.
-- **Fotos a tasas bajas.** Por debajo de ~0,4 bpp AVIF sigue siendo mejor. En fotos grandes la
-  compresión está empatada con AVIF.
+- **Fotos grandes a calidad baja.** Con SSIMULACRA2 entre 30 y 50, Tesela y AVIF empatan
+  (−0,1 %); la ventaja de Tesela está en calidad media y alta (−3 % y −6 %). En Kodak gana por
+  ~7 % en los tres tramos.
 - **Sin pérdida en fotos.** Ocupa más que WebP y JPEG XL.
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
   (un alfa con degradados suaves cuesta bastante). No tiene animación ni metadatos ICC o EXIF.
