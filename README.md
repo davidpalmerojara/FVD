@@ -14,6 +14,17 @@ Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
   (`web/tesela.js`).
 - **Banco de pruebas reproducible** con BD-rate, curvas y datos crudos (`bench/`).
 
+## Formato
+
+La versión 1 del flujo de bits está **congelada**:
+
+- [`docs/especificacion-v1.md`](docs/especificacion-v1.md) describe el contenedor, la sintaxis y
+  la reconstrucción con el detalle necesario para escribir otro decodificador.
+- [`tests/vectors/`](tests/vectors) contiene 14 archivos de conformidad con el hash de su salida,
+  que se comprueban en nativo y en WebAssembly.
+- Cada archivo lleva su número de versión: las mejoras futuras que cambien el flujo de bits irán
+  en una versión nueva, y un `.tsl` v1 seguirá abriéndose.
+
 ## Pruébalo en tu ordenador
 
 **Comparador con tus fotos.** Solo necesitas Git y Python 3; no hace falta Rust.
