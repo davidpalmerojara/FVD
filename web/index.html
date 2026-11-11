@@ -134,6 +134,29 @@
         <a href="./docs/index.html#resultados">documentación</a>.</p>
     </section>
 
+    <section class="section" id="animacion">
+      <p class="eyebrow">Animación</p>
+      <h2>Adiós al GIF</h2>
+      <p class="lead">Tesela también anima: guarda solo lo que cambia entre fotogramas y predice cada bloque del
+        fotograma anterior. Esta terminal de 90 fotogramas ocupa 14 KB y se reproduce con un simple
+        <code>&lt;img src="terminal.tsl"&gt;</code>.</p>
+      <div class="grid-2" style="align-items:center">
+        <div class="card" style="padding:10px"><tesela-img src="demo/terminal.tsl" alt="Terminal escribiendo comandos (animación de 90 fotogramas)" style="width:100%"></tesela-img></div>
+        <div class="card tw">
+          <table class="data">
+            <thead><tr><th>Animación, a igual calidad</th><th>GIF</th><th>WebP</th><th>Tesela</th><th>AVIF</th></tr></thead>
+            <tbody>
+              <tr><td>Terminal, 90 fotogramas</td><td>242 KB</td><td>~140 KB</td><td class="best">12 KB</td><td>14 KB</td></tr>
+              <tr><td>Interfaz, 40 fotogramas</td><td>68 KB</td><td>57 KB</td><td>6,0 KB</td><td>4,7 KB</td></tr>
+              <tr><td>Paneo sobre una foto</td><td>1 968 KB</td><td>454 KB</td><td>33 KB</td><td>18 KB</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p class="muted" style="font-size:13px">SSIMULACRA2 medio por fotograma igualado (76 en la terminal, 80 en el resto). Con movimiento
+        de cámara, AVIF animado ocupa menos; en capturas e interfaces están a la par.</p>
+    </section>
+
     <section class="section" id="caracteristicas">
       <p class="eyebrow">Características</p>
       <h2>Pensado para la web de hoy</h2>
@@ -206,6 +229,7 @@
     </div>
   </footer>
 
+  <script type="module" src="./tesela.js"></script>
   <dialog class="lb" id="lb"><div class="lb-in" id="lb-in"></div></dialog>
 
   <script type="module">

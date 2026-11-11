@@ -146,7 +146,7 @@ Tamaño total de 10 imágenes (3 fotos, 4 capturas y 3 ilustraciones):
 | Restauración | Filtro tipo ALF. Cada bloque 4×4 se clasifica en una de 12 clases (actividad × dirección). Cada clase tiene un filtro simétrico de 15 taps que el codificador estima por mínimos cuadrados y activa por superbloque. |
 | Contenido sintético | Si la imagen parece sintética (pocos valores por bloque), el codificador activa tres herramientas, que en fotos no cuestan ni un bit. **Paleta**: hasta 8 colores, con índices codificados por rango según los vecinos. **Copia intra de bloques**: el codificador busca candidatos con un índice hash de bloques de 8×8. **Transform skip** en bloques de hasta 16×16. Además, el croma pasa a 4:4:4. |
 | Alfa y sin pérdida | El alfa es un plano adicional sin pérdida con contextos propios. El modo sin pérdida codifica los planos G, B y R con residuo exacto, y predice B y R desde G con CCLM. |
-| Animación (v2) | Lienzo y lista de fotogramas, cada uno con su duración y el rectángulo que cambia, codificado como una imagen fija. `tesela encode` acepta GIF, APNG y WebP animados; `tesela decode` escribe un GIF (`salida.gif`) o un PNG por fotograma (`carpeta/`). En la web, `<tesela-img>` la reproduce y el Service Worker la entrega como APNG, así que `<img src="anim.tsl">` se anima. |
+| Animación (v2) | Lienzo y lista de fotogramas, cada uno con su duración y el rectángulo que cambia. Cada bloque puede predecirse del fotograma anterior con un vector de movimiento de cuarto de píxel. `tesela encode` acepta GIF, APNG y WebP animados; `tesela decode` escribe un GIF (`salida.gif`) o un PNG por fotograma (`carpeta/`). En la web, `<tesela-img>` la reproduce y el Service Worker la entrega como APNG, así que `<img src="anim.tsl">` se anima. |
 | Metadatos (v2) | Perfil de color ICC (por ejemplo, Display P3 de las fotos de móvil) y EXIF. Al codificar se aplica la orientación EXIF a los píxeles. `tesela decode` escribe el perfil en el PNG, y el Service Worker lo incluye en el PNG que entrega al navegador, que gestiona el color como con cualquier imagen. `--sin-metadatos` no los guarda. |
 | Vista previa | Opcional (`--preview`): una miniatura de ~300 bytes al principio del archivo. `<tesela-img>` la muestra desenfocada en cuanto llega, mientras se descarga el resto. |
 | Determinismo | El decodificador WebAssembly produce **exactamente** los mismos bytes que el nativo, y lo comprueba el CI. |
@@ -228,14 +228,31 @@ pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
 
 | Animación | GIF | WebP animado | Tesela | AVIF animado |
 |---|---|---|---|---|
-| Terminal, 90 fotogramas de 640×400 | 242 KB (calidad 98) | 140 KB (73) | **19 KB (79)** | 13,5 KB (76; su máximo es 79) |
-| Interfaz, 40 de 480×320 | 68 KB (96) | 57 KB (80) | **15 KB (78)** | 4,6 KB (79; su máximo es 87) |
-| Paneo sobre una foto, 30 de 400×300 | 1 968 KB (55) | 454 KB (80) | 291 KB (80) | **18 KB (80)** |
+| Terminal, 90 fotogramas de 640×400, a calidad 76 | 242 KB | ~140 KB (no llega a 76) | **12,3 KB** | 13,5 KB |
+| Interfaz, 40 de 480×320, a calidad 80 | 68 KB | 57 KB | 6,0 KB | **4,7 KB** |
+| Paneo sobre una foto, 30 de 400×300, a calidad 80 | 1 968 KB | 454 KB | 32,8 KB | **18,4 KB** |
+| Zoom sobre una foto, 30 de 400×300, a calidad 70 | 1 917 KB | 279 KB | 27,3 KB | **10,2 KB** |
 
-Tesela gana con claridad a GIF y a WebP animado. AVIF animado gana a todos porque predice cada
-fotograma del anterior (compensación de movimiento de vídeo); en contenido sintético Tesela llega a
-calidades más altas que AVIF, pero a igual calidad media AVIF ocupa menos. Añadir predicción entre
-fotogramas es la mejora pendiente.
+Tesela ocupa entre 10 y 70 veces menos que GIF y WebP animado. Frente a AVIF animado gana en la
+terminal y llega a calidades que AVIF no alcanza en contenido sintético (93 frente a 87 en la
+interfaz), pero con movimiento de cámara AVIF ocupa entre 2 y 3 veces menos: tiene herramientas de
+vídeo que Tesela no (movimiento global por fotograma, compensación con varios fotogramas,
+filtros más elaborados).
+
+Así se llegó ahí (a q85, terminal / interfaz / paneo / zoom):
+
+| Cambio | Resultado |
+|---|---|
+| Solo el rectángulo que cambia, cada fotograma como imagen fija | 19,2 / 21,9 / 310 / 56 KB |
+| Predicción desde el fotograma anterior (vectores enteros, hash y búsqueda por pasos) | 13,7 / 7,2 / 38 KB |
+| Fotogramas predichos más gruesos en contenido fotográfico (como en vídeo) | foto: −20 % a igual calidad |
+| Vectores de cuarto de píxel (filtro de 8 coeficientes de HEVC) | zoom: 56 → 30 KB |
+| Predictor de vectores con los vecinos | −2 a −3 % |
+
+El predictor de vectores destapó un error: la primera versión usaba el vecino superior derecho, que
+el escritor del codificador veía pero el decodificador aún no; el error se acumulaba de fotograma en
+fotograma. Desde entonces un test exige que el decodificador reproduzca byte a byte lo que el
+codificador cree haber producido.
 
 **Modos rápidos.** Los niveles de esfuerzo bajos recortan la búsqueda del codificador: sin
 particiones rectangulares (3 y menos), sin refinado de los modos angulares y con parada temprana
@@ -435,10 +452,9 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
   (un alfa con degradados suaves cuesta bastante). No tiene HDR. En la web, el perfil de color se
   respeta con `tesela-auto.js`, pero `<tesela-img>` pinta en sRGB.
-- **Animación sin predicción entre fotogramas.** Cada fotograma guarda solo el rectángulo que cambia,
-  como una imagen fija. Ocupa de 4 a 12 veces menos que GIF y que WebP animado, pero AVIF animado,
-  que predice cada fotograma a partir del anterior, ocupa menos: de 1,4 a 3 veces en capturas e
-  interfaces y 16 veces en una foto en movimiento (ver el banco de animación).
+- **Animación con movimiento de cámara.** Tesela predice cada fotograma del anterior, pero con
+  movimiento real (paneos, zooms) AVIF animado ocupa entre 2 y 3 veces menos (ver el banco de
+  animación). En capturas e interfaces están a la par.
 - **Velocidad de codificación.** Codificar sigue siendo más lento que AVIF: ~1 s por foto de
   0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador va con hilos solo si la página
   está aislada entre orígenes (ver el comparador); la librería `tesela.js` aún codifica con uno.
