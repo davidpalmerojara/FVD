@@ -1,0 +1,15 @@
+# archivo ancho alto fnv64(rgba decodificado)
+foto_q30.tsl 192 128 186f4d6cd12dd267
+foto_q75.tsl 192 128 03310809be9c59b5
+foto_grande_q50.tsl 448 320 e7fc3ead21d238a8
+foto_q97_444.tsl 192 128 6c64b2b50569abd5
+foto_psnr.tsl 192 128 167c75c7c62710d3
+foto_teselas.tsl 200 150 c08e8cf34a395115
+foto_vista_previa.tsl 192 128 48563eba1c040351
+captura.tsl 160 120 432e4a1829c45ac5
+captura_q40.tsl 160 120 a7306bbcc3900bbc
+alfa.tsl 192 128 c6a410a71c9d7aed
+sin_perdida.tsl 192 128 af43ecca9d2ae1e1
+sin_perdida_alfa.tsl 192 128 f704bb09b2957481
+diminuta_7x5.tsl 7 5 dfa59b277101799e
+diminuta_1x1.tsl 1 1 983d4bb115d72b35

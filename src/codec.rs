@@ -15,7 +15,14 @@ use crate::restore;
 use crate::tools::{self, BvCtx, MARK_IBC, MARK_PALETTE, PalCtx, Palette};
 
 pub const HEADER_SIZE: usize = HEADER_LEN;
-pub const MAGIC: &[u8; 4] = b"TSL1";
+/// Firma del archivo: "TSL" seguida del byte de versión del flujo de bits.
+pub const MAGIC: &[u8; 3] = b"TSL";
+/// Versión del flujo de bits. La v1 está congelada: cualquier cambio que
+/// altere la decodificación de un archivo v1 debe ir en una versión nueva
+/// (los vectores de `tests/vectors` lo comprueban).
+pub const VERSION: u8 = 1;
+/// Bits de `tools` definidos en la v1.
+const KNOWN_TOOLS: u8 = 1 | 2 | 4 | 8;
 const SB: usize = 64;
 /// Granularidad de la cuantización adaptativa (AQ).
 const AQ: usize = 32;
@@ -144,6 +151,7 @@ impl Header {
 
     fn write(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(MAGIC);
+        out.push(VERSION);
         out.extend_from_slice(&self.width.to_le_bytes());
         out.extend_from_slice(&self.height.to_le_bytes());
         out.push(self.subsample as u8);
@@ -158,8 +166,25 @@ impl Header {
     }
 
     pub fn read(d: &[u8]) -> Result<Header, String> {
-        if d.len() < HEADER_LEN || &d[..4] != MAGIC {
+        if d.len() < 4 || &d[..3] != MAGIC {
             return Err("no es un archivo Tesela".into());
+        }
+        match d[3] {
+            VERSION => {}
+            b'1' => {
+                return Err(
+                    "archivo de una versión de desarrollo anterior a la v1: vuelve a codificarlo"
+                        .into(),
+                );
+            }
+            v => {
+                return Err(format!(
+                    "versión {v} del formato no soportada (este decodificador lee la v{VERSION})"
+                ));
+            }
+        }
+        if d.len() < HEADER_LEN {
+            return Err("archivo truncado".into());
         }
         let u32le = |i: usize| u32::from_le_bytes(d[i..i + 4].try_into().unwrap());
         let h = Header {
@@ -177,6 +202,15 @@ impl Header {
         };
         if h.tile == 0 {
             return Err("tamaño de tesela no válido".into());
+        }
+        if d[12] > 1 || d[18] > 1 || h.deblock != 0 || h.qstep == 0 || h.chroma_q == 0 {
+            return Err("cabecera no válida para la v1".into());
+        }
+        if h.tools & !KNOWN_TOOLS != 0 {
+            return Err(format!(
+                "herramientas desconocidas (0x{:02x}): archivo de una versión posterior",
+                h.tools
+            ));
         }
         if h.width == 0 || h.height == 0 || h.width > 1 << 16 || h.height > 1 << 16 {
             return Err("dimensiones no válidas".into());
@@ -1170,7 +1204,8 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
         qm_luma: (p.qm_luma * 16.0).round().clamp(0.0, 255.0) as u8,
         qm_chroma: (p.qm_chroma * 16.0).round().clamp(0.0, 255.0) as u8,
         aq: p.aq_strength != 0.0,
-        deblock: p.deblock.unwrap_or(0),
+        // El desbloqueo no forma parte de la v1 (campo reservado, siempre 0).
+        deblock: 0,
         tile,
         tools: if screen { TOOL_SCREEN } else { 0 },
     }

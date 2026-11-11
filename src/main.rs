@@ -7,7 +7,7 @@ tesela - códec de imagen (formato .tsl)
 
 USO:
   tesela encode <entrada.png> <salida.tsl> [-q CALIDAD] [-e ESFUERZO] [--tune balanced|perceptual|psnr] [--screen|--no-screen] [--lossless] [--preview] [--444|--420]
-             [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F] [--deblock N]
+             [--aq F] [--cq F] [--qm F] [--qmc F] [--lambda F]
   tesela decode <entrada.tsl> <salida.png>
   tesela compare <original.png> <distorsionada.png>      (imprime JSON)
   tesela roundtrip <entrada.png> [opciones de encode]     (imprime JSON con bpp y métricas)
@@ -105,10 +105,6 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
             }
             "--tile" => {
                 p.tile = num(i)? as usize;
-                i += 1;
-            }
-            "--deblock" => {
-                p.deblock = Some(num(i)? as u8);
                 i += 1;
             }
             o => return Err(format!("opción desconocida: {o}")),

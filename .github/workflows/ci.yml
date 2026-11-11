@@ -22,3 +22,5 @@ jobs:
           ./target/release/tesela encode web/compare/sample.png /tmp/s.tsl -q 80 --tile 256
           ./target/release/tesela decode /tmp/s.tsl /tmp/s.rgb
           node web/test-wasm.mjs /tmp/s.tsl /tmp/s.rgb
+      - name: Vectores de conformidad v1 en WebAssembly
+        run: node web/test-vectors.mjs

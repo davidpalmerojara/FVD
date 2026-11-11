@@ -83,6 +83,7 @@ fn quality_controls_size() {
 fn rejects_garbage() {
     assert!(decode(b"hola").is_err());
     assert!(decode(b"TSL1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").is_err());
+    assert!(decode(b"TSL\x02\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").is_err());
     // Datos truncados/corruptos no deben provocar pánico.
     let img = synthetic(40, 40, 1);
     let mut e = encode(&img, 40, 40, &Params::default()).bytes;
