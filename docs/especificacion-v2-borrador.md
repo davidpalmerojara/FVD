@@ -78,8 +78,12 @@ submuestreada y 1 en otro caso.
 **Sintaxis.** Al principio de la cabecera de cada hoja (antes de la clase especial de la v1) va el
 bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
 202. Si vale 1, sigue un vector de movimiento con la misma sintaxis que el vector de la copia intra
-(sección 6.5 de la v1), pero con modelos propios (`mv`) y su propio «último vector», que empieza en
-(0, 0) en cada plano de cada tesela. La marca de la hoja en el mapa es 202, y la cabecera sigue con
+(sección 6.5 de la v1), con modelos propios (`mv`), pero codificado respecto a un **predictor**: la
+mediana, componente a componente, de los vectores de los vecinos izquierdo (x0 − 1, y0), superior
+(x0, y0 − 1) y superior izquierdo (x0 − 1, y0 − 1) que sean hojas con la marca 202. Los que no lo
+sean toman el valor del último vector del plano (que empieza en (0, 0) en cada plano de cada
+tesela); si solo uno lo es, el predictor es ese; si ninguno, el último vector. Tras decodificar la
+hoja, el último vector pasa a ser el suyo. La marca de la hoja en el mapa es 202, y la cabecera sigue con
 `ts` como cualquier otra hoja.
 
 **Predicción.** Los vectores están en **cuartos de píxel**. Con la parte entera

@@ -41,6 +41,8 @@ pub struct Plane {
     pub modes: Vec<u8>,
     pub sizes: Vec<u8>,
     pub nz: Vec<bool>,
+    /// Vector de movimiento de las hojas predichas del fotograma anterior.
+    pub mvs: Vec<(i32, i32)>,
 }
 
 impl Plane {
@@ -57,6 +59,7 @@ impl Plane {
             modes: vec![MODE_DC; gw * gh],
             sizes: vec![64; gw * gh],
             nz: vec![false; gw * gh],
+            mvs: vec![(0, 0); gw * gh],
         }
     }
 
@@ -85,6 +88,24 @@ impl Plane {
                 self.nz[i] = nz;
             }
         }
+    }
+
+    /// Guarda el vector de movimiento de un bloque.
+    pub fn set_mv(&mut self, x0: usize, y0: usize, w: usize, h: usize, mv: (i32, i32)) {
+        for gy in y0 / 4..(y0 + h) / 4 {
+            for gx in x0 / 4..(x0 + w) / 4 {
+                self.mvs[gy * self.gw + gx] = mv;
+            }
+        }
+    }
+
+    /// Vector del bloque que contiene (x, y), si está disponible y tiene la marca dada.
+    pub fn mv_at(&self, x: isize, y: isize, mark: u8) -> Option<(i32, i32)> {
+        if !self.is_avail(x, y) {
+            return None;
+        }
+        let i = (y as usize / 4) * self.gw + x as usize / 4;
+        (self.modes[i] == mark).then_some(self.mvs[i])
     }
 
     pub fn clear_avail(&mut self, x0: usize, y0: usize, w: usize, h: usize) {
@@ -124,6 +145,7 @@ impl Plane {
                 self.modes[i] = from.modes[i];
                 self.sizes[i] = from.sizes[i];
                 self.nz[i] = from.nz[i];
+                self.mvs[i] = from.mvs[i];
             }
         }
     }

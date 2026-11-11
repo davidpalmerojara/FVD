@@ -679,6 +679,28 @@ struct ScState {
     last_mv: (i32, i32),
 }
 
+/// Predictor del vector de movimiento: mediana de los vectores de los vecinos
+/// izquierdo, superior y superior izquierdo que sean hojas predichas del
+/// fotograma anterior; los que falten valen el último vector del plano. Sin
+/// ningún vecino así, el último vector. (El superior derecho no se usa: en el
+/// orden de codificación a veces aún no está decodificado.)
+fn mv_pred(p: &Plane, x0: usize, y0: usize, w: usize, last: (i32, i32)) -> (i32, i32) {
+    let (x, y) = (x0 as isize, y0 as isize);
+    let a = p.mv_at(x - 1, y, MARK_INTER);
+    let b = p.mv_at(x, y - 1, MARK_INTER);
+    let _ = w;
+    let c = p.mv_at(x - 1, y - 1, MARK_INTER);
+    match (a, b, c) {
+        (None, None, None) => last,
+        (Some(v), None, None) | (None, Some(v), None) | (None, None, Some(v)) => v,
+        _ => {
+            let [a, b, c] = [a, b, c].map(|v| v.unwrap_or(last));
+            let med = |p: i32, q: i32, r: i32| p.max(q).min(p.min(q).max(r));
+            (med(a.0, b.0, c.0), med(a.1, b.1, c.1))
+        }
+    }
+}
+
 fn inter_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
     let it = |v: Option<(u8, u8, bool)>| v.is_some_and(|(m, _, _)| m == MARK_INTER) as usize;
     it(p.neighbor(x0, y0, true)) + it(p.neighbor(x0, y0, false))
@@ -721,7 +743,10 @@ fn code_leaf_head<C: Coder>(
             Kind::Inter(m) => m,
             _ => (0, 0),
         };
-        kind = Some(Kind::Inter(ctx.mv.code(c, pc, mv, &mut st.last_mv)));
+        let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
+        let mv = ctx.mv.code(c, pc, mv, &mut pred);
+        st.last_mv = mv;
+        kind = Some(Kind::Inter(mv));
     }
     if screen && kind.is_none() {
         let special = !matches!(leaf.kind, Kind::Intra(_));
@@ -1304,6 +1329,7 @@ impl EncState {
             // Predicción desde el fotograma anterior: vectores candidatos (el
             // nulo, el último, coincidencias exactas del hash y una búsqueda
             // por pasos alrededor del mejor), ordenados por SAD + bits.
+            let mvp = mv_pred(&pe.plane, x0, y0, w, pe.sc.last_mv);
             let mut seen: Vec<(i32, i32)> = Vec::new();
             let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
             let mut score = |mv: (i32, i32),
@@ -1316,12 +1342,18 @@ impl EncState {
                 seen.push(mv);
                 ip.predict(x0, y0, w, h, mv, pred);
                 let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
-                let s = sad + slam * this.ctx.mv.cost(pc, mv, pe.sc.last_mv);
+                let s = sad + slam * this.ctx.mv.cost(pc, mv, mvp);
                 scored.push((s, mv));
                 s
             };
             // Vectores en cuartos de píxel.
-            let mut start = vec![(0, 0), pe.sc.last_mv];
+            let mut start = vec![mvp, (0, 0), pe.sc.last_mv];
+            let (xi, yi) = (x0 as isize, y0 as isize);
+            for (nx, ny) in [(xi - 1, yi), (xi, yi - 1), (xi - 1, yi - 1)] {
+                if let Some(v) = pe.plane.mv_at(nx, ny, MARK_INTER) {
+                    start.push(v);
+                }
+            }
             if let Some(hi) = ip.hash.filter(|_| w.min(h) >= 8) {
                 for c in hi
                     .candidates(pe.src, pe.plane.w, x0, y0)
@@ -1412,6 +1444,9 @@ impl EncState {
     fn commit_leaf(pe: &mut PlaneEnc, x0: usize, y0: usize, w: usize, h: usize, ev: &LeafEval) {
         pe.plane.write_block(x0, y0, w, h, &ev.recon);
         pe.plane.set_block(x0, y0, w, h, ev.leaf.kind.mark(), ev.nz);
+        if let Kind::Inter(mv) = ev.leaf.kind {
+            pe.plane.set_mv(x0, y0, w, h, mv);
+        }
         match &ev.leaf.kind {
             Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
             Kind::Ibc(bv) => pe.sc.last_bv = *bv,
@@ -2540,6 +2575,9 @@ impl DecState {
         );
         p.write_block(x0, y0, w, h, &recon);
         p.set_block(x0, y0, w, h, kind.mark(), nz);
+        if let Kind::Inter(mv) = kind {
+            p.set_mv(x0, y0, w, h, mv);
+        }
     }
 }
 
@@ -3040,6 +3078,23 @@ pub fn encode_animation(
     loops: u16,
     p: &Params,
 ) -> Result<Vec<u8>, String> {
+    encode_animation_recon(frames, durations_ms, width, height, loops, p).map(|r| r.0)
+}
+
+/// Como `encode_animation`, y además el lienzo reconstruido tras cada
+/// fotograma guardado, tal como lo verá el decodificador (para comprobar
+/// que codificador y decodificador coinciden byte a byte).
+#[allow(clippy::type_complexity)]
+#[doc(hidden)]
+pub fn encode_animation_recon(
+    frames: &[Vec<u8>],
+    durations_ms: &[u32],
+    width: usize,
+    height: usize,
+    loops: u16,
+    p: &Params,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+    let mut recons = Vec::new();
     if frames.is_empty() || frames.len() != durations_ms.len() {
         return Err("hace falta al menos un fotograma, cada uno con su duración".into());
     }
@@ -3129,6 +3184,7 @@ pub fn encode_animation(
                     range: 0..0,
                 };
                 compose(&mut recon, width, &d, &fi);
+                recons.push(recon.clone());
                 list.push((durations_ms[i], x, y, w, h, e.bytes));
             }
         }
@@ -3163,5 +3219,5 @@ pub fn encode_animation(
         }
         out.extend_from_slice(bytes);
     }
-    Ok(out)
+    Ok((out, recons))
 }

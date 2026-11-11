@@ -379,11 +379,16 @@ fn animation_inter_no_drift() {
         .collect();
     let durations = vec![50; frames.len()];
     for lossless in [true, false] {
-        let p = Params { lossless, quality: 85.0, ..Default::default() };
+        let p = Params {
+            lossless,
+            quality: 85.0,
+            ..Default::default()
+        };
         let bytes = encode_animation(&frames, &durations, w, h, 0, &p).unwrap();
         let (_, dec) = decode_animation(&bytes, 1 << 26).unwrap();
         assert_eq!(dec.len(), frames.len());
-        let rgb = |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect() };
+        let rgb =
+            |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect() };
         let first = metrics::psnr_rgb(&rgb(&frames[0]), &rgb(&dec[0].0));
         for (k, (canvas, _)) in dec.iter().enumerate() {
             if lossless {
@@ -391,11 +396,56 @@ fn animation_inter_no_drift() {
             } else {
                 // Sin deriva: ningún fotograma mucho peor que el primero (que no predice).
                 let ps = metrics::psnr_rgb(&rgb(&frames[k]), &rgb(canvas));
-                assert!(ps > first - 3.0, "fotograma {k}: PSNR {ps:.1} frente a {first:.1} del primero");
+                assert!(
+                    ps > first - 3.0,
+                    "fotograma {k}: PSNR {ps:.1} frente a {first:.1} del primero"
+                );
             }
         }
         // Un fotograma que depende del anterior no se decodifica solo.
         let a = anim_info(&bytes).unwrap().unwrap();
         assert!(tesela::codec::decode_frame(&bytes, &a.frames[1], None).is_err());
+    }
+}
+
+#[test]
+fn animation_encoder_matches_decoder() {
+    use tesela::codec::{decode_animation, encode_animation_recon};
+    // Movimiento de 1 píxel por fotograma sobre una imagen de 3×2
+    // superbloques: predicción entre fotogramas, predictor de vectores y
+    // varias teselas de trabajo. El decodificador debe reproducir byte a
+    // byte el lienzo que el codificador cree haber producido.
+    let (w, h) = (192, 128);
+    let base = synthetic(w + 16, h + 16, 9);
+    let frames: Vec<Vec<u8>> = (0..6)
+        .map(|t| {
+            let mut f = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                for x in 0..w {
+                    let i = ((y + t) * (w + 16) + x + 2 * t) * 3;
+                    f.extend_from_slice(&[base[i], base[i + 1], base[i + 2], 255]);
+                }
+            }
+            f
+        })
+        .collect();
+    for q in [40.0, 80.0] {
+        for threads in [1, 4] {
+            let p = Params {
+                quality: q,
+                threads,
+                ..Default::default()
+            };
+            let (bytes, recons) =
+                encode_animation_recon(&frames, &vec![40; frames.len()], w, h, 0, &p).unwrap();
+            let (_, dec) = decode_animation(&bytes, 1 << 26).unwrap();
+            assert_eq!(dec.len(), recons.len());
+            for (k, ((d, _), r)) in dec.iter().zip(&recons).enumerate() {
+                assert!(
+                    d == r,
+                    "q{q}, {threads} hilos: el fotograma {k} decodificado no coincide con el del codificador"
+                );
+            }
+        }
     }
 }
