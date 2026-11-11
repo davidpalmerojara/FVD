@@ -305,7 +305,43 @@ impl CoefCtx {
         if !seen_nz {
             return (zero_dist, zero_bits);
         }
-        let bits = self.block_cost(pc, n, cbf_ctx, levels);
+        let mut bits = self.block_cost(pc, n, cbf_ctx, levels);
+        // Optimización del final del barrido (EOB): prueba a truncar el bloque
+        // en cada uno de los últimos coeficientes no nulos.
+        let nz_pos: Vec<usize> = (0..=last)
+            .filter(|&i| levels[sc[i].1 as usize * n + sc[i].0 as usize] != 0)
+            .collect();
+        if nz_pos.len() > 1 {
+            let mut trial = levels[..nn].to_vec();
+            let mut d_trial = dist;
+            let mut best = (dist + lambda * bits, nz_pos.len());
+            for k in (1..nz_pos.len()).rev().take(6) {
+                // Quita el coeficiente no nulo k (y con él todo lo posterior).
+                let i = nz_pos[k];
+                let p = sc[i].1 as usize * n + sc[i].0 as usize;
+                let c = coefs[p].abs();
+                let l = trial[p].unsigned_abs() as f32;
+                d_trial += c * c - (c - l * qs[p]).powi(2);
+                trial[p] = 0;
+                let b = self.block_cost(pc, n, cbf_ctx, &trial);
+                let j = d_trial + lambda * b;
+                if j < best.0 {
+                    best = (j, k);
+                }
+            }
+            if best.1 < nz_pos.len() {
+                let mut d = dist;
+                for &i in &nz_pos[best.1..] {
+                    let p = sc[i].1 as usize * n + sc[i].0 as usize;
+                    let c = coefs[p].abs();
+                    let l = levels[p].unsigned_abs() as f32;
+                    d += c * c - (c - l * qs[p]).powi(2);
+                    levels[p] = 0;
+                }
+                dist = d;
+                bits = self.block_cost(pc, n, cbf_ctx, levels);
+            }
+        }
         if zero_dist + lambda * zero_bits <= dist + lambda * bits {
             levels[..nn].fill(0);
             return (zero_dist, zero_bits);
