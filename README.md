@@ -222,6 +222,20 @@ pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
 | Cuantización dependiente (trellis de 4 estados, como en VVC), con tablas reentrenadas | Kodak −29,8 % (igual); recortes: +0,8 % en calidad baja, −0,8 % en alta | **Descartado**: neutro de media y un 25 % más lento. Nuestro RDOQ ya era ajustado y SSIMULACRA2 no es error cuadrático |
 | RDO psicovisual (penalizar la diferencia de energía AC, como el `psy-rd` de x264) | de +2 % (débil) a +32 % (fuerte) en calidad baja | **Descartado**: SSIMULACRA2 mide estructura, y forzar textura la empeora |
 
+**Animación.** Tamaño total a igual SSIMULACRA2 medio por fotograma
+([`bench/results/animacion`](bench/results/animacion/REPORT.md); `python3 bench/anim_bench.py`):
+
+| Animación | GIF | WebP animado | Tesela | AVIF animado |
+|---|---|---|---|---|
+| Terminal, 90 fotogramas de 640×400 | 242 KB (calidad 98) | 140 KB (73) | **19 KB (79)** | 13,5 KB (76; su máximo es 79) |
+| Interfaz, 40 de 480×320 | 68 KB (96) | 57 KB (80) | **15 KB (78)** | 4,6 KB (79; su máximo es 87) |
+| Paneo sobre una foto, 30 de 400×300 | 1 968 KB (55) | 454 KB (80) | 291 KB (80) | **18 KB (80)** |
+
+Tesela gana con claridad a GIF y a WebP animado. AVIF animado gana a todos porque predice cada
+fotograma del anterior (compensación de movimiento de vídeo); en contenido sintético Tesela llega a
+calidades más altas que AVIF, pero a igual calidad media AVIF ocupa menos. Añadir predicción entre
+fotogramas es la mejora pendiente.
+
 **Modos rápidos.** Los niveles de esfuerzo bajos recortan la búsqueda del codificador: sin
 particiones rectangulares (3 y menos), sin refinado de los modos angulares y con parada temprana
 de la división (2 y menos), y sin bloques de 4×4 (1). Kodak-8, BD-rate frente a WebP y tiempo por
@@ -421,8 +435,9 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
   (un alfa con degradados suaves cuesta bastante). No tiene HDR. En la web, el perfil de color se
   respeta con `tesela-auto.js`, pero `<tesela-img>` pinta en sRGB.
 - **Animación sin predicción entre fotogramas.** Cada fotograma guarda solo el rectángulo que cambia,
-  como una imagen fija. En capturas e interfaces es muy eficaz; en vídeo real (todo el fotograma
-  cambia), AVIF animado, que predice el movimiento, ocupa menos.
+  como una imagen fija. Ocupa de 4 a 12 veces menos que GIF y que WebP animado, pero AVIF animado,
+  que predice cada fotograma a partir del anterior, ocupa menos: de 1,4 a 3 veces en capturas e
+  interfaces y 16 veces en una foto en movimiento (ver el banco de animación).
 - **Velocidad de codificación.** Codificar sigue siendo más lento que AVIF: ~1 s por foto de
   0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador va con hilos solo si la página
   está aislada entre orígenes (ver el comparador); la librería `tesela.js` aún codifica con uno.

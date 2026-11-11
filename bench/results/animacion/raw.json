@@ -1,0 +1,389 @@
+{
+ "foto": {
+  "frames": 30,
+  "size": [
+   400,
+   300
+  ],
+  "ms": 70,
+  "rows": [
+   {
+    "codec": "gif",
+    "q": null,
+    "bytes": 2014978,
+    "ssimulacra2": 55.387950000000004
+   },
+   {
+    "codec": "webp-ll",
+    "q": null,
+    "bytes": 4403858,
+    "ssimulacra2": 100.0
+   },
+   {
+    "codec": "tesela",
+    "q": 40,
+    "bytes": 89170,
+    "ssimulacra2": 51.62398
+   },
+   {
+    "codec": "tesela",
+    "q": 60,
+    "bytes": 133152,
+    "ssimulacra2": 63.82483333333333
+   },
+   {
+    "codec": "tesela",
+    "q": 75,
+    "bytes": 203025,
+    "ssimulacra2": 73.63519333333333
+   },
+   {
+    "codec": "tesela",
+    "q": 85,
+    "bytes": 317147,
+    "ssimulacra2": 81.06354333333333
+   },
+   {
+    "codec": "tesela",
+    "q": 93,
+    "bytes": 727778,
+    "ssimulacra2": 88.585
+   },
+   {
+    "codec": "webp",
+    "q": 20,
+    "bytes": 131050,
+    "ssimulacra2": 4.78149
+   },
+   {
+    "codec": "webp",
+    "q": 40,
+    "bytes": 182110,
+    "ssimulacra2": 43.839270000000006
+   },
+   {
+    "codec": "webp",
+    "q": 60,
+    "bytes": 232484,
+    "ssimulacra2": 61.64809
+   },
+   {
+    "codec": "webp",
+    "q": 80,
+    "bytes": 339658,
+    "ssimulacra2": 76.34875333333333
+   },
+   {
+    "codec": "webp",
+    "q": 95,
+    "bytes": 982314,
+    "ssimulacra2": 88.69660999999999
+   },
+   {
+    "codec": "avif",
+    "q": 20,
+    "bytes": 11709,
+    "ssimulacra2": 72.88334666666667
+   },
+   {
+    "codec": "avif",
+    "q": 40,
+    "bytes": 22838,
+    "ssimulacra2": 82.89986666666667
+   },
+   {
+    "codec": "avif",
+    "q": 60,
+    "bytes": 45755,
+    "ssimulacra2": 89.49346666666665
+   },
+   {
+    "codec": "avif",
+    "q": 75,
+    "bytes": 63534,
+    "ssimulacra2": 91.70439
+   },
+   {
+    "codec": "avif",
+    "q": 90,
+    "bytes": 92182,
+    "ssimulacra2": 93.10968333333335
+   }
+  ],
+  "size_at": {
+   "70": {
+    "tesela": 173645.98536950818,
+    "webp": 288360.14014381514,
+    "avif": null
+   },
+   "80": {
+    "tesela": 297526.9436449915,
+    "webp": 464965.41857133724,
+    "avif": 18821.776184372466
+   },
+   "90": {
+    "tesela": null,
+    "webp": null,
+    "avif": 49328.9080581821
+   }
+  }
+ },
+ "interfaz": {
+  "frames": 40,
+  "size": [
+   480,
+   320
+  ],
+  "ms": 60,
+  "rows": [
+   {
+    "codec": "gif",
+    "q": null,
+    "bytes": 69974,
+    "ssimulacra2": 95.9852
+   },
+   {
+    "codec": "webp-ll",
+    "q": null,
+    "bytes": 18872,
+    "ssimulacra2": 100.0
+   },
+   {
+    "codec": "tesela",
+    "q": 40,
+    "bytes": 15166,
+    "ssimulacra2": 77.7241875
+   },
+   {
+    "codec": "tesela",
+    "q": 60,
+    "bytes": 16649,
+    "ssimulacra2": 84.069125
+   },
+   {
+    "codec": "tesela",
+    "q": 75,
+    "bytes": 19484,
+    "ssimulacra2": 91.40755
+   },
+   {
+    "codec": "tesela",
+    "q": 85,
+    "bytes": 22407,
+    "ssimulacra2": 93.0465875
+   },
+   {
+    "codec": "tesela",
+    "q": 93,
+    "bytes": 27563,
+    "ssimulacra2": 93.24201000000001
+   },
+   {
+    "codec": "webp",
+    "q": 20,
+    "bytes": 35370,
+    "ssimulacra2": 59.982535
+   },
+   {
+    "codec": "webp",
+    "q": 40,
+    "bytes": 42854,
+    "ssimulacra2": 73.5519425
+   },
+   {
+    "codec": "webp",
+    "q": 60,
+    "bytes": 49658,
+    "ssimulacra2": 77.41211000000001
+   },
+   {
+    "codec": "webp",
+    "q": 80,
+    "bytes": 61584,
+    "ssimulacra2": 80.71941999999999
+   },
+   {
+    "codec": "webp",
+    "q": 95,
+    "bytes": 91828,
+    "ssimulacra2": 83.6168
+   },
+   {
+    "codec": "avif",
+    "q": 20,
+    "bytes": 4737,
+    "ssimulacra2": 79.28372999999999
+   },
+   {
+    "codec": "avif",
+    "q": 40,
+    "bytes": 5301,
+    "ssimulacra2": 84.5330475
+   },
+   {
+    "codec": "avif",
+    "q": 60,
+    "bytes": 6352,
+    "ssimulacra2": 86.4403125
+   },
+   {
+    "codec": "avif",
+    "q": 75,
+    "bytes": 7443,
+    "ssimulacra2": 87.128705
+   },
+   {
+    "codec": "avif",
+    "q": 90,
+    "bytes": 9429,
+    "ssimulacra2": 87.2804125
+   }
+  ],
+  "size_at": {
+   "70": {
+    "tesela": null,
+    "webp": 40754.15851658913,
+    "avif": null
+   },
+   "80": {
+    "tesela": 15682.084569171071,
+    "webp": 58767.067508634434,
+    "avif": 4810.271352817305
+   },
+   "90": {
+    "tesela": 18905.13278522709,
+    "webp": null,
+    "avif": null
+   }
+  }
+ },
+ "terminal": {
+  "frames": 90,
+  "size": [
+   640,
+   400
+  ],
+  "ms": 80,
+  "rows": [
+   {
+    "codec": "gif",
+    "q": null,
+    "bytes": 247981,
+    "ssimulacra2": 97.98233222222223
+   },
+   {
+    "codec": "webp-ll",
+    "q": null,
+    "bytes": 41500,
+    "ssimulacra2": 100.0
+   },
+   {
+    "codec": "tesela",
+    "q": 40,
+    "bytes": 12995,
+    "ssimulacra2": 61.33595666666667
+   },
+   {
+    "codec": "tesela",
+    "q": 60,
+    "bytes": 14771,
+    "ssimulacra2": 69.63616333333333
+   },
+   {
+    "codec": "tesela",
+    "q": 75,
+    "bytes": 16949,
+    "ssimulacra2": 75.21259111111111
+   },
+   {
+    "codec": "tesela",
+    "q": 85,
+    "bytes": 19530,
+    "ssimulacra2": 79.2124311111111
+   },
+   {
+    "codec": "tesela",
+    "q": 93,
+    "bytes": 23391,
+    "ssimulacra2": 82.91048
+   },
+   {
+    "codec": "webp",
+    "q": 20,
+    "bytes": 82476,
+    "ssimulacra2": 49.349987777777784
+   },
+   {
+    "codec": "webp",
+    "q": 40,
+    "bytes": 100606,
+    "ssimulacra2": 60.3157111111111
+   },
+   {
+    "codec": "webp",
+    "q": 60,
+    "bytes": 116110,
+    "ssimulacra2": 66.23985111111111
+   },
+   {
+    "codec": "webp",
+    "q": 80,
+    "bytes": 143866,
+    "ssimulacra2": 72.66730222222222
+   },
+   {
+    "codec": "webp",
+    "q": 95,
+    "bytes": 227202,
+    "ssimulacra2": 76.37854888888889
+   },
+   {
+    "codec": "avif",
+    "q": 20,
+    "bytes": 11820,
+    "ssimulacra2": 71.37892888888888
+   },
+   {
+    "codec": "avif",
+    "q": 40,
+    "bytes": 13794,
+    "ssimulacra2": 75.95788333333333
+   },
+   {
+    "codec": "avif",
+    "q": 60,
+    "bytes": 17646,
+    "ssimulacra2": 77.23255333333333
+   },
+   {
+    "codec": "avif",
+    "q": 75,
+    "bytes": 19519,
+    "ssimulacra2": 78.00186666666666
+   },
+   {
+    "codec": "avif",
+    "q": 90,
+    "bytes": 29677,
+    "ssimulacra2": 78.7616511111111
+   }
+  ],
+  "size_at": {
+   "70": {
+    "tesela": 14904.152411560519,
+    "webp": 131621.76991576972,
+    "avif": null
+   },
+   "80": {
+    "tesela": 20294.932444315506,
+    "webp": null,
+    "avif": null
+   },
+   "90": {
+    "tesela": null,
+    "webp": null,
+    "avif": null
+   }
+  }
+ }
+}
