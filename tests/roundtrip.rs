@@ -449,3 +449,50 @@ fn animation_encoder_matches_decoder() {
         }
     }
 }
+
+#[test]
+fn animation_zoom_matches_decoder() {
+    use tesela::codec::{decode_animation, encode_animation_recon};
+    // Zoom lento (movimiento global afín): el decodificador debe reproducir
+    // exactamente lo que el codificador cree haber producido.
+    let (w, h) = (200, 136);
+    let (bw, bh) = (w + 40, h + 40);
+    let base = synthetic(bw, bh, 5);
+    let frames: Vec<Vec<u8>> = (0..5)
+        .map(|t| {
+            let s = 1.0 + 0.01 * t as f64;
+            let mut f = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                for x in 0..w {
+                    let sx = (x as f64 - w as f64 / 2.0) / s + bw as f64 / 2.0;
+                    let sy = (y as f64 - h as f64 / 2.0) / s + bh as f64 / 2.0;
+                    let (x0, y0) = (sx.floor() as usize, sy.floor() as usize);
+                    let (fx, fy) = (sx - x0 as f64, sy - y0 as f64);
+                    for c in 0..3 {
+                        let p = |xx: usize, yy: usize| base[(yy * bw + xx) * 3 + c] as f64;
+                        let v = p(x0, y0) * (1.0 - fx) * (1.0 - fy)
+                            + p(x0 + 1, y0) * fx * (1.0 - fy)
+                            + p(x0, y0 + 1) * (1.0 - fx) * fy
+                            + p(x0 + 1, y0 + 1) * fx * fy;
+                        f.push(v.round() as u8);
+                    }
+                    f.push(255);
+                }
+            }
+            f
+        })
+        .collect();
+    for threads in [1, 3] {
+        let p = Params {
+            quality: 70.0,
+            threads,
+            ..Default::default()
+        };
+        let (bytes, recons) =
+            encode_animation_recon(&frames, &vec![40; frames.len()], w, h, 0, &p).unwrap();
+        let (_, dec) = decode_animation(&bytes, 1 << 26).unwrap();
+        for (k, ((d, _), r)) in dec.iter().zip(&recons).enumerate() {
+            assert!(d == r, "{threads} hilos: el fotograma {k} no coincide");
+        }
+    }
+}

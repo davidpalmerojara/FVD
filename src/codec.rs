@@ -47,6 +47,8 @@ pub const TOOL_ANIM: u8 = 64;
 pub const TOOL_INTER: u8 = 128;
 /// Marca en el mapa de modos de las hojas predichas desde el fotograma anterior.
 const MARK_INTER: u8 = 202;
+/// Hoja con el movimiento global de la tesela.
+const MARK_WARP: u8 = 203;
 /// Lado mayor de la vista previa, en píxeles.
 const PREVIEW_SIDE: usize = 48;
 
@@ -339,6 +341,8 @@ struct Ctx {
     /// v2, fotogramas con referencia: ¿hoja predicha del fotograma anterior? y su vector.
     inter: Vec<Model>,
     mv: BvCtx,
+    /// ¿Hoja con el movimiento global? (solo si la tesela lo lleva)
+    warp: Vec<Model>,
 }
 
 impl Visit for Ctx {
@@ -362,6 +366,7 @@ impl Visit for Ctx {
         self.rect_dir.visit(f);
         self.inter.visit(f);
         self.mv.visit(f);
+        self.warp.visit(f);
     }
 }
 
@@ -437,6 +442,7 @@ impl Ctx {
             rect_dir: vec![Model::new(); 2 * 4],
             inter: vec![Model::new(); 2 * 5 * 3],
             mv: BvCtx::default(),
+            warp: vec![Model::new(); 2 * 5 * 3],
         }
     }
 }
@@ -610,8 +616,11 @@ enum Kind {
     Intra(u8),
     Palette(Palette),
     Ibc((i32, i32)),
-    /// Copia del fotograma anterior desplazada por el vector (píxeles enteros).
+    /// Copia del fotograma anterior desplazada por el vector (cuartos de píxel).
     Inter((i32, i32)),
+    /// Copia del fotograma anterior con el movimiento global de la tesela
+    /// (un vector por bloque de 4 × 4 deducido del modelo afín).
+    Warp,
 }
 
 impl Kind {
@@ -622,6 +631,7 @@ impl Kind {
             Kind::Palette(_) => MARK_PALETTE,
             Kind::Ibc(_) => MARK_IBC,
             Kind::Inter(_) => MARK_INTER,
+            Kind::Warp => MARK_WARP,
         }
     }
 }
@@ -686,10 +696,10 @@ struct ScState {
 /// orden de codificación a veces aún no está decodificado.)
 fn mv_pred(p: &Plane, x0: usize, y0: usize, w: usize, last: (i32, i32)) -> (i32, i32) {
     let (x, y) = (x0 as isize, y0 as isize);
-    let a = p.mv_at(x - 1, y, MARK_INTER);
-    let b = p.mv_at(x, y - 1, MARK_INTER);
+    let a = inter_mv_at(p, x - 1, y);
+    let b = inter_mv_at(p, x, y - 1);
     let _ = w;
-    let c = p.mv_at(x - 1, y - 1, MARK_INTER);
+    let c = inter_mv_at(p, x - 1, y - 1);
     match (a, b, c) {
         (None, None, None) => last,
         (Some(v), None, None) | (None, Some(v), None) | (None, None, Some(v)) => v,
@@ -701,8 +711,22 @@ fn mv_pred(p: &Plane, x0: usize, y0: usize, w: usize, last: (i32, i32)) -> (i32,
     }
 }
 
+/// Vector del bloque que contiene (x, y) si es una hoja predicha del
+/// fotograma anterior (con vector propio o con el movimiento global).
+fn inter_mv_at(p: &Plane, x: isize, y: isize) -> Option<(i32, i32)> {
+    p.mv_at(x, y, MARK_INTER)
+        .or_else(|| p.mv_at(x, y, MARK_WARP))
+}
+
 fn inter_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
-    let it = |v: Option<(u8, u8, bool)>| v.is_some_and(|(m, _, _)| m == MARK_INTER) as usize;
+    let it = |v: Option<(u8, u8, bool)>| {
+        v.is_some_and(|(m, _, _)| m == MARK_INTER || m == MARK_WARP) as usize
+    };
+    it(p.neighbor(x0, y0, true)) + it(p.neighbor(x0, y0, false))
+}
+
+fn warp_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
+    let it = |v: Option<(u8, u8, bool)>| v.is_some_and(|(m, _, _)| m == MARK_WARP) as usize;
     it(p.neighbor(x0, y0, true)) + it(p.neighbor(x0, y0, false))
 }
 
@@ -729,6 +753,7 @@ fn code_leaf_head<C: Coder>(
     leaf: &Leaf,
     st: &mut ScState,
     inter: bool,
+    warp: bool,
 ) -> (Kind, bool) {
     let n = w.max(h);
     let sz = size_index(n);
@@ -736,17 +761,26 @@ fn code_leaf_head<C: Coder>(
     if inter
         && c.bit(
             &mut ctx.inter[(pc * 5 + sz) * 3 + inter_ctx(p, x0, y0)],
-            matches!(leaf.kind, Kind::Inter(_)),
+            matches!(leaf.kind, Kind::Inter(_) | Kind::Warp),
         )
     {
-        let mv = match leaf.kind {
-            Kind::Inter(m) => m,
-            _ => (0, 0),
-        };
-        let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
-        let mv = ctx.mv.code(c, pc, mv, &mut pred);
-        st.last_mv = mv;
-        kind = Some(Kind::Inter(mv));
+        if warp
+            && c.bit(
+                &mut ctx.warp[(pc * 5 + sz) * 3 + warp_ctx(p, x0, y0)],
+                matches!(leaf.kind, Kind::Warp),
+            )
+        {
+            kind = Some(Kind::Warp);
+        } else {
+            let mv = match leaf.kind {
+                Kind::Inter(m) => m,
+                _ => (0, 0),
+            };
+            let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
+            let mv = ctx.mv.code(c, pc, mv, &mut pred);
+            st.last_mv = mv;
+            kind = Some(Kind::Inter(mv));
+        }
     }
     if screen && kind.is_none() {
         let special = !matches!(leaf.kind, Kind::Intra(_));
@@ -896,6 +930,10 @@ fn predict_leaf(
             Some(ip) => ip.predict(x0, y0, w, h, *mv, out),
             None => out[..w * h].fill(128),
         },
+        Kind::Warp => match ip {
+            Some(ip) if ip.warp.is_some() => ip.predict_warp(x0, y0, w, h, out),
+            _ => out[..w * h].fill(128),
+        },
         Kind::Intra(m) => predict_mode(p, refs, lref, *m, x0, y0, w, h, out),
         Kind::Palette(pal) => tools::predict_palette(pal, out),
         Kind::Ibc(bv) => {
@@ -919,7 +957,85 @@ struct InterPlane<'a> {
     oy: usize,
     /// Solo en el codificador: hash del fotograma anterior original.
     hash: Option<&'a tools::HashIndex>,
+    /// Submuestreo del plano respecto a la luma (1 o 2).
+    d: usize,
+    /// Movimiento global de la tesela, si lo lleva.
+    warp: Option<Warp>,
 }
+
+/// Movimiento global (afín) de un fotograma, en coordenadas de luma del
+/// lienzo: el vector en cuartos de píxel en (X, Y) es
+/// `((a·X + b·Y + c) / 2^16, (d·X + e·Y + f) / 2^16)`, redondeado.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Warp {
+    pub p: [i32; 6],
+}
+
+/// Límites de los parámetros del movimiento global (el decodificador los recorta).
+const WARP_LIN: i32 = 1 << 20;
+const WARP_OFF: i32 = 1 << 30;
+
+impl Warp {
+    fn clamped(mut self) -> Self {
+        for (i, v) in self.p.iter_mut().enumerate() {
+            let m = if i % 3 == 2 { WARP_OFF } else { WARP_LIN };
+            *v = (*v).clamp(-m, m);
+        }
+        self
+    }
+
+    /// Vector de luma (1/16 de píxel) en el punto (X, Y) del lienzo.
+    fn mv_luma(&self, x: i64, y: i64) -> (i32, i32) {
+        let p = self.p.map(|v| v as i64);
+        let r = |v: i64| ((v + (1 << 13)) >> 14).clamp(-(1 << 22), 1 << 22) as i32;
+        (r(p[0] * x + p[1] * y + p[2]), r(p[3] * x + p[4] * y + p[5]))
+    }
+
+    /// Escribe o lee los parámetros (al principio de la tesela).
+    fn code<C: Coder>(c: &mut C, w: Option<Warp>) -> Option<Warp> {
+        if !c.bypass(w.is_some()) {
+            return None;
+        }
+        let w = w.unwrap_or_default();
+        let p = w.p.map(|v| code_sint_bypass(c, v));
+        Some(Warp { p }.clamped())
+    }
+}
+
+/// Entero con signo sin contexto: número de bits (6), magnitud y signo.
+fn code_sint_bypass<C: Coder>(c: &mut C, v: i32) -> i32 {
+    let m = v.unsigned_abs().min(u32::MAX >> 1);
+    let n = c.bypass_bits(32 - m.leading_zeros(), 6).min(31);
+    if n == 0 {
+        return 0;
+    }
+    // El bit más alto es 1: solo se escriben los n − 1 restantes.
+    let rest = c.bypass_bits(m & ((1 << (n - 1)) - 1), n - 1);
+    let mag = (1u32 << (n - 1)) | rest;
+    let neg = c.bypass(v < 0);
+    if neg { -(mag as i32) } else { mag as i32 }
+}
+
+/// Filtros de 1/16 de píxel para el movimiento global (seno cardinal con
+/// ventana coseno², redondeado a enteros que suman 64; simétricos).
+const WARP16: [[i32; 8]; 16] = [
+    [0, 0, 0, 64, 0, 0, 0, 0],
+    [0, 1, -3, 63, 4, -1, 0, 0],
+    [-1, 2, -6, 63, 8, -3, 1, 0],
+    [-1, 3, -8, 60, 13, -4, 1, 0],
+    [-1, 3, -9, 57, 18, -6, 2, 0],
+    [-1, 4, -10, 53, 23, -7, 2, 0],
+    [-1, 4, -11, 48, 29, -8, 3, 0],
+    [-1, 4, -11, 45, 34, -9, 3, -1],
+    [-1, 4, -10, 39, 39, -10, 4, -1],
+    [-1, 3, -9, 34, 45, -11, 4, -1],
+    [0, 3, -8, 29, 48, -11, 4, -1],
+    [0, 2, -7, 23, 53, -10, 4, -1],
+    [0, 2, -6, 18, 57, -9, 3, -1],
+    [0, 1, -4, 13, 60, -8, 3, -1],
+    [0, 1, -3, 8, 63, -6, 2, -1],
+    [0, 0, -1, 4, 63, -3, 1, 0],
+];
 
 /// Filtros de interpolación de cuarto de píxel (los de luma de HEVC; suman 64).
 const QPEL: [[i32; 8]; 4] = [
@@ -930,13 +1046,77 @@ const QPEL: [[i32; 8]; 4] = [
 ];
 
 impl InterPlane<'_> {
+    /// Vector del bloque de 4 × 4 que empieza en (x0, y0) según el movimiento
+    /// global, redondeado a cuartos de píxel (el que ven los vecinos).
+    fn warp_mv(&self, x0: usize, y0: usize) -> (i32, i32) {
+        let (x, y) = self.warp_mv16(x0, y0);
+        ((x + 2) >> 2, (y + 2) >> 2)
+    }
+
+    /// Vector del bloque de 4 × 4 que empieza en (x0, y0) (coordenadas de la
+    /// tesela en este plano) según el movimiento global, en 1/16 de píxel
+    /// de este plano.
+    fn warp_mv16(&self, x0: usize, y0: usize) -> (i32, i32) {
+        let w = self.warp.unwrap_or_default();
+        let d = self.d as i64;
+        let cx = (self.ox + x0) as i64 * d + 2 * d;
+        let cy = (self.oy + y0) as i64 * d + 2 * d;
+        let (mx, my) = w.mv_luma(cx, cy);
+        if self.d == 2 {
+            ((mx + 1) >> 1, (my + 1) >> 1)
+        } else {
+            (mx, my)
+        }
+    }
+
+    /// Predicción con el movimiento global: un vector por bloque de 4 × 4.
+    fn predict_warp(&self, x0: usize, y0: usize, w: usize, h: usize, out: &mut [i32]) {
+        let mut sub = [0i32; 16];
+        for by in (0..h).step_by(4) {
+            for bx in (0..w).step_by(4) {
+                let mv = self.warp_mv16(x0 + bx, y0 + by);
+                self.predict_with(x0 + bx, y0 + by, 4, 4, mv, 4, &WARP16, &mut sub);
+                for y in 0..4 {
+                    out[(by + y) * w + bx..(by + y) * w + bx + 4]
+                        .copy_from_slice(&sub[y * 4..y * 4 + 4]);
+                }
+            }
+        }
+    }
+
+    /// Guarda en el mapa del plano los vectores de una hoja con el movimiento global.
+    fn set_warp_mvs(&self, p: &mut Plane, x0: usize, y0: usize, w: usize, h: usize) {
+        for by in (0..h).step_by(4) {
+            for bx in (0..w).step_by(4) {
+                p.set_mv(x0 + bx, y0 + by, 4, 4, self.warp_mv(x0 + bx, y0 + by));
+            }
+        }
+    }
+
     /// Copia desplazada por un vector en cuartos de píxel, con el filtro
     /// separable de 8 coeficientes (horizontal y luego vertical, en enteros);
     /// fuera del lienzo se repite el borde.
     fn predict(&self, x0: usize, y0: usize, w: usize, h: usize, mv: (i32, i32), out: &mut [i32]) {
-        let bx = (self.ox + x0) as i64 + (mv.0 >> 2) as i64;
-        let by = (self.oy + y0) as i64 + (mv.1 >> 2) as i64;
-        let (fx, fy) = ((mv.0 & 3) as usize, (mv.1 & 3) as usize);
+        self.predict_with(x0, y0, w, h, mv, 2, &QPEL, out)
+    }
+
+    /// Como `predict`, con vectores en 1/2^`shift` de píxel y la tabla de filtros dada.
+    #[allow(clippy::too_many_arguments)]
+    fn predict_with(
+        &self,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+        mv: (i32, i32),
+        shift: u32,
+        table: &[[i32; 8]],
+        out: &mut [i32],
+    ) {
+        let mask = (1 << shift) - 1;
+        let bx = (self.ox + x0) as i64 + (mv.0 >> shift) as i64;
+        let by = (self.oy + y0) as i64 + (mv.1 >> shift) as i64;
+        let (fx, fy) = ((mv.0 & mask) as usize, (mv.1 & mask) as usize);
         let (mw, mh) = (self.w as i64 - 1, self.h as i64 - 1);
         let px = |x: i64, y: i64| {
             self.data[y.clamp(0, mh) as usize * self.w + x.clamp(0, mw) as usize] as i32
@@ -950,7 +1130,7 @@ impl InterPlane<'_> {
             return;
         }
         // Pasada horizontal sobre h + 7 filas (3 por encima y 4 por debajo).
-        let (cx, cy) = (&QPEL[fx], &QPEL[fy]);
+        let (cx, cy) = (&table[fx], &table[fy]);
         let mut tmp = vec![0i32; (h + 7) * w];
         for r in 0..h + 7 {
             let yy = by + r as i64 - 3;
@@ -982,13 +1162,133 @@ pub struct RefCanvas {
     x: usize,
     y: usize,
     sub: bool,
+    /// Solo en el codificador: movimiento global elegido para el fotograma.
+    warp: Option<Warp>,
+    /// Solo en el codificador: dq extra por celda AQ del fotograma (más
+    /// grueso donde el fotograma anterior ya lo predice bien) y su ancho.
+    tdq: Option<(Vec<i32>, usize)>,
+}
+
+/// Planos de un lienzo o de un fotograma: (muestras, ancho, alto).
+type RefPlanes = Vec<(Vec<u8>, usize, usize)>;
+
+/// Espacio de color de los planos de un archivo: (sin pérdida, croma 4:2:0).
+fn ref_kind(h: &Header) -> (bool, bool) {
+    let lossless = h.tools & TOOL_LOSSLESS != 0;
+    (lossless, h.subsample && !lossless)
+}
+
+/// Planos de una imagen RGB en el espacio de color de `header`, redondeados a 8 bits.
+fn planes_u8(rgb: &[u8], w: usize, h: usize, header: &Header) -> RefPlanes {
+    color_planes(rgb, w, h, header)
+        .into_iter()
+        .map(|(p, pw, ph)| {
+            let v = p
+                .iter()
+                .map(|v| v.round().clamp(0.0, 255.0) as u8)
+                .collect();
+            (v, pw, ph)
+        })
+        .collect()
+}
+
+/// Copia `src` (sw × sh) en `dst` (dw × dh) a partir de (x, y), recortando.
+#[allow(clippy::too_many_arguments)]
+fn paste_plane(
+    dst: &mut [u8],
+    dw: usize,
+    dh: usize,
+    x: usize,
+    y: usize,
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+) {
+    if x >= dw || y >= dh {
+        return;
+    }
+    let n = sw.min(dw - x);
+    for r in 0..sh.min(dh - y) {
+        dst[(y + r) * dw + x..(y + r) * dw + x + n].copy_from_slice(&src[r * sw..r * sw + n]);
+    }
+}
+
+/// Planos vacíos para una imagen de `w × h` con el espacio de color `kind`.
+fn empty_planes(kind: (bool, bool), w: usize, h: usize) -> RefPlanes {
+    let (cw, ch) = if kind.1 {
+        (w.div_ceil(2), h.div_ceil(2))
+    } else {
+        (w, h)
+    };
+    vec![
+        (vec![0; w * h], w, h),
+        (vec![0; cw * ch], cw, ch),
+        (vec![0; cw * ch], cw, ch),
+    ]
+}
+
+/// Pega los planos de una tesela (o de un fotograma) que empieza en (x, y).
+fn paste_planes(dst: &mut RefPlanes, src: &RefPlanes, x: usize, y: usize, sub: bool) {
+    for (pi, (d, s)) in dst.iter_mut().zip(src).enumerate() {
+        let k = if pi > 0 && sub { 2 } else { 1 };
+        paste_plane(&mut d.0, d.1, d.2, x / k, y / k, &s.0, s.1, s.2);
+    }
+}
+
+/// Estado de una animación mientras se decodifica (o se codifica): el lienzo
+/// RGBA que se muestra y los planos de referencia para predecir el siguiente
+/// fotograma (sección 1.3 de la especificación v2).
+pub struct AnimState {
+    pub canvas: Vec<u8>,
+    pub width: usize,
+    pub height: usize,
+    refp: Option<((bool, bool), RefPlanes)>,
+}
+
+impl AnimState {
+    pub fn new(width: usize, height: usize) -> Self {
+        AnimState {
+            canvas: vec![0; width * height * 4],
+            width,
+            height,
+            refp: None,
+        }
+    }
+
+    /// Antes de un fotograma: si los planos de referencia no están en su
+    /// espacio de color, se recalculan a partir del lienzo.
+    fn prepare(&mut self, h: &Header) {
+        let kind = ref_kind(h);
+        if self.refp.as_ref().map(|r| r.0) != Some(kind) {
+            let rgb: Vec<u8> = self
+                .canvas
+                .chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect();
+            self.refp = Some((kind, planes_u8(&rgb, self.width, self.height, h)));
+        }
+    }
+
+    /// Tras un fotograma: lo pega en el lienzo y sus planos en los de referencia.
+    fn commit(&mut self, f: &FrameInfo, d: &Decoded, planes: &RefPlanes) {
+        compose(&mut self.canvas, self.width, d, f);
+        let Some((kind, rp)) = self.refp.as_mut() else {
+            return;
+        };
+        if kind.1 && (f.x | f.y) & 1 != 0 {
+            // La croma no queda alineada: se recalculará del lienzo.
+            self.refp = None;
+            return;
+        }
+        paste_planes(rp, planes, f.x, f.y, kind.1);
+    }
 }
 
 impl RefCanvas {
-    /// `recon`: lienzo anterior decodificado (RGB). `src`: lienzo anterior
-    /// original (solo el codificador, para buscar coincidencias exactas).
+    /// `planes`: planos de referencia del lienzo (w × h). `src`: lienzo
+    /// anterior original (solo el codificador, para buscar coincidencias exactas).
     fn new(
-        recon: &[u8],
+        planes: RefPlanes,
         src: Option<&[u8]>,
         w: usize,
         h: usize,
@@ -996,15 +1296,6 @@ impl RefCanvas {
         x: usize,
         y: usize,
     ) -> Self {
-        let to_u8 = |p: &[f32]| {
-            p.iter()
-                .map(|v| v.round().clamp(0.0, 255.0) as u8)
-                .collect::<Vec<u8>>()
-        };
-        let planes = color_planes(recon, w, h, header)
-            .into_iter()
-            .map(|(p, pw, ph)| (to_u8(&p), pw, ph))
-            .collect();
         let hashes = match src {
             Some(s) => color_planes(s, w, h, header)
                 .into_iter()
@@ -1018,6 +1309,8 @@ impl RefCanvas {
             x,
             y,
             sub: header.subsample && header.tools & TOOL_LOSSLESS == 0,
+            warp: None,
+            tdq: None,
         }
     }
 
@@ -1032,6 +1325,8 @@ impl RefCanvas {
             ox: (self.x + tx) / d,
             oy: (self.y + ty) / d,
             hash: self.hashes[pi].as_ref(),
+            d,
+            warp: self.warp,
         }
     }
 }
@@ -1048,6 +1343,10 @@ struct PlaneEnc<'a> {
     hash: Option<&'a tools::HashIndex>,
     /// Estado sintético aproximado durante el RDO.
     sc: ScState,
+    /// Tamaño visible del plano: lo que queda fuera (relleno hasta el
+    /// superbloque) no se ve, así que su distorsión no cuenta.
+    vw: usize,
+    vh: usize,
 }
 
 struct EncState {
@@ -1063,6 +1362,43 @@ struct EncState {
     effort: u8,
     /// Fotograma con predicción desde el anterior (cada hoja lleva el bit inter).
     inter: bool,
+    /// La tesela lleva movimiento global.
+    warp: bool,
+}
+
+/// Fuente de un bloque con lo que queda fuera de la parte visible (`vis`)
+/// sustituido por la predicción.
+fn mask_src(src: &[f32], pred: &[i32], w: usize, h: usize, vis: (usize, usize)) -> Vec<f32> {
+    let mut out = src.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            if x >= vis.0 || y >= vis.1 {
+                out[y * w + x] = pred[y * w + x] as f32;
+            }
+        }
+    }
+    out
+}
+
+fn zero_outside(res: &mut [f32], w: usize, h: usize, vis: (usize, usize)) {
+    for y in 0..h {
+        for x in 0..w {
+            if x >= vis.0 || y >= vis.1 {
+                res[y * w + x] = 0.0;
+            }
+        }
+    }
+}
+
+/// SAD solo sobre la parte visible del bloque.
+fn sad_vis(src: &[f32], pred: &[i32], w: usize, _h: usize, vis: (usize, usize)) -> f32 {
+    let mut s = 0.0;
+    for y in 0..vis.1 {
+        for x in 0..vis.0 {
+            s += (src[y * w + x] - pred[y * w + x] as f32).abs();
+        }
+    }
+    s
 }
 
 /// Resultado de evaluar una hoja.
@@ -1086,6 +1422,7 @@ impl EncState {
             v2: self.v2,
             effort: self.effort,
             inter: self.inter,
+            warp: self.warp,
         }
     }
 
@@ -1122,6 +1459,7 @@ impl EncState {
             &leaf,
             &mut st,
             self.inter,
+            self.warp,
         );
         cc.bits
     }
@@ -1141,8 +1479,18 @@ impl EncState {
         lambda: f32,
         try_ts: bool,
         allow_dct: bool,
+        vis: (usize, usize),
     ) -> (f32, Vec<i32>, bool) {
         let nn = w * h;
+        // Fuera de la parte visible, la fuente pasa a ser la predicción:
+        // residuo nulo y sin distorsión.
+        let masked;
+        let src = if vis == (w, h) {
+            src
+        } else {
+            masked = mask_src(src, pred, w, h, vis);
+            &masked[..]
+        };
         let mut res = vec![0f32; nn];
         let mut best = (f32::INFINITY, Vec::new(), false);
         let mut levels = vec![0i32; nn];
@@ -1205,6 +1553,10 @@ impl EncState {
                 src[y * w + x] = pe.src[(y0 + y) * pe.plane.w + x0 + x];
             }
         }
+        let vis = (
+            pe.vw.saturating_sub(x0).min(w),
+            pe.vh.saturating_sub(y0).min(h),
+        );
         let refs = predict::build_refs(&pe.plane, x0, y0, w, h);
         let mpm = mpm_list(&pe.plane, x0, y0);
         let cctx = cbf_ctx(&pe.plane, x0, y0);
@@ -1254,6 +1606,9 @@ impl EncState {
                 for i in 0..nn {
                     res[i] = src[i] - pred[i] as f32;
                 }
+                if vis != (w, h) {
+                    zero_outside(&mut res, w, h, vis);
+                }
                 let mut cc = CostCounter::default();
                 code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
                 let s = dct::satd_rect(&res, w, h);
@@ -1280,7 +1635,7 @@ impl EncState {
             }
             predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
             let (jr, lv, ts) =
-                self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
+                self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
             let kind = Kind::Intra(mode);
             let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
             consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -1290,7 +1645,7 @@ impl EncState {
             for pal in tools::palette_candidates(&src, w, h) {
                 tools::predict_palette(&pal, &mut pred);
                 let (jr, lv, ts) =
-                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
                 let kind = Kind::Palette(pal);
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -1310,7 +1665,7 @@ impl EncState {
                         continue;
                     }
                     tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
-                    let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
+                    let sad = sad_vis(&src, &pred, w, h, vis);
                     let bits = self.ctx.bv.cost(pc, bv, pe.sc.last_bv);
                     scored.push((sad + slam * bits, bv));
                 }
@@ -1318,7 +1673,7 @@ impl EncState {
                 for &(_, bv) in scored.iter().take(2) {
                     tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
                     let (jr, lv, ts) =
-                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
+                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
                     let kind = Kind::Ibc(bv);
                     let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                     consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -1341,16 +1696,19 @@ impl EncState {
                 }
                 seen.push(mv);
                 ip.predict(x0, y0, w, h, mv, pred);
-                let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
+                let sad = sad_vis(&src, pred, w, h, vis);
                 let s = sad + slam * this.ctx.mv.cost(pc, mv, mvp);
                 scored.push((s, mv));
                 s
             };
             // Vectores en cuartos de píxel.
             let mut start = vec![mvp, (0, 0), pe.sc.last_mv];
+            if ip.warp.is_some() {
+                start.push(ip.warp_mv(x0 + w / 2 - 2, y0 + h / 2 - 2));
+            }
             let (xi, yi) = (x0 as isize, y0 as isize);
             for (nx, ny) in [(xi - 1, yi), (xi, yi - 1), (xi - 1, yi - 1)] {
-                if let Some(v) = pe.plane.mv_at(nx, ny, MARK_INTER) {
+                if let Some(v) = inter_mv_at(&pe.plane, nx, ny) {
                     start.push(v);
                 }
             }
@@ -1401,8 +1759,16 @@ impl EncState {
             for &(_, mv) in scored.iter().take(2) {
                 ip.predict(x0, y0, w, h, mv, &mut pred);
                 let (jr, lv, ts) =
-                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
                 let kind = Kind::Inter(mv);
+                let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
+                consider(&mut best, jr + lambda * hb, kind, lv, ts);
+            }
+            if self.warp {
+                ip.predict_warp(x0, y0, w, h, &mut pred);
+                let (jr, lv, ts) =
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                let kind = Kind::Warp;
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
             }
@@ -1444,14 +1810,16 @@ impl EncState {
     fn commit_leaf(pe: &mut PlaneEnc, x0: usize, y0: usize, w: usize, h: usize, ev: &LeafEval) {
         pe.plane.write_block(x0, y0, w, h, &ev.recon);
         pe.plane.set_block(x0, y0, w, h, ev.leaf.kind.mark(), ev.nz);
-        if let Kind::Inter(mv) = ev.leaf.kind {
-            pe.plane.set_mv(x0, y0, w, h, mv);
+        match (&ev.leaf.kind, pe.inter.as_ref()) {
+            (Kind::Inter(mv), _) => pe.plane.set_mv(x0, y0, w, h, *mv),
+            (Kind::Warp, Some(ip)) => ip.set_warp_mvs(&mut pe.plane, x0, y0, w, h),
+            _ => {}
         }
         match &ev.leaf.kind {
             Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
             Kind::Ibc(bv) => pe.sc.last_bv = *bv,
             Kind::Inter(mv) => pe.sc.last_mv = *mv,
-            Kind::Intra(_) => {}
+            Kind::Intra(_) | Kind::Warp => {}
         }
     }
 
@@ -1585,6 +1953,7 @@ impl EncState {
             leaf,
             st,
             self.inter,
+            self.warp,
         );
         let mut l = leaf.levels.clone();
         let coef = if leaf.ts {
@@ -1881,15 +2250,16 @@ fn encode_with_alpha(
     encode_with_alpha_ref(rgb, alpha, width, height, p, None)
 }
 
-/// Fotograma anterior para predecir de él: lienzo reconstruido y original
-/// (RGB), su tamaño y el origen (par) del fotograma dentro del lienzo.
-struct RefSource<'a> {
-    recon: &'a [u8],
+/// Fotograma de una animación: el estado (lienzo y planos de referencia), el
+/// lienzo anterior original (RGB, para buscar coincidencias), el rectángulo
+/// del fotograma y si predice del anterior.
+struct AnimFrame<'a> {
+    st: &'a mut AnimState,
     src: &'a [u8],
-    w: usize,
-    h: usize,
-    x: usize,
-    y: usize,
+    f: FrameInfo,
+    inter: bool,
+    warp: Option<Warp>,
+    tdq: Option<(Vec<i32>, usize)>,
 }
 
 fn encode_with_alpha_ref(
@@ -1898,16 +2268,29 @@ fn encode_with_alpha_ref(
     width: usize,
     height: usize,
     p: &Params,
-    rsrc: Option<RefSource>,
+    mut anim: Option<AnimFrame>,
 ) -> Encoded {
     let mut header = make_header(rgb, width, height, p);
     if alpha.is_some() {
         header.tools |= TOOL_ALPHA;
     }
-    if rsrc.is_some() {
-        header.tools |= TOOL_INTER;
+    let mut rc = None;
+    if let Some(a) = anim.as_mut() {
+        a.st.prepare(&header);
+        if a.inter {
+            header.tools |= TOOL_INTER;
+            let planes = a.st.refp.as_ref().unwrap().1.clone();
+            let (cw, ch) = (a.st.width, a.st.height);
+            let mut r = RefCanvas::new(planes, Some(a.src), cw, ch, &header, a.f.x, a.f.y);
+            r.warp = a.warp;
+            r.tdq = a.tdq.take();
+            if r.tdq.is_some() {
+                header.aq = true;
+            }
+            rc = Some(r);
+        }
     }
-    let rc = rsrc.map(|r| RefCanvas::new(r.recon, Some(r.src), r.w, r.h, &header, r.x, r.y));
+    let want = anim.is_some();
     let tiles = tile_grid(width, height, header.tile_size());
     // Hilos por tesela: todos los disponibles aunque las teselas también vayan
     // en paralelo, porque suelen ser de tamaños distintos (las del borde son
@@ -1927,16 +2310,36 @@ fn encode_with_alpha_ref(
             &header,
             p,
             rc.as_ref().map(|rc| (rc, t.x, t.y)),
+            want,
         );
-        (r.0, r.1, r.2)
+        (r.0, r.1, r.2, r.4)
     });
     let mut recon_rgb = vec![0u8; width * height * 3];
     let mut recon_alpha = alpha.map(|_| vec![0u8; width * height]);
+    let kind = ref_kind(&header);
+    let mut fplanes = if want {
+        empty_planes(kind, width, height)
+    } else {
+        Vec::new()
+    };
     for (t, r) in tiles.iter().zip(&res) {
         paste(&mut recon_rgb, 3, width, t, &r.1);
         if let (Some(dst), Some(src)) = (recon_alpha.as_mut(), r.2.as_ref()) {
             paste(dst, 1, width, t, src);
         }
+        if want {
+            paste_planes(&mut fplanes, &r.3, t.x, t.y, kind.1);
+        }
+    }
+    if let Some(a) = anim {
+        let d = Decoded {
+            width,
+            height,
+            rgb: recon_rgb.clone(),
+            alpha: recon_alpha.clone(),
+            meta: Metadata::default(),
+        };
+        a.st.commit(&a.f, &d, &fplanes);
     }
     let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
     let preview = (p.preview && width.max(height) > PREVIEW_SIDE)
@@ -2150,6 +2553,8 @@ fn encode_plane(
             inter: ip,
             hash: hash.as_ref(),
             sc: ScState::default(),
+            vw: if base.v2 { w } else { pw },
+            vh: if base.v2 { h } else { ph },
         };
         let (_, node) = es.rdo_node(&mut pe, lref, qm_ro, sx * SB, sy * SB, SB);
         // Simula la escritura para que las probabilidades de la fila avancen.
@@ -2290,7 +2695,8 @@ pub fn encode_tile_stats(
     header: &Header,
     p: &Params,
 ) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(u32, u32)>) {
-    encode_tile_ref(rgb, alpha, width, height, header, p, None)
+    let r = encode_tile_ref(rgb, alpha, width, height, header, p, None, false);
+    (r.0, r.1, r.2, r.3)
 }
 
 /// Como `encode_tile_stats`, con el fotograma anterior como referencia
@@ -2304,7 +2710,14 @@ fn encode_tile_ref(
     header: &Header,
     p: &Params,
     iref: Option<(&RefCanvas, usize, usize)>,
-) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(u32, u32)>) {
+    want_planes: bool,
+) -> (
+    Vec<u8>,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Vec<(u32, u32)>,
+    RefPlanes,
+) {
     let lossless = header.tools & TOOL_LOSSLESS != 0;
     let sub = header.subsample && !lossless;
     let base_q = header.qstep();
@@ -2326,8 +2739,12 @@ fn encode_tile_ref(
         v2: header.version >= 2,
         effort: p.effort.clamp(1, 9),
         inter: iref.is_some(),
+        warp: false,
     };
     let mut enc = Encoder::new();
+    if let Some((rc, _, _)) = iref {
+        st.warp = Warp::code(&mut enc, rc.warp).is_some();
+    }
     let mut planes: Vec<Plane> = Vec::new();
     let mut qm = QMap {
         dq: Vec::new(),
@@ -2339,13 +2756,29 @@ fn encode_tile_ref(
     };
     let mut lref: Option<LumaRef> = None;
     let mut srcs = Vec::new();
+    let mut vis = Vec::new();
     for (pi, (src, w, h)) in color_planes(rgb, width, height, header).iter().enumerate() {
+        vis.push((*w, *h));
         let pc = (pi > 0) as usize;
         if pi == 0 {
             let (padded, pw, ph) = pad_plane(src, *w, *h);
             qm.dq = compute_aq(&padded, pw, ph, if header.aq { p.aq_strength } else { 0.0 });
             qm.w = pw / AQ;
             qm.h = ph / AQ;
+            if let Some((rc, tx, ty)) = iref {
+                if let Some((t, tw)) = rc.tdq.as_ref() {
+                    let th = t.len() / tw;
+                    for cy in 0..qm.h {
+                        for cx in 0..qm.w {
+                            let (fx, fy) = (tx / AQ + cx, ty / AQ + cy);
+                            if fx < *tw && fy < th {
+                                let v = &mut qm.dq[cy * qm.w + cx];
+                                *v = (*v + t[fy * tw + fx]).clamp(-64, 64);
+                            }
+                        }
+                    }
+                }
+            }
         }
         let (plane, src) = encode_plane(
             &mut st,
@@ -2365,6 +2798,11 @@ fn encode_tile_ref(
         }
         planes.push(plane);
         srcs.push(src);
+    }
+    if header.version >= 2 {
+        for (plane, &(vw, vh)) in planes.iter_mut().zip(&vis) {
+            repad(plane, vw, vh);
+        }
     }
     for (pi, plane) in planes.iter_mut().enumerate() {
         let pc = (pi > 0) as usize;
@@ -2398,6 +2836,7 @@ fn encode_tile_ref(
             v2: header.version >= 2,
             effort: st.effort,
             inter: false,
+            warp: false,
         };
         let mut aq = unit_qmap(width, height);
         let (plane, _) = encode_plane_alpha(
@@ -2414,8 +2853,25 @@ fn encode_tile_ref(
         );
         recon_alpha = Some(crop_plane(&plane, width, height));
     }
-    let recon = finish_planes(header, &planes, width, height);
-    (enc.finish(), recon, recon_alpha, stats)
+    let (recon, fp) = finish_planes(header, &planes, width, height, want_planes);
+    (enc.finish(), recon, recon_alpha, stats, fp)
+}
+
+/// v2: tras decodificar un plano, lo que queda fuera de la parte visible
+/// (relleno hasta el superbloque) se sustituye repitiendo el borde, antes de
+/// la restauración. Así el codificador puede dejar ahí cualquier cosa.
+fn repad(p: &mut Plane, vw: usize, vh: usize) {
+    let (pw, ph) = (p.w, p.h);
+    if vw == 0 || vh == 0 || (vw >= pw && vh >= ph) {
+        return;
+    }
+    for y in 0..vh.min(ph) {
+        let v = p.data[y * pw + vw - 1];
+        p.data[y * pw + vw..y * pw + pw].fill(v);
+    }
+    for y in vh..ph {
+        p.data.copy_within((vh - 1) * pw..vh * pw, y * pw);
+    }
 }
 
 fn crop_plane(p: &Plane, w: usize, h: usize) -> Vec<u8> {
@@ -2426,7 +2882,32 @@ fn crop_plane(p: &Plane, w: usize, h: usize) -> Vec<u8> {
     out
 }
 
-fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
+/// Planos finales (tras el desbloqueo) recortados a la imagen: la referencia
+/// del fotograma siguiente en una animación.
+fn final_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> RefPlanes {
+    let sub = ref_kind(h).1;
+    planes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let (pw, ph) = if i > 0 && sub {
+                (w.div_ceil(2), ht.div_ceil(2))
+            } else {
+                (w, ht)
+            };
+            (crop_plane(p, pw, ph), pw, ph)
+        })
+        .collect()
+}
+
+/// RGB de la tesela y, si `want`, sus planos finales.
+fn finish_planes(
+    h: &Header,
+    planes: &[Plane],
+    w: usize,
+    ht: usize,
+    want: bool,
+) -> (Vec<u8>, RefPlanes) {
     if h.tools & TOOL_LOSSLESS != 0 {
         let (g, b, r) = (&planes[0], &planes[1], &planes[2]);
         let mut out = Vec::with_capacity(w * ht * 3);
@@ -2435,7 +2916,12 @@ fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
                 out.extend_from_slice(&[r.px(x, y), g.px(x, y), b.px(x, y)]);
             }
         }
-        return out;
+        let fp = if want {
+            final_planes(h, planes, w, ht)
+        } else {
+            Vec::new()
+        };
+        return (out, fp);
     }
     let mut ps: Vec<Plane> = planes.to_vec();
     if h.deblock > 0 {
@@ -2447,7 +2933,7 @@ fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
             );
         }
     }
-    color::ycbcr_to_rgb(
+    let rgb = color::ycbcr_to_rgb(
         &ps[0].data,
         ps[0].w,
         &ps[1].data,
@@ -2456,7 +2942,13 @@ fn finish_planes(h: &Header, planes: &[Plane], w: usize, ht: usize) -> Vec<u8> {
         w,
         ht,
         h.subsample,
-    )
+    );
+    let fp = if want {
+        final_planes(h, &ps, w, ht)
+    } else {
+        Vec::new()
+    };
+    (rgb, fp)
 }
 
 // ----------------------------------------------------------- Decodificador
@@ -2470,6 +2962,9 @@ struct DecState {
     v2: bool,
     /// Fotograma con predicción desde el anterior.
     inter: bool,
+    /// Movimiento global de la tesela.
+    warp: bool,
+    gw: Option<Warp>,
     /// Fotograma anterior y (plano, origen de la tesela) que se decodifica ahora.
     rc: Option<std::sync::Arc<RefCanvas>>,
     cur: (usize, usize, usize),
@@ -2543,6 +3038,7 @@ impl DecState {
             &dummy,
             st,
             self.inter,
+            self.warp,
         );
         let kind = match kind {
             Kind::Intra(m) if m == MODE_CCLM && lref.is_none() => Kind::Intra(MODE_DC),
@@ -2559,7 +3055,10 @@ impl DecState {
         let refs = predict::build_refs(p, x0, y0, w, h);
         let mut pred = vec![0i32; w * h];
         let (pi, tx, ty) = self.cur;
-        let ip = self.rc.as_ref().map(|rc| rc.plane(pi, tx, ty));
+        let ip = self.rc.as_ref().map(|rc| InterPlane {
+            warp: self.gw,
+            ..rc.plane(pi, tx, ty)
+        });
         predict_leaf(p, &refs, lref, &kind, x0, y0, w, h, ip.as_ref(), &mut pred);
         let mut recon = vec![0u8; w * h];
         let q = qm.q(pc, x0, y0, w, h);
@@ -2575,8 +3074,10 @@ impl DecState {
         );
         p.write_block(x0, y0, w, h, &recon);
         p.set_block(x0, y0, w, h, kind.mark(), nz);
-        if let Kind::Inter(mv) = kind {
-            p.set_mv(x0, y0, w, h, mv);
+        match (&kind, ip.as_ref()) {
+            (Kind::Inter(mv), _) => p.set_mv(x0, y0, w, h, *mv),
+            (Kind::Warp, Some(ip)) => ip.set_warp_mvs(p, x0, y0, w, h),
+            _ => {}
         }
     }
 }
@@ -2743,7 +3244,8 @@ fn decode_plane(
 
 /// Decodifica una tesela de `w × ht`. Devuelve (RGB, alfa).
 pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>, Option<Vec<u8>>) {
-    decode_tile_ref(payload, w, ht, h, None, 0, 0)
+    let r = decode_tile_ref(payload, w, ht, h, None, 0, 0, false);
+    (r.0, r.1)
 }
 
 /// Como `decode_tile`, con el fotograma anterior y el origen de la tesela.
@@ -2755,7 +3257,8 @@ fn decode_tile_ref(
     rc: Option<std::sync::Arc<RefCanvas>>,
     tx: usize,
     ty: usize,
-) -> (Vec<u8>, Option<Vec<u8>>) {
+    want_planes: bool,
+) -> (Vec<u8>, Option<Vec<u8>>, RefPlanes) {
     let lossless = h.tools & TOOL_LOSSLESS != 0;
     let sub = h.subsample && !lossless;
     let base_q = h.qstep();
@@ -2777,10 +3280,16 @@ fn decode_tile_ref(
         lossless,
         v2: h.version >= 2,
         inter: h.tools & TOOL_INTER != 0,
+        warp: false,
+        gw: None,
         rc,
         cur: (0, tx, ty),
     };
     let mut dec = Decoder::new(payload);
+    if st.inter {
+        st.gw = Warp::code(&mut dec, None);
+        st.warp = st.gw.is_some();
+    }
     let mut planes = Vec::new();
     let mut qm = QMap {
         dq: Vec::new(),
@@ -2813,6 +3322,11 @@ fn decode_tile_ref(
         }
         planes.push(plane);
     }
+    if h.version >= 2 {
+        for (plane, &(vw, vh)) in planes.iter_mut().zip(&dims) {
+            repad(plane, vw, vh);
+        }
+    }
     for (pi, plane) in planes.iter_mut().enumerate() {
         let d = st.ctx.rest.code(
             &mut dec,
@@ -2831,6 +3345,8 @@ fn decode_tile_ref(
             lossless: true,
             v2: h.version >= 2,
             inter: false,
+            warp: false,
+            gw: None,
             rc: None,
             cur: (0, 0, 0),
         };
@@ -2838,7 +3354,8 @@ fn decode_tile_ref(
         let plane = decode_plane(&mut ast, &mut dec, w, ht, 0, None, &mut aq, false);
         crop_plane(&plane, w, ht)
     });
-    (finish_planes(h, &planes, w, ht), alpha)
+    let (rgb, fp) = finish_planes(h, &planes, w, ht, want_planes);
+    (rgb, alpha, fp)
 }
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
@@ -2847,12 +3364,16 @@ pub fn decode(data: &[u8]) -> Result<Decoded, String> {
         let d = decode_frame(data, &a.frames[0], None)?;
         return Ok(Decoded { meta: a.meta, ..d });
     }
-    decode_with_ref(data, None)
+    decode_with_ref(data, None, false).map(|r| r.0)
 }
 
 /// Decodifica un archivo fijo; si es un fotograma con predicción entre
 /// fotogramas, necesita el fotograma anterior (`rc`).
-fn decode_with_ref(data: &[u8], rc: Option<std::sync::Arc<RefCanvas>>) -> Result<Decoded, String> {
+fn decode_with_ref(
+    data: &[u8],
+    rc: Option<std::sync::Arc<RefCanvas>>,
+    want_planes: bool,
+) -> Result<(Decoded, RefPlanes), String> {
     let inf = info(data)?;
     if inf.header.tools & TOOL_INTER != 0 && rc.is_none() {
         return Err("fotograma que depende del anterior: decodifica la animación completa".into());
@@ -2869,29 +3390,42 @@ fn decode_with_ref(data: &[u8], rc: Option<std::sync::Arc<RefCanvas>>) -> Result
             rc.clone(),
             t.x,
             t.y,
+            want_planes,
         )
     });
     let mut rgb = vec![0u8; w * ht * 3];
     let mut alpha = (inf.header.tools & TOOL_ALPHA != 0).then(|| vec![255u8; w * ht]);
-    for (t, (prgb, palpha)) in inf.tiles.iter().zip(&parts) {
+    let kind = ref_kind(&inf.header);
+    let mut fplanes = if want_planes {
+        empty_planes(kind, w, ht)
+    } else {
+        Vec::new()
+    };
+    for (t, (prgb, palpha, pp)) in inf.tiles.iter().zip(&parts) {
         paste(&mut rgb, 3, w, t, prgb);
         if let (Some(dst), Some(src)) = (alpha.as_mut(), palpha.as_ref()) {
             paste(dst, 1, w, t, src);
         }
+        if want_planes {
+            paste_planes(&mut fplanes, pp, t.x, t.y, kind.1);
+        }
     }
-    Ok(Decoded {
+    let d = Decoded {
         width: w,
         height: ht,
         rgb,
         alpha,
         meta: inf.meta.clone(),
-    })
+    };
+    Ok((d, fplanes))
 }
 
 // ------------------------------------------------------------- Animación
 
 /// Un fotograma de una animación: cuánto dura y qué rectángulo del lienzo
-/// sustituye. Los datos son un archivo `.tsl` completo de ese rectángulo.
+/// sustituye. Sus datos son un archivo `.tsl` de ese rectángulo: `prefix`
+/// seguido de `data[range]` (en la forma abreviada, `prefix` es la cabecera
+/// y la tabla de teselas reconstruidas; en la completa, va vacío).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameInfo {
     pub duration_ms: u32,
@@ -2900,6 +3434,44 @@ pub struct FrameInfo {
     pub w: usize,
     pub h: usize,
     pub range: std::ops::Range<usize>,
+    pub prefix: Vec<u8>,
+}
+
+impl FrameInfo {
+    /// El archivo `.tsl` del rectángulo.
+    fn file<'a>(&self, data: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+        if self.prefix.is_empty() {
+            std::borrow::Cow::Borrowed(&data[self.range.clone()])
+        } else {
+            let mut v = self.prefix.clone();
+            v.extend_from_slice(&data[self.range.clone()]);
+            std::borrow::Cow::Owned(v)
+        }
+    }
+}
+
+/// Entero sin signo LEB128 (7 bits por byte, el bit alto indica que sigue).
+fn write_varint(out: &mut Vec<u8>, mut v: u32) {
+    while v >= 0x80 {
+        out.push((v as u8 & 0x7F) | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn read_varint(data: &[u8], pos: &mut usize) -> Result<usize, String> {
+    let mut v: u64 = 0;
+    for i in 0..5 {
+        let b = *data.get(*pos).ok_or("archivo truncado")?;
+        *pos += 1;
+        v |= ((b & 0x7F) as u64) << (7 * i);
+        if b & 0x80 == 0 {
+            return u32::try_from(v)
+                .map(|v| v as usize)
+                .map_err(|_| "entero demasiado grande".into());
+        }
+    }
+    Err("entero demasiado largo".into())
 }
 
 /// Estructura de un archivo animado.
@@ -2916,8 +3488,11 @@ pub struct AnimInfo {
 /// Lee la estructura de una animación. `Ok(None)` si el archivo no es animado.
 ///
 /// Sección (v2, bit ANIM), tras la cabecera y los metadatos:
-/// `u16 repeticiones | u16 reservado (0) | u32 n` y, por fotograma,
-/// `u32 duración (ms) | u32 x | u32 y | u32 ancho | u32 alto | u32 longitud | datos`.
+/// `u16 repeticiones | u16 reservado (0) | u32 n` y, por fotograma, con
+/// enteros LEB128 (v): `v duración (ms) | v x | v y | v ancho | v alto | u8 forma`.
+/// Forma 0: `v longitud | archivo .tsl completo`. Forma 1 (abreviada): `u8 tools
+/// | v longitud de cada tesela | datos de las teselas`, con la cabecera del
+/// fotograma anterior salvo el ancho, el alto y `tools`.
 /// El primer fotograma cubre todo el lienzo; los demás, un rectángulo dentro de él.
 pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
     let header = Header::read(data)?;
@@ -2947,35 +3522,77 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
     }
     let n = u32_at(pos + 4).ok_or("archivo truncado")? as usize;
     pos += 8;
-    // Cada fotograma ocupa al menos 24 + 23 bytes: n no puede ser absurdo.
-    if n == 0 || n > (data.len() - pos.min(data.len())) / 47 {
+    // Cada fotograma ocupa al menos 8 bytes: n no puede ser absurdo.
+    if n == 0 || n > (data.len() - pos.min(data.len())) / 8 {
         return Err("animación no válida".into());
     }
     let mut frames = Vec::with_capacity(n);
+    let mut prev: Option<Header> = None;
     for i in 0..n {
-        let f: Vec<usize> = (0..6)
-            .map(|k| u32_at(pos + 4 * k).map(|v| v as usize))
-            .collect::<Option<_>>()
-            .ok_or("archivo truncado")?;
-        let (dur, fx, fy, fw, fh, len) = (f[0], f[1], f[2], f[3], f[4], f[5]);
-        let start = pos + 24;
-        let end = start
-            .checked_add(len)
-            .filter(|&e| e <= data.len())
-            .ok_or("archivo truncado")?;
+        let mut f = [0usize; 5];
+        for v in f.iter_mut() {
+            *v = read_varint(data, &mut pos)?;
+        }
+        let [dur, fx, fy, fw, fh] = f;
         let full = fx == 0 && fy == 0 && fw == w && fh == h;
         if fw == 0 || fh == 0 || fx + fw > w || fy + fh > h || (i == 0 && !full) {
             return Err("fotograma fuera del lienzo".into());
         }
+        let form = *data.get(pos).ok_or("archivo truncado")?;
+        pos += 1;
+        let (range, prefix, hdr) = match form {
+            0 => {
+                let len = read_varint(data, &mut pos)?;
+                let end = pos
+                    .checked_add(len)
+                    .filter(|&e| e <= data.len())
+                    .ok_or("archivo truncado")?;
+                let hdr = Header::read(&data[pos..end])?;
+                (pos..end, Vec::new(), hdr)
+            }
+            1 => {
+                let p = prev.as_ref().ok_or("animación no válida")?;
+                let tools = *data.get(pos).ok_or("archivo truncado")?;
+                pos += 1;
+                if tools & (TOOL_PREVIEW | TOOL_META | TOOL_ANIM) != 0 {
+                    return Err("fotograma abreviado no válido".into());
+                }
+                let mut hdr = Header {
+                    width: fw as u32,
+                    height: fh as u32,
+                    tools,
+                    ..p.clone()
+                };
+                let mut prefix = Vec::new();
+                hdr.write(&mut prefix);
+                // Valida la cabecera reconstruida como cualquier otra.
+                hdr = Header::read(&prefix)?;
+                let ntiles = tile_grid(fw, fh, hdr.tile_size()).len();
+                let mut total = 0usize;
+                for _ in 0..ntiles {
+                    let l = read_varint(data, &mut pos)?;
+                    total = total.checked_add(l).ok_or("archivo truncado")?;
+                    prefix.extend_from_slice(&(l as u32).to_le_bytes());
+                }
+                let end = pos
+                    .checked_add(total)
+                    .filter(|&e| e <= data.len())
+                    .ok_or("archivo truncado")?;
+                (pos..end, prefix, hdr)
+            }
+            _ => return Err("forma de fotograma desconocida".into()),
+        };
+        pos = range.end;
+        prev = Some(hdr);
         frames.push(FrameInfo {
             duration_ms: dur as u32,
             x: fx,
             y: fy,
             w: fw,
             h: fh,
-            range: start..end,
+            range,
+            prefix,
         });
-        pos = end;
     }
     Ok(Some(AnimInfo {
         width: w,
@@ -2986,31 +3603,41 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
     }))
 }
 
-/// Decodifica el rectángulo de un fotograma (sin componer).
+/// Decodifica el rectángulo de un fotograma. Con `st` (el estado de la
+/// animación hasta el fotograma anterior), además lo compone en el lienzo y
+/// actualiza la referencia; sin él solo se pueden decodificar fotogramas que
+/// no predicen del anterior.
 pub fn decode_frame(
     data: &[u8],
     f: &FrameInfo,
-    prev: Option<(&[u8], usize, usize)>,
+    st: Option<&mut AnimState>,
 ) -> Result<Decoded, String> {
-    let inner = &data[f.range.clone()];
+    let file = f.file(data);
+    let inner = &file[..];
     let h = Header::read(inner)?;
     if h.tools & TOOL_ANIM != 0 || h.width as usize != f.w || h.height as usize != f.h {
         return Err("fotograma no válido".into());
     }
-    if h.tools & TOOL_INTER == 0 {
-        return decode(inner);
-    }
-    // Predice del lienzo anterior (RGBA de cw × ch).
-    let (canvas, cw, ch) = prev.ok_or("fotograma que depende del anterior")?;
-    if h.subsample && (f.x | f.y) & 1 != 0 {
+    let inter = h.tools & TOOL_INTER != 0;
+    let Some(st) = st else {
+        if inter {
+            return Err("fotograma que depende del anterior".into());
+        }
+        return decode_with_ref(inner, None, false).map(|r| r.0);
+    };
+    if inter && h.subsample && (f.x | f.y) & 1 != 0 {
         return Err("fotograma con predicción en coordenadas impares".into());
     }
-    let rgb: Vec<u8> = canvas
-        .chunks_exact(4)
-        .flat_map(|p| [p[0], p[1], p[2]])
-        .collect();
-    let rc = std::sync::Arc::new(RefCanvas::new(&rgb, None, cw, ch, &h, f.x, f.y));
-    decode_with_ref(inner, Some(rc))
+    st.prepare(&h);
+    let rc = inter.then(|| {
+        let planes = st.refp.as_ref().unwrap().1.clone();
+        std::sync::Arc::new(RefCanvas::new(
+            planes, None, st.width, st.height, &h, f.x, f.y,
+        ))
+    });
+    let (d, planes) = decode_with_ref(inner, rc, true)?;
+    st.commit(f, &d, &planes);
+    Ok(d)
 }
 
 /// Pega un fotograma decodificado en el lienzo RGBA.
@@ -3033,14 +3660,275 @@ pub fn decode_animation(
     if a.frames.len() as u64 * (a.width * a.height) as u64 > max_pixels {
         return Err("animación demasiado grande para decodificarla entera".into());
     }
-    let mut canvas = vec![0u8; a.width * a.height * 4];
+    let mut st = AnimState::new(a.width, a.height);
     let mut out = Vec::with_capacity(a.frames.len());
     for f in &a.frames {
-        let d = decode_frame(data, f, Some((&canvas, a.width, a.height)))?;
-        compose(&mut canvas, a.width, &d, f);
-        out.push((canvas.clone(), f.duration_ms));
+        decode_frame(data, f, Some(&mut st))?;
+        out.push((st.canvas.clone(), f.duration_ms));
     }
     Ok((a, out))
+}
+
+/// Estima el movimiento global (afín) entre dos lienzos RGBA de `cw × ch`
+/// dentro del rectángulo `r`: busca cada bloque de una rejilla en el
+/// fotograma anterior y ajusta el modelo por mínimos cuadrados, descartando
+/// los bloques que no lo siguen. None si no hay un movimiento común claro.
+fn estimate_warp(
+    prev: &[u8],
+    cur: &[u8],
+    cw: usize,
+    ch: usize,
+    r: (usize, usize, usize, usize),
+) -> Option<Warp> {
+    const B: usize = 16;
+    const R: i64 = 24;
+    let luma = |img: &[u8]| -> Vec<i32> {
+        img.chunks_exact(4)
+            .map(|p| (77 * p[0] as i32 + 150 * p[1] as i32 + 29 * p[2] as i32) >> 8)
+            .collect()
+    };
+    let (lp, lc) = (luma(prev), luma(cur));
+    let (rx, ry, rw, rh) = r;
+    if rw < 2 * B || rh < 2 * B {
+        return None;
+    }
+    // Rejilla de como mucho ~24 × 24 bloques.
+    let step = |n: usize| (n / 24).max(B);
+    let at = |img: &[i32], x: i64, y: i64| {
+        img[y.clamp(0, ch as i64 - 1) as usize * cw + x.clamp(0, cw as i64 - 1) as usize]
+    };
+    let mut pts: Vec<(f64, f64, f64, f64)> = Vec::new();
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    let mut by = ry;
+    while by + B <= ry + rh {
+        let mut bx = rx;
+        while bx + B <= rx + rw {
+            // Bloques con textura (si no, cualquier vector vale).
+            let mut grad = 0i64;
+            for y in by..by + B {
+                for x in bx + 1..bx + B {
+                    grad += (lc[y * cw + x] - lc[y * cw + x - 1]).abs() as i64;
+                }
+            }
+            if grad >= (B * B) as i64 * 3 {
+                let sad = |dx: i64, dy: i64, lim: i64| {
+                    let mut s = 0i64;
+                    for y in 0..B as i64 {
+                        for x in 0..B as i64 {
+                            let (cx, cy) = (bx as i64 + x, by as i64 + y);
+                            s += (lc[cy as usize * cw + cx as usize] - at(&lp, cx + dx, cy + dy))
+                                .abs() as i64;
+                        }
+                        if s >= lim {
+                            return s;
+                        }
+                    }
+                    s
+                };
+                let mut best = (sad(0, 0, i64::MAX), 0i64, 0i64);
+                for dy in -R..=R {
+                    for dx in -R..=R {
+                        let v = sad(dx, dy, best.0);
+                        if v < best.0 {
+                            best = (v, dx, dy);
+                        }
+                    }
+                }
+                let (_, dx, dy) = best;
+                // Subpíxel: parábola por los vecinos.
+                let par = |a: i64, b: i64, c: i64| {
+                    let den = (a - 2 * b + c) as f64;
+                    if den > 0.0 {
+                        (0.5 * (a - c) as f64 / den).clamp(-0.5, 0.5)
+                    } else {
+                        0.0
+                    }
+                };
+                let c0 = best.0;
+                let fx = par(sad(dx - 1, dy, i64::MAX), c0, sad(dx + 1, dy, i64::MAX));
+                let fy = par(sad(dx, dy - 1, i64::MAX), c0, sad(dx, dy + 1, i64::MAX));
+                let (px, py) = (bx as f64 + B as f64 / 2.0, by as f64 + B as f64 / 2.0);
+                pts.push((px, py, dx as f64 + fx, dy as f64 + fy));
+                blocks.push((bx, by));
+            }
+            bx += step(rw);
+        }
+        by += step(rh);
+    }
+    if pts.len() < 8 {
+        return None;
+    }
+    // Mínimos cuadrados (x, y, 1) → desplazamiento, con descarte iterativo.
+    let fit = |pts: &[&(f64, f64, f64, f64)]| -> Option<[f64; 6]> {
+        let mut m = [[0f64; 3]; 3];
+        let (mut vx, mut vy) = ([0f64; 3], [0f64; 3]);
+        for p in pts {
+            let f = [p.0, p.1, 1.0];
+            for i in 0..3 {
+                for j in 0..3 {
+                    m[i][j] += f[i] * f[j];
+                }
+                vx[i] += f[i] * p.2;
+                vy[i] += f[i] * p.3;
+            }
+        }
+        let solve = |m: [[f64; 3]; 3], v: [f64; 3]| -> Option<[f64; 3]> {
+            let det = |m: [[f64; 3]; 3]| {
+                m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+            };
+            let d = det(m);
+            if d.abs() < 1e-9 {
+                return None;
+            }
+            let mut out = [0f64; 3];
+            for (k, o) in out.iter_mut().enumerate() {
+                let mut mk = m;
+                for i in 0..3 {
+                    mk[i][k] = v[i];
+                }
+                *o = det(mk) / d;
+            }
+            Some(out)
+        };
+        let a = solve(m, vx)?;
+        let b = solve(m, vy)?;
+        Some([a[0], a[1], a[2], b[0], b[1], b[2]])
+    };
+    let mut inl: Vec<&(f64, f64, f64, f64)> = pts.iter().collect();
+    let mut model = fit(&inl)?;
+    for _ in 0..4 {
+        let err = |p: &(f64, f64, f64, f64)| {
+            let ex = model[0] * p.0 + model[1] * p.1 + model[2] - p.2;
+            let ey = model[3] * p.0 + model[4] * p.1 + model[5] - p.3;
+            (ex * ex + ey * ey).sqrt()
+        };
+        let mut errs: Vec<f64> = pts.iter().map(err).collect();
+        errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let th = (2.0 * errs[errs.len() / 2]).max(0.35);
+        inl = pts.iter().filter(|p| err(p) <= th).collect();
+        if inl.len() < 8 {
+            return None;
+        }
+        model = fit(&inl)?;
+    }
+    if inl.len() * 10 < pts.len() * 4 {
+        return None;
+    }
+    // Candidatos: el afín, solo traslación y traslación entera. Se mide el
+    // error real de la predicción en los bloques con textura y se prefiere el
+    // más simple si es casi igual de bueno (un paneo de píxeles enteros debe
+    // copiar exacto, sin interpolar).
+    let k = 4.0 * 65536.0;
+    let n = inl.len() as f64;
+    let (tx, ty) = (
+        inl.iter().map(|p| p.2).sum::<f64>() / n,
+        inl.iter().map(|p| p.3).sum::<f64>() / n,
+    );
+    let to_w = |m: [f64; 6]| Warp {
+        p: m.map(|v| (v * k).round() as i32),
+    };
+    let cands = [
+        to_w([0.0, 0.0, tx.round(), 0.0, 0.0, ty.round()]),
+        to_w([0.0, 0.0, tx, 0.0, 0.0, ty]),
+        to_w(model),
+    ];
+    let prev8: Vec<u8> = lp.iter().map(|&v| v.clamp(0, 255) as u8).collect();
+    let err = |w: &Warp| -> f64 {
+        let ip = InterPlane {
+            data: &prev8,
+            w: cw,
+            h: ch,
+            ox: 0,
+            oy: 0,
+            hash: None,
+            d: 1,
+            warp: Some(*w),
+        };
+        let mut pred = vec![0i32; B * B];
+        let mut e = 0f64;
+        for &(bx, by) in &blocks {
+            ip.predict_warp(bx, by, B, B, &mut pred);
+            for y in 0..B {
+                for x in 0..B {
+                    e += (lc[(by + y) * cw + bx + x] - pred[y * B + x]).abs() as f64;
+                }
+            }
+        }
+        e
+    };
+    let errs: Vec<f64> = cands.iter().map(err).collect();
+    let best = errs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let i = if errs[0] <= best * 1.02 {
+        0
+    } else if errs[1] <= best * 1.01 {
+        1
+    } else {
+        2
+    };
+    let w = cands[i];
+    // Sin movimiento: no hace falta.
+    (w.clamped() == w && w != Warp::default()).then_some(w)
+}
+
+/// dq extra por celda AQ (en coordenadas del fotograma `r`): `d` donde el
+/// fotograma anterior (desplazado con el movimiento global, si lo hay) ya
+/// predice bien el actual, la mitad donde lo predice regular y 0 en el
+/// contenido nuevo. Así lo que solo se copia no gasta bits en corregir el
+/// error del fotograma anterior, y lo nuevo conserva la calidad pedida.
+fn temporal_dq(
+    prev: &[u8],
+    cur: &[u8],
+    cw: usize,
+    ch: usize,
+    r: (usize, usize, usize, usize),
+    warp: Option<Warp>,
+    d: i32,
+) -> (Vec<i32>, usize) {
+    let luma = |img: &[u8]| -> Vec<u8> {
+        img.chunks_exact(4)
+            .map(|p| ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8) as u8)
+            .collect()
+    };
+    let (lp, lc) = (luma(prev), luma(cur));
+    let (rx, ry, rw, rh) = r;
+    let (gw, gh) = (rw.div_ceil(AQ), rh.div_ceil(AQ));
+    let ip = InterPlane {
+        data: &lp,
+        w: cw,
+        h: ch,
+        ox: rx,
+        oy: ry,
+        hash: None,
+        d: 1,
+        warp: Some(warp.unwrap_or_default()),
+    };
+    let mut out = vec![0; gw * gh];
+    let mut pred = vec![0i32; AQ * AQ];
+    for gy in 0..gh {
+        for gx in 0..gw {
+            let (x0, y0) = (gx * AQ, gy * AQ);
+            let (bw, bh) = (AQ.min(rw - x0), AQ.min(rh - y0));
+            ip.predict_warp(x0, y0, AQ, AQ, &mut pred);
+            let mut e = 0i64;
+            for y in 0..bh {
+                for x in 0..bw {
+                    let c = lc[(ry + y0 + y) * cw + rx + x0 + x] as i32;
+                    e += (c - pred[y * AQ + x]).abs() as i64;
+                }
+            }
+            let mad = e as f32 / (bw * bh) as f32;
+            out[gy * gw + gx] = if mad < 2.0 {
+                d
+            } else if mad < 5.0 {
+                d / 2
+            } else {
+                0
+            };
+        }
+    }
+    (out, gw)
 }
 
 /// Rectángulo mínimo que contiene los píxeles distintos entre dos fotogramas RGBA.
@@ -3108,13 +3996,19 @@ pub fn encode_animation_recon(
     };
     // Predicción entre fotogramas (TESELA_NOINTER=1 la desactiva, para comparar).
     let use_inter = std::env::var_os("TESELA_NOINTER").is_none();
+    let use_warp = std::env::var_os("TESELA_NOWARP").is_none();
+    // dq extra (unidades de 1/6 de octava del paso) en las celdas bien predichas.
+    let taq: i32 = std::env::var("TESELA_TAQ")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let rgb_of = |f: &[u8]| -> Vec<u8> {
         f.chunks_exact(4)
             .flat_map(|px| [px[0], px[1], px[2]])
             .collect()
     };
-    // Lienzo tal como lo verá el decodificador (RGBA).
-    let mut recon = vec![0u8; width * height * 4];
+    // Lienzo y referencia tal como los verá el decodificador.
+    let mut st = AnimState::new(width, height);
     // ¿Contenido fotográfico? Se decide una vez con el primer fotograma
     // completo (los rectángulos que cambian pueden ser muy pequeños).
     let photo = !p
@@ -3140,15 +4034,8 @@ pub fn encode_animation_recon(
                 let crgb = rgb_of(&crop);
                 let alpha: Vec<u8> = crop.chunks_exact(4).map(|px| px[3]).collect();
                 let has_alpha = alpha.iter().any(|&a| a != 255);
-                let (prev_recon, prev_src) = (rgb_of(&recon), rgb_of(&frames[i.max(1) - 1]));
-                let rsrc = (i > 0 && use_inter).then(|| RefSource {
-                    recon: &prev_recon,
-                    src: &prev_src,
-                    w: width,
-                    h: height,
-                    x,
-                    y,
-                });
+                let prev_src = rgb_of(&frames[i.max(1) - 1]);
+                let inter = i > 0 && use_inter;
                 // En contenido fotográfico, los fotogramas que predicen del
                 // anterior se cuantizan más gruesos: su residuo es sobre todo el
                 // error del fotograma previo, y corregirlo cuesta bits sin
@@ -3158,7 +4045,7 @@ pub fn encode_animation_recon(
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(if photo { 20.0 } else { 0.0 });
-                let pf = if rsrc.is_some() && dq != 0.0 {
+                let mut pf = if inter && dq != 0.0 {
                     Params {
                         quality: (sub.quality - dq).max(1.0),
                         ..sub.clone()
@@ -3166,15 +4053,14 @@ pub fn encode_animation_recon(
                 } else {
                     sub.clone()
                 };
-                let e =
-                    encode_with_alpha_ref(&crgb, has_alpha.then_some(&alpha[..]), w, h, &pf, rsrc);
-                let d = Decoded {
-                    width: w,
-                    height: h,
-                    rgb: e.recon_rgb.clone(),
-                    alpha: e.recon_alpha.clone(),
-                    meta: Metadata::default(),
-                };
+                // La restauración apenas mejora lo que se copia del fotograma
+                // anterior y sus parámetros cuestan ~25 % de cada fotograma.
+                if inter && std::env::var_os("TESELA_REST_INTER").is_none() {
+                    pf.restore = false;
+                }
+                if inter && std::env::var_os("TESELA_NOAQ_INTER").is_some() {
+                    pf.aq_strength = 0.0;
+                }
                 let fi = FrameInfo {
                     duration_ms: 0,
                     x,
@@ -3182,9 +4068,33 @@ pub fn encode_animation_recon(
                     w,
                     h,
                     range: 0..0,
+                    prefix: Vec::new(),
                 };
-                compose(&mut recon, width, &d, &fi);
-                recons.push(recon.clone());
+                let warp = if inter && use_warp {
+                    estimate_warp(&frames[i - 1], f, width, height, (x, y, w, h))
+                } else {
+                    None
+                };
+                let tdq = (inter && taq > 0).then(|| {
+                    temporal_dq(&frames[i - 1], f, width, height, (x, y, w, h), warp, taq)
+                });
+                let af = AnimFrame {
+                    st: &mut st,
+                    src: &prev_src,
+                    f: fi,
+                    inter,
+                    warp,
+                    tdq,
+                };
+                let e = encode_with_alpha_ref(
+                    &crgb,
+                    has_alpha.then_some(&alpha[..]),
+                    w,
+                    h,
+                    &pf,
+                    Some(af),
+                );
+                recons.push(st.canvas.clone());
                 list.push((durations_ms[i], x, y, w, h, e.bytes));
             }
         }
@@ -3206,18 +4116,41 @@ pub fn encode_animation_recon(
     out.extend_from_slice(&loops.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&(list.len() as u32).to_le_bytes());
+    let mut prev: Option<Header> = None;
     for (d, x, y, w, h, bytes) in &list {
-        for v in [
-            *d,
-            *x as u32,
-            *y as u32,
-            *w as u32,
-            *h as u32,
-            bytes.len() as u32,
-        ] {
-            out.extend_from_slice(&v.to_le_bytes());
+        for v in [*d, *x as u32, *y as u32, *w as u32, *h as u32] {
+            write_varint(&mut out, v);
         }
-        out.extend_from_slice(bytes);
+        let hdr = Header::read(bytes).map_err(|e| format!("fotograma: {e}"))?;
+        // Forma abreviada si la cabecera es la del fotograma anterior salvo
+        // el tamaño y `tools` (sin vista previa ni metadatos).
+        let abbrev = prev.as_ref().is_some_and(|p| {
+            hdr.tools & (TOOL_PREVIEW | TOOL_META | TOOL_ANIM) == 0
+                && Header {
+                    width: p.width,
+                    height: p.height,
+                    tools: p.tools,
+                    ..hdr.clone()
+                } == *p
+        });
+        if abbrev {
+            out.push(1);
+            out.push(hdr.tools);
+            let ntiles = tile_grid(*w, *h, hdr.tile_size()).len();
+            for k in 0..ntiles {
+                let o = HEADER_LEN + 4 * k;
+                write_varint(
+                    &mut out,
+                    u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()),
+                );
+            }
+            out.extend_from_slice(&bytes[HEADER_LEN + 4 * ntiles..]);
+        } else {
+            out.push(0);
+            write_varint(&mut out, bytes.len() as u32);
+            out.extend_from_slice(bytes);
+        }
+        prev = Some(hdr);
     }
     Ok((out, recons))
 }

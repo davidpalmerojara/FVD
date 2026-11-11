@@ -50,12 +50,24 @@ previa (`PREVIEW` debe ser 0) y, tras la cabecera y los metadatos, viene:
 u16  repeticiones          0 = sin fin
 u16  reservado             0
 u32  n                     número de fotogramas (≥ 1)
-n veces:
-  u32  duración (ms)
-  u32  x, u32 y, u32 ancho, u32 alto     rectángulo dentro del lienzo
-  u32  longitud
-  datos: un archivo .tsl completo del rectángulo (sin ANIM)
+n veces (v = entero LEB128: 7 bits por byte, primero los bajos; el bit alto indica que sigue;
+         como mucho 5 bytes y 2³² − 1):
+  v    duración (ms)
+  v    x, v y, v ancho, v alto     rectángulo dentro del lienzo
+  u8   forma
+  forma 0:
+    v      longitud
+    datos: un archivo .tsl completo del rectángulo (sin ANIM)
+  forma 1 (abreviada; no en el primer fotograma):
+    u8     tools
+    v      longitud de cada tesela (tantas como teselas tenga el rectángulo)
+    datos de las teselas, seguidos
 ```
+
+En la forma abreviada, la cabecera del fotograma es la del fotograma anterior (completa o
+reconstruida) con el ancho, el alto y `tools` de la entrada; `tools` no puede tener `PREVIEW`,
+`META` ni `ANIM`, y la cabecera resultante debe ser válida como cualquier otra. Equivale al
+archivo formado por esa cabecera, la tabla de longitudes en `u32` y los datos.
 
 El lienzo empieza vacío y cada fotograma sustituye su rectángulo (RGBA, también el alfa); el
 resultado tras cada uno es la imagen que se muestra durante su duración. El primer fotograma cubre
@@ -66,25 +78,54 @@ une los fotogramas idénticos sumando sus duraciones.
 
 ### 1.3 Predicción entre fotogramas
 
-Un fotograma cuyo archivo tiene `INTER` puede predecir sus bloques del lienzo anterior (el resultado
-compuesto del fotograma previo). Si el archivo tiene croma 4:2:0, `x` e `y` deben ser pares.
+Un fotograma cuyo archivo tiene `INTER` puede predecir sus bloques del fotograma anterior. Si el
+archivo tiene croma 4:2:0, `x` e `y` deben ser pares.
 
-**Referencia.** El lienzo anterior (RGB) se convierte con la transformación de color del archivo
-del fotograma (YCbCr con o sin submuestreo, o G, B, R sin pérdida, como en la v1) y cada muestra se
-redondea a 8 bits (`round` y `clamp(0, 255)`). Para una tesela que empieza en (tx, ty) dentro del
-fotograma, el origen en el plano de referencia es `((x + tx) / d, (y + ty) / d)`, con d = 2 en croma
-submuestreada y 1 en otro caso.
+**Referencia.** El decodificador de una animación guarda, además del lienzo RGBA, unos **planos de
+referencia** del tamaño del lienzo (tres planos de 8 bits, con la croma a la mitad en 4:2:0) y su
+espacio de color: (sin pérdida, 4:2:0). Al empezar, no hay planos. Antes de cada fotograma:
+
+1. Si no hay planos o su espacio de color no es el del archivo del fotograma, se calculan a partir
+   del lienzo (RGB, antes de este fotograma) con la transformación de color del archivo (YCbCr con o
+   sin submuestreo, o G, B, R sin pérdida, como en la v1), redondeando cada muestra a 8 bits
+   (`round` y `clamp(0, 255)`).
+2. Se decodifica el fotograma; si tiene `INTER`, predice de esos planos.
+3. Los planos finales del fotograma (tras el relleno de la sección 4, la restauración y, si lo hay,
+   el desbloqueo; antes de convertirlos a RGB) se copian en los de referencia en
+   `(x / d, y / d)`, con d = 2 en la croma submuestreada y 1 en otro caso, recortando a la parte
+   visible de cada plano (en 4:2:0, `⌈w / 2⌉ × ⌈h / 2⌉` en la croma). Si el archivo tiene croma 4:2:0
+   y `x` o `y` es impar, en lugar de copiarlos se descartan los planos de referencia.
+
+Así, una zona que no cambia o que solo se desplaza se copia exacta, sin pasar por RGB en cada
+fotograma. Para una tesela que empieza en (tx, ty) dentro del fotograma, el origen en el plano de
+referencia es `((x + tx) / d, (y + ty) / d)`.
+
+**Movimiento global.** Al principio de los datos de cada tesela de un archivo con `INTER`, antes
+del primer plano, va un bit sin contexto. Si vale 1, siguen seis enteros con signo (a, b, c, d, e, f),
+cada uno así: 6 bits sin contexto con n, el número de bits de la magnitud (0 = valor 0); si n > 0,
+los n − 1 bits bajos de la magnitud (el alto es 1) y un bit de signo (1 = negativo). Se recortan a
+±2²⁰ (a, b, d, e) y a ±2³⁰ (c, f). El vector de luma en cuartos de píxel en el punto (X, Y) del
+lienzo es `((a·X + b·Y + c + 2¹⁵) >> 16, (d·X + e·Y + f + 2¹⁵) >> 16)` (en 64 bits; cada
+componente se recorta a ±2²⁰).
 
 **Sintaxis.** Al principio de la cabecera de cada hoja (antes de la clase especial de la v1) va el
 bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
-202. Si vale 1, sigue un vector de movimiento con la misma sintaxis que el vector de la copia intra
-(sección 6.5 de la v1), con modelos propios (`mv`), pero codificado respecto a un **predictor**: la
-mediana, componente a componente, de los vectores de los vecinos izquierdo (x0 − 1, y0), superior
-(x0, y0 − 1) y superior izquierdo (x0 − 1, y0 − 1) que sean hojas con la marca 202. Los que no lo
-sean toman el valor del último vector del plano (que empieza en (0, 0) en cada plano de cada
-tesela); si solo uno lo es, el predictor es ese; si ninguno, el último vector. Tras decodificar la
-hoja, el último vector pasa a ser el suyo. La marca de la hoja en el mapa es 202, y la cabecera sigue con
-`ts` como cualquier otra hoja.
+202 o 203. Si vale 1 y la tesela lleva movimiento global, sigue el bit
+`warp[(pc·5 + sz)·3 + c']`, con c' el número de esos vecinos con la marca 203; si vale 1, la hoja
+usa el movimiento global (marca 203) y no lleva vector. Si no, sigue un vector de movimiento con la
+misma sintaxis que el vector de la copia intra (sección 6.5 de la v1), con modelos propios (`mv`),
+pero codificado respecto a un **predictor**: la mediana, componente a componente, de los vectores
+de los vecinos izquierdo (x0 − 1, y0), superior (x0, y0 − 1) y superior izquierdo (x0 − 1, y0 − 1)
+que sean hojas con la marca 202 o 203. Los que no lo sean toman el valor del último vector del plano
+(que empieza en (0, 0) en cada plano de cada tesela); si solo uno lo es, el predictor es ese; si
+ninguno, el último vector. Tras decodificar la hoja, el último vector pasa a ser el suyo (las hojas
+con movimiento global no lo cambian). La marca de la hoja en el mapa es 202, y la cabecera sigue
+con `ts` como cualquier otra hoja.
+
+Una hoja con movimiento global se predice por bloques de 4 × 4: el bloque que empieza en (x, y)
+del plano (coordenadas del lienzo en ese plano) usa el vector de luma en el punto
+`(x·d + 2d, y·d + 2d)`; en la croma submuestreada, cada componente v pasa a `(v + 1) >> 1`. En el
+mapa, cada bloque de 4 × 4 guarda su vector, que es el que ven los vecinos al calcular el predictor.
 
 **Predicción.** Los vectores están en **cuartos de píxel**. Con la parte entera
 `(ix, iy) = (mvx >> 2, mvy >> 2)` (desplazamiento aritmético) y la fracción `(fx, fy) = (mvx & 3,
@@ -103,7 +144,7 @@ Si `fx = fy = 0`, la muestra (x, y) es `R(ox + x0 + x + ix, oy + y0 + y + iy)`. 
 r = 0 … h + 6, y la muestra es `clamp((Σk F[fy][k] · t(x, y + k) + 2048) >> 12, 0, 255)`. El residuo
 y la reconstrucción son los de la v1.
 
-Los modelos `inter` y `mv` van al final del orden de visita, detrás de los de la v2.
+Los modelos `inter`, `mv` y `warp` van al final del orden de visita, detrás de los de la v2, en ese orden.
 
 ## 2. Bloques rectangulares
 
@@ -172,13 +213,23 @@ En un bloque cuadrado, todo es idéntico bit a bit a la v1.
 - **CCLM.** Los parámetros se deducen con las muestras vecinas de arriba (w) y de la izquierda
   (h) en lugar de N y N.
 
-## 4. Probabilidades iniciales
+## 4. Relleno de los planos
+
+Los planos se codifican con su tamaño redondeado a superbloques. En la v2, tras decodificar los
+tres planos de una tesela y antes de la restauración, lo que queda fuera de la parte visible de
+cada plano (`w × h` en luma; en 4:2:0, `⌈w / 2⌉ × ⌈h / 2⌉` en croma) se sustituye repitiendo el
+borde: primero, en cada fila visible, las columnas a la derecha toman el valor de la última columna
+visible; después, las filas por debajo copian la última fila visible. Así el codificador puede
+dejar cualquier cosa en esa zona (no se ve) sin que afecte a la restauración ni a la conversión de
+color.
+
+## 5. Probabilidades iniciales
 
 Los modelos se inicializan con `init_probs_v2::TABLES[sintético][banda]`, en el mismo orden de
 visita que en la v1. Los modelos nuevos (`rect` y `rect_dir`) van **al final** de ese orden, así
 que el prefijo coincide con la lista de modelos de la v1.
 
-## 5. Pendiente antes de congelar
+## 6. Pendiente antes de congelar
 
 - Vectores de conformidad v2 (incluido uno con metadatos y vista previa).
 - Fijar en este texto la parte angular y CCLM con fórmulas completas, como en la v1.
