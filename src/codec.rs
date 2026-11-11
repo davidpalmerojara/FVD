@@ -70,6 +70,9 @@ pub struct Params {
     pub lossless: bool,
     /// Versión del flujo de bits a escribir (1 o 2; la 2 añade particiones rectangulares).
     pub version: u8,
+    /// Hilos para el RDO dentro de cada tesela (0 = automático). El
+    /// resultado es idéntico con cualquier número de hilos.
+    pub threads: usize,
     /// Incluir vista previa progresiva.
     pub preview: bool,
 }
@@ -92,6 +95,7 @@ impl Default for Params {
             lossless: false,
             preview: false,
             version: VERSION,
+            threads: 0,
         }
     }
 }
@@ -233,6 +237,7 @@ impl Header {
 
 // ------------------------------------------------------------------ Contextos
 
+#[derive(Clone)]
 struct Ctx {
     coef: CoefCtx,
     split: Vec<Model>,
@@ -770,14 +775,14 @@ struct PlaneEnc<'a> {
     plane: Plane,
     pc: usize,
     /// Índice hash para la búsqueda de IBC (solo con herramientas sintéticas).
-    hash: Option<tools::HashIndex>,
+    hash: Option<&'a tools::HashIndex>,
     /// Estado sintético aproximado durante el RDO.
     sc: ScState,
 }
 
 struct EncState {
     ctx: Ctx,
-    qt: QuantTables,
+    qt: std::sync::Arc<QuantTables>,
     lambda_k: f32,
     topk: usize,
     screen: bool,
@@ -795,6 +800,19 @@ struct LeafEval {
 }
 
 impl EncState {
+    /// Copia de la configuración (sin contextos).
+    fn shallow(&self) -> EncState {
+        EncState {
+            ctx: Ctx::new(),
+            qt: self.qt.clone(),
+            lambda_k: self.lambda_k,
+            topk: self.topk,
+            screen: self.screen,
+            lossless: self.lossless,
+            v2: self.v2,
+        }
+    }
+
     /// Coste en bits de la cabecera de una hoja con el estado actual.
     #[allow(clippy::too_many_arguments)]
     fn head_bits(
@@ -1095,7 +1113,8 @@ impl EncState {
         let mut best_j = ev.j;
         let mut best = 0;
         let mut rect_best: Option<[LeafEval; 2]> = None;
-        if self.v2 {
+        // Las mitades de 64×64 casi nunca ganan y son las más caras de evaluar.
+        if self.v2 && n < 64 {
             for (opt, horz) in [(1, true), (2, false)] {
                 pe.plane.clear_avail(x0, y0, n, n);
                 pe.sc = sc_before.clone();
@@ -1311,6 +1330,14 @@ pub fn tile_grid(width: usize, height: usize, tile: usize) -> Vec<TileRect> {
     v
 }
 
+fn available_threads() -> usize {
+    if cfg!(feature = "parallel") {
+        std::thread::available_parallelism().map_or(1, |n| n.get())
+    } else {
+        1
+    }
+}
+
 #[cfg(feature = "parallel")]
 fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
     use rayon::prelude::*;
@@ -1438,6 +1465,12 @@ fn encode_with_alpha(
         header.tools |= TOOL_ALPHA;
     }
     let tiles = tile_grid(width, height, header.tile_size());
+    // Hilos por tesela: las teselas ya van en paralelo entre sí.
+    let mut p2 = p.clone();
+    if p2.threads == 0 {
+        p2.threads = (available_threads() / tiles.len()).max(1);
+    }
+    let p = &p2;
     let res = par_map(&tiles, |t| {
         let a = alpha.map(|a| crop(a, 1, width, t));
         encode_tile(&crop(rgb, 3, width, t), a.as_deref(), t.w, t.h, &header, p)
@@ -1527,7 +1560,16 @@ fn color_planes(rgb: &[u8], w: usize, h: usize, header: &Header) -> Vec<(Vec<f32
 }
 
 /// Codifica un plano completo (quadtree por superbloques). Devuelve la
-/// reconstrucción y el original con relleno.
+/// reconstrucción y la fuente rellenada.
+///
+/// La decisión (RDO) de cada superbloque se hace en frente de onda: (x, y)
+/// solo ve los píxeles ya decididos de la fila y−1 hasta x+1 y de la fila y
+/// hasta x−1. Las probabilidades con que estima el coste son las de su propia
+/// fila (actualizadas simulando la escritura de cada superbloque decidido),
+/// y cada fila arranca con las de la anterior tras su segundo superbloque,
+/// como el WPP de HEVC. Así nada depende del número de hilos y el resultado es
+/// idéntico con 1 o con N. La escritura real es secuencial, con los contextos
+/// de verdad, así que el decodificador no cambia.
 #[allow(clippy::too_many_arguments)]
 fn encode_plane(
     st: &mut EncState,
@@ -1539,26 +1581,194 @@ fn encode_plane(
     lref: Option<&LumaRef>,
     qm: &mut QMap,
     code_dq: bool,
+    threads: usize,
 ) -> (Plane, Vec<f32>) {
+    use std::sync::{Condvar, Mutex};
     let (src, pw, ph) = pad_plane(src, w, h);
-    let mut pe = PlaneEnc {
-        src: &src,
-        plane: Plane::new(pw, ph),
-        pc,
-        hash: st.screen.then(|| tools::HashIndex::build(&src, pw, ph)),
-        sc: ScState::default(),
-    };
-    let mut wst = ScState::default();
-    for sy in 0..ph / SB {
-        for sx in 0..pw / SB {
-            if code_dq {
-                qm.code_sb(&mut st.ctx, enc, sx, sy);
+    let hash = st.screen.then(|| tools::HashIndex::build(&src, pw, ph));
+    let (cols, rows) = (pw / SB, ph / SB);
+    let total = cols * rows;
+    let qm_ro: &QMap = qm;
+    let kq = SB / AQ;
+    let code_dqs = |ctx: &mut Ctx, enc: &mut Encoder, sx: usize, sy: usize| {
+        if code_dq {
+            for cy in sy * kq..(sy * kq + kq).min(qm_ro.h) {
+                for cx in sx * kq..(sx * kq + kq).min(qm_ro.w) {
+                    ctx.dq.code(enc, qm_ro.dq[cy * qm_ro.w + cx]);
+                }
             }
-            let (_, node) = st.rdo_node(&mut pe, lref, qm, sx * SB, sy * SB, SB);
-            st.write_node(enc, &pe.plane, pc, &mut wst, sx * SB, sy * SB, SB, &node);
         }
+    };
+
+    struct Sync {
+        plane: Plane,
+        done: Vec<bool>,
+        nodes: Vec<Option<Node>>,
+        /// Probabilidades de la fila tras simular el superbloque k.
+        after: Vec<Option<Ctx>>,
     }
-    let plane = pe.plane;
+    let shared = Mutex::new(Sync {
+        plane: Plane::new(pw, ph),
+        done: vec![false; total],
+        nodes: (0..total).map(|_| None).collect(),
+        after: (0..total).map(|_| None).collect(),
+    });
+    let cv = Condvar::new();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let ctx0 = st.ctx.clone();
+    let base = st.shallow();
+    // Superbloque del que la fila hereda las probabilidades al empezar.
+    let seed_col = 1.min(cols - 1);
+
+    // Zona del plano que el RDO de (sx, sy) puede leer: en fotos, los
+    // superbloques vecinos (referencias intra y contextos); con contenido
+    // sintético, todo lo anterior (la copia intra-imagen busca en cualquier sitio).
+    type Rect = (usize, usize, usize, usize);
+    let window = |sx: usize, sy: usize| -> Rect {
+        if hash.is_some() {
+            (0, 0, pw, (sy + 1) * SB)
+        } else {
+            let (x0, y0) = (sx.saturating_sub(1) * SB, sy.saturating_sub(1) * SB);
+            (x0, y0, ((sx + 2) * SB).min(pw) - x0, (sy + 1) * SB - y0)
+        }
+    };
+
+    // Cada hilo tiene su propio plano; fuera de la ventana todo está como no
+    // disponible, así que lo que quede de otros superbloques no se lee.
+    let rdo = |k: usize, mine: &mut Option<(Plane, Rect)>| {
+        let (sx, sy) = (k % cols, k / cols);
+        let (wx, wy, ww, wh) = window(sx, sy);
+        let mut plane = match mine.take() {
+            Some((mut p, (ox, oy, ow, oh))) => {
+                p.clear_avail(ox, oy, ow, oh);
+                p
+            }
+            None => Plane::new(pw, ph),
+        };
+        let ctx = {
+            let mut g = shared.lock().unwrap();
+            loop {
+                let left = sx == 0 || g.done[k - 1];
+                let up = sy == 0 || g.done[(sy - 1) * cols + (sx + 1).min(cols - 1)];
+                if left && up {
+                    break;
+                }
+                g = cv.wait(g).unwrap();
+            }
+            // La columna semilla tiene dos consumidores (el siguiente de su
+            // fila y el inicio de la fila de abajo), en cualquier orden: se clona.
+            let ctx = if sx > 0 {
+                if sx - 1 == seed_col {
+                    g.after[k - 1].clone()
+                } else {
+                    g.after[k - 1].take()
+                }
+            } else if sy > 0 {
+                g.after[(sy - 1) * cols + seed_col].clone()
+            } else {
+                Some(ctx0.clone())
+            };
+            plane.copy_region(&g.plane, wx, wy, ww, wh);
+            ctx.unwrap()
+        };
+        // Oculta lo que no es determinista: fila y−1 más allá de x+1, fila y desde x y filas posteriores.
+        for gy in wy / 4..(wy + wh) / 4 {
+            let row = gy * 4 / SB;
+            for gx in wx / 4..(wx + ww) / 4 {
+                let col = gx * 4 / SB;
+                let visible =
+                    row + 1 < sy || (row + 1 == sy && col <= sx + 1) || (row == sy && col < sx);
+                if !visible {
+                    plane.avail[gy * plane.gw + gx] = false;
+                }
+            }
+        }
+        let mut es = EncState {
+            ctx,
+            ..base.shallow()
+        };
+        let mut pe = PlaneEnc {
+            src: &src,
+            plane,
+            pc,
+            hash: hash.as_ref(),
+            sc: ScState::default(),
+        };
+        let (_, node) = es.rdo_node(&mut pe, lref, qm_ro, sx * SB, sy * SB, SB);
+        // Simula la escritura para que las probabilidades de la fila avancen.
+        let mut sink = Encoder::new();
+        code_dqs(&mut es.ctx, &mut sink, sx, sy);
+        es.write_node(
+            &mut sink,
+            &pe.plane,
+            pc,
+            &mut ScState::default(),
+            sx * SB,
+            sy * SB,
+            SB,
+            &node,
+        );
+        let mut g = shared.lock().unwrap();
+        g.plane.copy_region(&pe.plane, sx * SB, sy * SB, SB, SB);
+        g.nodes[k] = Some(node);
+        if sx + 1 < cols || (sx == seed_col && sy + 1 < rows) {
+            g.after[k] = Some(es.ctx);
+        }
+        g.done[k] = true;
+        cv.notify_all();
+        drop(g);
+        *mine = Some((pe.plane, (wx, wy, ww, wh)));
+    };
+
+    // Escritura secuencial en orden de barrido, con su propia copia del plano
+    // para no retener el cerrojo mientras codifica.
+    let mut wst = ScState::default();
+    let mut wplane = Plane::new(pw, ph);
+    let mut write = |k: usize, st: &mut EncState, enc: &mut Encoder| {
+        let (sx, sy) = (k % cols, k / cols);
+        let node = {
+            let mut g = shared.lock().unwrap();
+            while !g.done[k] {
+                g = cv.wait(g).unwrap();
+            }
+            wplane.copy_region(&g.plane, sx * SB, sy * SB, SB, SB);
+            g.nodes[k].take().unwrap()
+        };
+        code_dqs(&mut st.ctx, enc, sx, sy);
+        st.write_node(enc, &wplane, pc, &mut wst, sx * SB, sy * SB, SB, &node);
+    };
+
+    if threads <= 1 {
+        let mut mine = None;
+        for k in 0..total {
+            rdo(k, &mut mine);
+            write(k, st, enc);
+        }
+    } else {
+        // Reparte por diagonales del frente (x + 2y): en orden de barrido,
+        // todos los hilos acabarían en la misma fila esperándose entre sí.
+        let mut order: Vec<usize> = (0..total).collect();
+        order.sort_by_key(|&k| (k % cols + 2 * (k / cols), k / cols));
+        let order = &order;
+        std::thread::scope(|scope| {
+            for _ in 0..threads.min(total) {
+                scope.spawn(|| {
+                    let mut mine = None;
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= total {
+                            break;
+                        }
+                        rdo(order[i], &mut mine);
+                    }
+                });
+            }
+            for k in 0..total {
+                write(k, st, enc);
+            }
+        });
+    }
+    let plane = shared.into_inner().unwrap().plane;
     (plane, src)
 }
 
@@ -1594,7 +1804,10 @@ pub fn encode_tile_stats(
         } else {
             Ctx::trained(base_q, header.tools & TOOL_SCREEN != 0, header.version)
         },
-        qt: QuantTables::new(header.qm_luma as f32 / 16.0, header.qm_chroma as f32 / 16.0),
+        qt: std::sync::Arc::new(QuantTables::new(
+            header.qm_luma as f32 / 16.0,
+            header.qm_chroma as f32 / 16.0,
+        )),
         lambda_k: p.lambda_k,
         topk: (p.effort.clamp(1, 9) as usize) + 1,
         screen: header.tools & TOOL_SCREEN != 0,
@@ -1631,6 +1844,7 @@ pub fn encode_tile_stats(
             lref.as_ref(),
             &mut qm,
             pi == 0 && header.aq,
+            p.threads.max(1),
         );
         if pi == 0 {
             lref = Some(LumaRef::new(&plane, sub));
@@ -1662,7 +1876,7 @@ pub fn encode_tile_stats(
         };
         let mut ast = EncState {
             ctx: Ctx::new(),
-            qt: QuantTables::new(0.0, 0.0),
+            qt: std::sync::Arc::new(QuantTables::new(0.0, 0.0)),
             lambda_k: p.lambda_k,
             topk: st.topk,
             screen: true,
@@ -1671,7 +1885,16 @@ pub fn encode_tile_stats(
         };
         let mut aq = unit_qmap(width, height);
         let (plane, _) = encode_plane(
-            &mut ast, &mut enc, &a, width, height, 0, None, &mut aq, false,
+            &mut ast,
+            &mut enc,
+            &a,
+            width,
+            height,
+            0,
+            None,
+            &mut aq,
+            false,
+            p.threads.max(1),
         );
         recon_alpha = Some(crop_plane(&plane, width, height));
     }

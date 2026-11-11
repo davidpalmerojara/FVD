@@ -110,6 +110,24 @@ impl Plane {
         }
     }
 
+    /// Copia los píxeles y los mapas de una región desde otro plano del mismo tamaño.
+    pub fn copy_region(&mut self, from: &Plane, x0: usize, y0: usize, w: usize, h: usize) {
+        for y in y0..(y0 + h).min(self.h) {
+            let a = y * self.w + x0;
+            let e = (x0 + w).min(self.w) - x0;
+            self.data[a..a + e].copy_from_slice(&from.data[a..a + e]);
+        }
+        for gy in y0 / 4..((y0 + h) / 4).min(self.gh) {
+            for gx in x0 / 4..((x0 + w) / 4).min(self.gw) {
+                let i = gy * self.gw + gx;
+                self.avail[i] = from.avail[i];
+                self.modes[i] = from.modes[i];
+                self.sizes[i] = from.sizes[i];
+                self.nz[i] = from.nz[i];
+            }
+        }
+    }
+
     pub fn read_block(&self, x0: usize, y0: usize, w: usize, h: usize, out: &mut [u8]) {
         for y in 0..h {
             out[y * w..y * w + w].copy_from_slice(&self.data[(y0 + y) * self.w + x0..][..w]);

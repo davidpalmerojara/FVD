@@ -81,6 +81,10 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
             "--lossless" => p.lossless = true,
             "--preview" => p.preview = true,
             "--v1" => p.version = 1,
+            "--threads" => {
+                p.threads = num(i)? as usize;
+                i += 1;
+            }
             "--no-screen" => p.screen = Some(false),
             "--444" => p.subsample = Some(false),
             "--420" => p.subsample = Some(true),
