@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Documentación · Tesela</title>
+  <meta name="description" content="Documentación de Tesela: primeros pasos, uso en la web, línea de comandos, cómo funciona el formato, resultados y preguntas frecuentes.">
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .docs { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 48px; padding-top: 32px; }
+    .toc { position: sticky; top: 16px; align-self: start; font-size: 14px; max-height: calc(100vh - 32px); overflow: auto; }
+    .toc h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .toc a { display: block; padding: 5px 10px; border-left: 2px solid var(--border); color: var(--muted); text-decoration: none; }
+    .toc a:hover { color: var(--text); }
+    .toc a.on { border-left-color: var(--accent); color: var(--text); font-weight: 600; }
+    .toc a.sub { padding-left: 22px; font-size: 13.5px; }
+    article { max-width: 820px; }
+    article h1 { font-size: 36px; letter-spacing: -0.03em; margin: 0 0 10px; }
+    article h2 { font-size: 26px; letter-spacing: -0.02em; margin: 56px 0 10px; padding-top: 8px; border-top: 1px solid var(--border); scroll-margin-top: 16px; }
+    article h3 { font-size: 18px; margin: 30px 0 8px; scroll-margin-top: 16px; }
+    article p, article li { font-size: 15.5px; }
+    article .lead { font-size: 17.5px; color: var(--muted); }
+    .note { padding: 12px 16px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; font-size: 14.5px; }
+    .curves { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .curves figure { margin: 0; padding: 8px; background: #fff; border-radius: 10px; border: 1px solid var(--border); }
+    .curves img { width: 100%; display: block; }
+    .curves figcaption { color: #444; font-size: 13px; padding: 4px 4px 0; }
+    .faq dt { font-weight: 700; margin-top: 18px; }
+    .faq dd { margin: 4px 0 0; color: var(--muted); }
+    @media (max-width: 900px) {
+      .docs { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+      .toc { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: 4px; }
+      .toc h4 { width: 100%; }
+      .toc a, .toc a.sub { border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; }
+      .curves { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+      <nav class="links">
+        <a href="../index.html">Visión general</a>
+        <a href="./index.html" aria-current="page">Documentación</a>
+        <a href="../compare/index.html">Comparador</a>
+        <a href="../demo/index.html">Demo</a>
+        <a class="ext" href="https://github.com/davidpalmerojara/FVD">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap docs">
+    <nav class="toc" aria-label="Contenido">
+      <h4>Documentación</h4>
+      <a href="#introduccion">Introducción</a>
+      <a href="#empezar">Primeros pasos</a>
+      <a href="#web">Uso en la web</a>
+      <a class="sub" href="#web-img">HTML normal</a>
+      <a class="sub" href="#web-elemento">Elemento &lt;tesela-img&gt;</a>
+      <a class="sub" href="#web-api">API de JavaScript</a>
+      <a class="sub" href="#web-servidor">Servidor</a>
+      <a href="#cli">Línea de comandos</a>
+      <a href="#formato">Cómo funciona</a>
+      <a href="#resultados">Resultados</a>
+      <a href="#especificacion">Especificación</a>
+      <a href="#faq">Preguntas frecuentes</a>
+      <a href="#descargas">Descargas</a>
+    </nav>
+
+    <article>
+      <h1 id="introduccion">Documentación de Tesela</h1>
+      <p class="lead">Tesela es un formato de imagen con pérdida (y sin pérdida) escrito desde cero en Rust. A igual
+        calidad perceptual ocupa menos que WebP, AVIF y JPEG XL en fotos, capturas de pantalla e ilustraciones, y se usa
+        en la web gracias a un módulo de WebAssembly.</p>
+      <p>Admite transparencia, un modo sin pérdida exacto y una vista previa progresiva. El codificador y el
+        decodificador son la misma base de código en nativo y en el navegador, y producen exactamente los mismos bytes.</p>
+      <p class="note"><b>Estado.</b> La versión 1 del formato está congelada, con especificación y archivos de
+        conformidad. La versión 2 (particiones rectangulares y nuevas tablas de probabilidad) es la que escribe el
+        codificador por defecto y aún puede cambiar. Es un proyecto independiente y experimental: ningún navegador lo
+        soporta de forma nativa.</p>
+
+      <h2 id="empezar">Primeros pasos</h2>
+      <h3>Sin instalar nada</h3>
+      <p>El <a href="../compare/index.html">comparador</a> codifica tus fotos con Tesela, WebP, AVIF, JPEG XL y JPEG dentro
+        del navegador y te muestra tamaño, calidad y un visor para compararlas. Nada sale de tu ordenador.</p>
+      <h3>Con la línea de comandos</h3>
+      <p>Necesitas <a href="https://rustup.rs">Rust</a>. Acepta PNG y JPEG.</p>
+      <pre><code>git clone https://github.com/davidpalmerojara/FVD.git tesela
+cd tesela
+cargo build --release
+./target/release/tesela encode foto.jpg foto.tsl -q 85        # comprimir
+./target/release/tesela decode foto.tsl foto_decodificada.png # descomprimir
+./target/release/tesela roundtrip foto.jpg -q 85              # tamaño y métricas en JSON</code></pre>
+      <p>En Windows (PowerShell) el ejecutable es <code>.\target\release\tesela.exe</code> y compilar requiere las
+        <i>Build Tools</i> de Visual Studio, que <code>rustup</code> ofrece instalar. En WSL basta con
+        <code>sudo apt install build-essential</code>.</p>
+      <h3>El comparador en local</h3>
+      <pre><code>python3 web/serve.py      # http://localhost:8000/compare/</code></pre>
+      <p>Con <code>serve.py</code>, Tesela codifica con varios hilos también en el navegador (ver <a href="#web-servidor">Servidor</a>).</p>
+
+      <h2 id="web">Uso en la web</h2>
+      <p>Hay dos formas de mostrar imágenes <code>.tsl</code>. Las dos usan el mismo módulo de WebAssembly
+        (<code>tesela.wasm</code>, ~630 KB, que se descarga una vez y queda en la caché).</p>
+
+      <h3 id="web-img">Opción 1: HTML normal (recomendada)</h3>
+      <pre><code>&lt;script src="/tesela-auto.js"&gt;&lt;/script&gt;   &lt;!-- en el &lt;head&gt; --&gt;
+&lt;img src="foto.tsl" alt="Descripción"&gt;</code></pre>
+      <p>Copia a la <b>raíz</b> de tu web <code>tesela-auto.js</code>, <code>tesela-sw.js</code>, <code>tesela.wasm</code>,
+        <code>tesela.js</code>, <code>tesela-core.js</code> y <code>tesela-worker.js</code>. Un Service Worker entrega
+        cada <code>.tsl</code> al navegador ya decodificado, así que funcionan <code>&lt;img&gt;</code>,
+        <code>srcset</code>, <code>&lt;picture&gt;</code>, los fondos CSS y «Guardar imagen como».</p>
+      <ul>
+        <li><b>Primera visita:</b> el Service Worker aún no está activo; las imágenes se recargan solas en cuanto lo está.</li>
+        <li><b>Requisitos:</b> HTTPS (o <code>localhost</code>). El Service Worker solo controla las páginas de su carpeta y
+          subcarpetas: por eso va en la raíz.</li>
+        <li><b>Sin Service Worker:</b> las <code>&lt;img&gt;</code> se decodifican en la página; los fondos CSS no.</li>
+      </ul>
+      <p><a href="../demo/img.html">Ver la demo con HTML normal</a>.</p>
+
+      <h3 id="web-elemento">Opción 2: elemento &lt;tesela-img&gt;</h3>
+      <pre><code>&lt;script type="module" src="tesela.js"&gt;&lt;/script&gt;
+&lt;tesela-img src="foto.tsl" alt="Descripción" fallback="foto.jpg" loading="lazy"&gt;&lt;/tesela-img&gt;</code></pre>
+      <p>Muestra la vista previa progresiva en cuanto llegan sus primeros bytes y, si algo falla, carga el
+        <code>fallback</code>. Atributos: <code>src</code>, <code>alt</code>, <code>fallback</code> y
+        <code>loading="lazy"</code>. <a href="../demo/index.html">Ver la demo</a>.</p>
+
+      <h3 id="web-api">API de JavaScript</h3>
+      <pre><code>import { decode, encode, toObjectURL, decodePreview } from './tesela.js';
+
+const imageData = await decode(bytes);                 // ArrayBuffer → ImageData
+const tsl = await encode(imageData, { quality: 85 });  // ImageData → Uint8Array (.tsl)
+const url = await toObjectURL(bytes);                  // URL para cualquier &lt;img&gt;
+const preview = await decodePreview(firstBytes);       // vista previa, si ya ha llegado</code></pre>
+      <p>Opciones de <code>encode</code>: <code>quality</code> (0–100, por defecto 75), <code>effort</code> (1–9, por
+        defecto 4) y <code>tune</code> (<code>'balanced'</code>, <code>'perceptual'</code> o <code>'psnr'</code>).
+        Decodificar reparte las teselas de la imagen entre varios Web Workers.</p>
+
+      <h3 id="web-servidor">Servidor</h3>
+      <ul>
+        <li><b>Tipos MIME:</b> sirve <code>.wasm</code> como <code>application/wasm</code> y <code>.js</code> como
+          <code>text/javascript</code>. <code>web/serve.py</code> ya lo hace (en algunos Windows el servidor de Python
+          por defecto no).</li>
+        <li><b>Codificar con varios hilos en el navegador</b> (opcional): la página debe estar aislada entre orígenes, con
+          <code>Cross-Origin-Opener-Policy: same-origin</code> y <code>Cross-Origin-Embedder-Policy: require-corp</code>.
+          Entonces <code>tesela-threads.js</code> usa <code>tesela-mt.wasm</code>, con el mismo resultado byte a byte.
+          Donde no se pueden poner cabeceras (GitHub Pages), el comparador las añade con un Service Worker.</li>
+      </ul>
+
+      <h2 id="cli">Línea de comandos</h2>
+      <pre><code>tesela encode &lt;entrada.png|jpg&gt; &lt;salida.tsl&gt; [opciones]
+tesela decode &lt;entrada.tsl&gt; &lt;salida.png&gt;
+tesela compare &lt;original.png&gt; &lt;distorsionada.png&gt;     # métricas en JSON
+tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodifica, verifica y mide</code></pre>
+      <div class="card tw">
+        <table class="data">
+          <thead><tr><th>Opción</th><th style="text-align:left">Efecto</th></tr></thead>
+          <tbody>
+            <tr><td><code>-q 1..100</code></td><td style="text-align:left;white-space:normal">Calidad, en una escala parecida a la de JPEG: <code>-q 85</code> se ve parecido a un JPEG de calidad 85.</td></tr>
+            <tr><td><code>-e 1..9</code></td><td style="text-align:left;white-space:normal">Esfuerzo de búsqueda (por defecto 4). Más esfuerzo, archivo algo menor y codificación más lenta.</td></tr>
+            <tr><td><code>--tune balanced|perceptual|psnr</code></td><td style="text-align:left;white-space:normal">Perfil de ajuste: equilibrado, calidad visual o fidelidad numérica.</td></tr>
+            <tr><td><code>--lossless</code></td><td style="text-align:left;white-space:normal">Compresión sin pérdida, exacta bit a bit.</td></tr>
+            <tr><td><code>--preview</code></td><td style="text-align:left;white-space:normal">Añade la vista previa progresiva (~300 bytes).</td></tr>
+            <tr><td><code>--screen</code> / <code>--no-screen</code></td><td style="text-align:left;white-space:normal">Fuerza o desactiva las herramientas de contenido sintético (por defecto se detecta solo).</td></tr>
+            <tr><td><code>--threads N</code></td><td style="text-align:left;white-space:normal">Hilos del codificador (0 = todos). El resultado es idéntico con cualquier número.</td></tr>
+            <tr><td><code>--tile N</code></td><td style="text-align:left;white-space:normal">Tamaño de las teselas en píxeles (múltiplo de 64, por defecto 1024).</td></tr>
+            <tr><td><code>--v1</code></td><td style="text-align:left;white-space:normal">Escribe la versión 1 (congelada) en lugar de la 2.</td></tr>
+            <tr><td><code>--420</code> / <code>--444</code></td><td style="text-align:left;white-space:normal">Fuerza el submuestreo de croma.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="formato">Cómo funciona</h2>
+      <p>Tesela sigue la estructura clásica de los códecs modernos (predicción, transformada, cuantización y codificación
+        entrópica), con decisiones tomadas por optimización tasa-distorsión: el codificador prueba alternativas y se queda
+        con la que minimiza <i>distorsión + λ·bits</i>.</p>
+      <div class="card tw">
+        <table class="data">
+          <tbody>
+            <tr><td><b>Contenedor</b></td><td style="text-align:left;white-space:normal">Cabecera de 23 bytes y teselas independientes de 1024×1024, que se codifican y decodifican en paralelo. Dentro de cada tesela, el codificador decide los superbloques en frente de onda con varios hilos.</td></tr>
+            <tr><td><b>Color</b></td><td style="text-align:left;white-space:normal">YCbCr con croma 4:2:0, o 4:4:4 en calidades muy altas y en contenido sintético.</td></tr>
+            <tr><td><b>Partición</b></td><td style="text-align:left;white-space:normal">Superbloques de 64×64 en un quadtree hasta 4×4; cada nodo puede partirse también en dos mitades rectangulares.</td></tr>
+            <tr><td><b>Predicción</b></td><td style="text-align:left;white-space:normal">Planar, DC y 33 direcciones, con filtrado de referencias. La croma puede predecirse desde la luma (CCLM).</td></tr>
+            <tr><td><b>Transformada</b></td><td style="text-align:left;white-space:normal">DCT-II ortonormal de 4 a 64 puntos, también rectangular.</td></tr>
+            <tr><td><b>Cuantización</b></td><td style="text-align:left;white-space:normal">Matriz perceptual, cuantización adaptativa por zonas y RDOQ.</td></tr>
+            <tr><td><b>Entropía</b></td><td style="text-align:left;white-space:normal">Codificador aritmético binario con modelos adaptativos y probabilidades iniciales entrenadas por tipo de contenido y calidad.</td></tr>
+            <tr><td><b>Restauración</b></td><td style="text-align:left;white-space:normal">Filtro adaptativo por clases (estilo ALF) que el codificador estima por mínimos cuadrados.</td></tr>
+            <tr><td><b>Contenido sintético</b></td><td style="text-align:left;white-space:normal">Paleta, copia intra de bloques con índice hash y residuo sin transformada.</td></tr>
+            <tr><td><b>Extras</b></td><td style="text-align:left;white-space:normal">Canal alfa sin pérdida, modo sin pérdida y vista previa progresiva.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>El diario de experimentos del repositorio recoge qué se probó, cuánto aportó cada técnica y qué se descartó (por
+        ejemplo, la cuantización dependiente de VVC no mejoró los resultados).</p>
+
+      <h2 id="resultados">Resultados</h2>
+      <p>Medimos el <b>BD-rate</b> frente a WebP: el porcentaje medio de bytes que ahorra cada formato a igual calidad
+        (negativo = mejor), con SSIMULACRA2 como métrica principal de calidad perceptual. Todas las salidas se miden con el
+        mismo programa, y las probabilidades de Tesela se entrenaron con imágenes distintas de las de evaluación.</p>
+      <div class="card tw">
+        <table class="data">
+          <thead><tr><th>Conjunto</th><th>Tesela</th><th>AVIF</th><th>JPEG XL</th><th>WebP</th></tr></thead>
+          <tbody>
+            <tr><td>Fotos · Kodak, 24 de 768×512</td><td class="best">−30,3 %</td><td>−24,8 %</td><td>−12,1 %</td><td>0 %</td></tr>
+            <tr><td>Fotos grandes · DIV2K, 12 de 2,7 MP</td><td class="best">−32,4 %</td><td>−30,2 %</td><td>−21,2 %</td><td>0 %</td></tr>
+            <tr><td>Capturas de pantalla · 9</td><td class="best">−59,9 %</td><td>−50,6 %</td><td>−36,0 %</td><td>0 %</td></tr>
+            <tr><td>Ilustraciones · 6</td><td class="best">−61,8 %</td><td>−53,9 %</td><td>+9,5 %</td><td>0 %</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:14px">Versiones: AVIF con libavif 1.4 y aom (speed 4, 4:2:0), JPEG XL con libjxl 0.12
+        (effort 7), WebP con libwebp 1.6 (método 6). En fotos grandes con calidad baja, Tesela y AVIF empatan; la ventaja está
+        en calidad media y alta. Codificar con Tesela es más lento que con AVIF; decodificar, de 2 a 5 veces más rápido en fotos.</p>
+      <div class="curves">
+        <figure><img src="img/curvas-kodak.png" alt="Curvas de calidad frente a bits por píxel en Kodak" loading="lazy"><figcaption>Kodak</figcaption></figure>
+        <figure><img src="img/curvas-fotos-grandes.png" alt="Curvas en fotos grandes" loading="lazy"><figcaption>Fotos grandes</figcaption></figure>
+        <figure><img src="img/curvas-capturas.png" alt="Curvas en capturas de pantalla" loading="lazy"><figcaption>Capturas</figcaption></figure>
+        <figure><img src="img/curvas-ilustraciones.png" alt="Curvas en ilustraciones" loading="lazy"><figcaption>Ilustraciones</figcaption></figure>
+      </div>
+      <p>Informes completos con todas las métricas (SSIMULACRA2, PSNR, SSIM) y datos crudos en
+        <a href="https://github.com/davidpalmerojara/FVD/tree/main/bench/results"><code>bench/results</code></a>. El banco
+        de pruebas es reproducible: <code>python3 bench/bench.py</code>.</p>
+
+      <h2 id="especificacion">Especificación</h2>
+      <ul>
+        <li><a href="https://github.com/davidpalmerojara/FVD/blob/main/docs/especificacion-v1.md">Especificación de la versión 1</a>
+          (congelada): contenedor, sintaxis y reconstrucción con el detalle necesario para escribir otro decodificador.</li>
+        <li><a href="https://github.com/davidpalmerojara/FVD/blob/main/docs/especificacion-v2-borrador.md">Borrador de la versión 2</a>:
+          diferencias con la v1.</li>
+        <li><a href="https://github.com/davidpalmerojara/FVD/tree/main/tests/vectors">Archivos de conformidad</a>: 14 archivos
+          con el hash de su salida. Un decodificador es conforme con la v1 si los reproduce todos.</li>
+      </ul>
+      <p>Cada archivo lleva su versión en la cabecera: un <code>.tsl</code> v1 seguirá abriéndose con cualquier versión
+        posterior del decodificador.</p>
+
+      <h2 id="faq">Preguntas frecuentes</h2>
+      <dl class="faq">
+        <dt>¿Por qué otro formato de imagen?</dt>
+        <dd>Para explorar cuánto se puede mejorar hoy partiendo de cero, con técnicas de los códecs de vídeo modernos y un
+          banco de pruebas honesto. El resultado ocupa menos que los formatos actuales en todos los tipos de contenido probados.</dd>
+        <dt>¿Funciona en todos los navegadores?</dt>
+        <dd>En todos los modernos (Chrome, Edge, Firefox, Safari, también en móvil), porque se decodifica con WebAssembly. No
+          hay soporte nativo, así que conviene servir también un JPEG como respaldo.</dd>
+        <dt>¿Los visitantes pueden guardar las imágenes?</dt>
+        <dd>Sí. Con <code>tesela-auto.js</code> el navegador recibe la imagen ya decodificada y «Guardar imagen como»
+          funciona como siempre. Como cualquier imagen de la web, no hay protección contra copias.</dd>
+        <dt>¿Por qué codifica más lento que AVIF?</dt>
+        <dd>Porque prueba muchas más particiones y predicciones para ahorrar bytes. Usa todos los núcleos, y una imagen se
+          codifica una vez y se decodifica miles.</dd>
+        <dt>¿Y el modo sin pérdida?</dt>
+        <dd>Es exacto bit a bit y mejora a PNG con claridad, pero en fotos ocupa más que WebP sin pérdida y que JPEG XL.</dd>
+        <dt>¿Qué limitaciones tiene?</dt>
+        <dd>8 bits por canal, sin animación ni metadatos de color (ICC/EXIF), y el alfa siempre es sin pérdida. Es un
+          proyecto experimental, sin una auditoría de patentes.</dd>
+        <dt>¿Cómo se ha medido?</dt>
+        <dd>Con curvas de calidad para cada formato en conjuntos públicos (Kodak, DIV2K) y propios (capturas e
+          ilustraciones generadas), integradas con BD-rate. La metodología y los datos crudos están en el repositorio.</dd>
+      </dl>
+
+      <h2 id="descargas">Descargas</h2>
+      <ul>
+        <li><b>Código fuente:</b> <a href="https://github.com/davidpalmerojara/FVD">github.com/davidpalmerojara/FVD</a>
+          (Rust, sin dependencias de C).</li>
+        <li><b>Librería web:</b> la carpeta <code>web/</code> del repositorio (<code>tesela.wasm</code>,
+          <code>tesela.js</code> y compañía). <code>web/build.sh</code> la regenera.</li>
+        <li><b>Línea de comandos:</b> se compila con <code>cargo build --release</code> en Windows, macOS y Linux.</li>
+      </ul>
+    </article>
+  </div>
+
+  <footer class="site">
+    <div class="wrap">
+      <div><a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+        <p>Formato de imagen experimental escrito en Rust. Código, banco de pruebas y metodología, abiertos.</p></div>
+      <div><h4>Producto</h4><a href="../compare/index.html">Comparador</a><a href="../demo/index.html">Demo web</a><a href="../demo/img.html">HTML normal</a></div>
+      <div><h4>Documentación</h4><a href="#empezar">Empezar</a><a href="#web">En la web</a><a href="#formato">Cómo funciona</a><a href="#faq">Preguntas</a></div>
+      <div><h4>Proyecto</h4><a href="https://github.com/davidpalmerojara/FVD">GitHub</a><a href="https://github.com/davidpalmerojara/FVD/blob/main/docs/especificacion-v1.md">Especificación v1</a><a href="https://github.com/davidpalmerojara/FVD/tree/main/bench/results">Datos del banco</a></div>
+    </div>
+  </footer>
+  <script>
+    // Marca en el índice la sección visible.
+    const links = [...document.querySelectorAll('.toc a')];
+    const targets = links.map((a) => document.querySelector(a.getAttribute('href')));
+    const mark = () => {
+      let i = 0;
+      targets.forEach((t, k) => { if (t && t.getBoundingClientRect().top < 120) i = k; });
+      links.forEach((a, k) => a.classList.toggle('on', k === i));
+    };
+    addEventListener('scroll', mark, { passive: true });
+    mark();
+  </script>
+</body>
+</html>

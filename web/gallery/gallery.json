@@ -1,0 +1,161 @@
+[
+ {
+  "name": "foto",
+  "width": 768,
+  "height": 512,
+  "budget": 16384,
+  "crop": [
+   300,
+   40,
+   256
+  ],
+  "codecs": [
+   {
+    "codec": "jpeg",
+    "label": "JPEG",
+    "param": 25,
+    "bytes": 16208,
+    "ssimulacra2": 41.2,
+    "psnr": 32.7
+   },
+   {
+    "codec": "webp",
+    "label": "WebP",
+    "param": 51,
+    "bytes": 16130,
+    "ssimulacra2": 57.5,
+    "psnr": 35.13
+   },
+   {
+    "codec": "avif",
+    "label": "AVIF",
+    "param": 51,
+    "bytes": 16235,
+    "ssimulacra2": 69.6,
+    "psnr": 36.61
+   },
+   {
+    "codec": "jxl",
+    "label": "JPEG XL",
+    "param": 4.505792236328125,
+    "bytes": 16381,
+    "ssimulacra2": 65.9,
+    "psnr": 34.14
+   },
+   {
+    "codec": "tesela",
+    "label": "Tesela",
+    "param": 77.27423095703125,
+    "bytes": 16374,
+    "ssimulacra2": 72.3,
+    "psnr": 37.26
+   }
+  ]
+ },
+ {
+  "name": "captura",
+  "width": 1440,
+  "height": 900,
+  "budget": 14336,
+  "crop": [
+   40,
+   170,
+   320
+  ],
+  "codecs": [
+   {
+    "codec": "jpeg",
+    "label": "JPEG",
+    "param": 5,
+    "bytes": 13225,
+    "ssimulacra2": -8.0,
+    "psnr": 26.69
+   },
+   {
+    "codec": "webp",
+    "label": "WebP",
+    "param": 5,
+    "bytes": 14304,
+    "ssimulacra2": 31.5,
+    "psnr": 31.63
+   },
+   {
+    "codec": "avif",
+    "label": "AVIF",
+    "param": 46,
+    "bytes": 14285,
+    "ssimulacra2": 73.8,
+    "psnr": 39.57
+   },
+   {
+    "codec": "jxl",
+    "label": "JPEG XL",
+    "param": 20.14522705078125,
+    "bytes": 14325,
+    "ssimulacra2": 42.5,
+    "psnr": 28.76
+   },
+   {
+    "codec": "tesela",
+    "label": "Tesela",
+    "param": 82.2230224609375,
+    "bytes": 14322,
+    "ssimulacra2": 90.5,
+    "psnr": 49.7
+   }
+  ]
+ },
+ {
+  "name": "ilustracion",
+  "width": 1600,
+  "height": 1000,
+  "budget": 12288,
+  "crop": [
+   20,
+   10,
+   320
+  ],
+  "codecs": [
+   {
+    "codec": "jpeg",
+    "label": "JPEG",
+    "param": 3,
+    "bytes": 11957,
+    "ssimulacra2": -51.8,
+    "psnr": 23.17
+   },
+   {
+    "codec": "webp",
+    "label": "WebP",
+    "param": 17,
+    "bytes": 12150,
+    "ssimulacra2": 54.4,
+    "psnr": 36.18
+   },
+   {
+    "codec": "avif",
+    "label": "AVIF",
+    "param": 59,
+    "bytes": 12274,
+    "ssimulacra2": 84.1,
+    "psnr": 42.27
+   },
+   {
+    "codec": "jxl",
+    "label": "JPEG XL",
+    "param": 18.21732788085938,
+    "bytes": 12200,
+    "ssimulacra2": 59.7,
+    "psnr": 36.48
+   },
+   {
+    "codec": "tesela",
+    "label": "Tesela",
+    "param": 82.1142578125,
+    "bytes": 12275,
+    "ssimulacra2": 85.7,
+    "psnr": 49.14
+   }
+  ]
+ }
+]

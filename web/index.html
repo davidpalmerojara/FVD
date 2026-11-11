@@ -4,39 +4,57 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tesela · formato de imagen</title>
-  <meta name="description" content="Tesela: un formato de imagen con pérdida escrito desde cero en Rust que ocupa menos que WebP, AVIF y JPEG XL a igual calidad.">
+  <meta name="description" content="Tesela es un formato de imagen escrito desde cero en Rust: a igual calidad perceptual ocupa menos que WebP, AVIF y JPEG XL, y funciona en cualquier navegador con WebAssembly.">
+  <meta property="og:title" content="Tesela · formato de imagen">
+  <meta property="og:description" content="Mismas imágenes, menos bytes: un 30 % menos que WebP en fotos y un 60 % menos en capturas, a igual calidad perceptual.">
   <link rel="stylesheet" href="style.css">
   <style>
-    .hero { padding: 56px 0 28px; display: grid; grid-template-columns: 1.2fr 1fr; gap: 40px; align-items: center; }
-    .hero h1 { font-size: 44px; line-height: 1.08; letter-spacing: -0.03em; margin: 0 0 16px; }
-    .hero p { font-size: 18px; color: var(--muted); margin: 0 0 24px; max-width: 560px; }
+    .hero { padding: 64px 0 8px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 48px; align-items: center; }
+    .hero h1 { font-size: 50px; line-height: 1.04; letter-spacing: -0.035em; margin: 0 0 18px; }
+    .hero h1 em { font-style: normal; color: var(--accent); }
+    .hero p { font-size: 18.5px; color: var(--muted); margin: 0 0 26px; max-width: 580px; }
     .cta { display: flex; gap: 12px; flex-wrap: wrap; }
-    .cta a { text-decoration: none; padding: 10px 18px; border-radius: 10px; font-weight: 600; border: 1px solid var(--border); color: var(--text); background: var(--surface); }
-    .cta a.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .mosaic { display: grid; grid-template-columns: repeat(8, 1fr); grid-auto-rows: 1fr; gap: 4px; aspect-ratio: 1; }
-    .mosaic i { border-radius: 4px; background: var(--accent); }
-    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 20px 0 8px; }
+    .mosaic { display: grid; grid-template-columns: repeat(8, 1fr); grid-auto-rows: 1fr; gap: 4px; aspect-ratio: 1; max-width: 420px; justify-self: end; width: 100%; }
+    .mosaic i { border-radius: 4px; background: var(--accent); transition: opacity 0.6s; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 40px; }
     .stat { padding: 18px 20px; }
-    .stat b { display: block; font-size: 32px; letter-spacing: -0.02em; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .stat b { display: block; font-size: 34px; letter-spacing: -0.03em; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.1; }
     .stat span { color: var(--muted); font-size: 14px; }
-    h2 { font-size: 24px; letter-spacing: -0.01em; margin: 48px 0 12px; }
-    table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
-    th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
-    th:first-child, td:first-child { text-align: left; }
-    th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
-    tr.us td { font-weight: 700; }
-    tr:last-child td { border-bottom: 0; }
-    .tw { overflow-x: auto; }
-    .how { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-    .how .card { padding: 18px 20px; }
-    .how h3 { margin: 0 0 6px; font-size: 16px; }
-    .how p { margin: 0; color: var(--muted); font-size: 14.5px; }
-    footer { padding: 40px 0 56px; color: var(--muted); font-size: 14px; }
-    @media (max-width: 820px) {
-      .hero { grid-template-columns: 1fr; padding-top: 32px; }
-      .hero h1 { font-size: 34px; }
+
+    .gal-head { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; }
+    .gal { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .tile { padding: 10px; margin: 0; cursor: zoom-in; }
+    .tile .img { aspect-ratio: 1; overflow: hidden; border-radius: 8px; background: var(--surface-2); }
+    .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .gal.zoom .tile img { width: 200%; height: 200%; image-rendering: pixelated; transform: translate(-25%, -25%); }
+    .tile figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 10px; font-size: 14px; }
+    .tile figcaption b { font-size: 15px; }
+    .tile.us { border-color: var(--accent); }
+    .tile.us figcaption b { color: var(--accent); }
+    .meter { height: 6px; border-radius: 3px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
+    .meter i { display: block; height: 100%; border-radius: 3px; }
+    .gal-note { font-size: 13px; margin-top: 12px; }
+
+    .start pre { margin: 0; }
+    .browsers { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .browsers span { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 13.5px; background: var(--surface); }
+    .faq details { padding: 14px 18px; margin-bottom: 10px; }
+    .faq summary { cursor: pointer; font-weight: 600; }
+    .faq details p { color: var(--muted); margin: 10px 0 0; }
+
+    dialog.lb { border: 0; padding: 0; background: transparent; max-width: min(1100px, 96vw); }
+    dialog.lb::backdrop { background: rgb(0 0 0 / 0.75); }
+    .lb-in { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .lb-in figure { margin: 0; background: var(--surface); border-radius: 10px; padding: 8px; }
+    .lb-in img { width: 100%; image-rendering: pixelated; display: block; border-radius: 6px; }
+    .lb-in figcaption { font-size: 13.5px; padding: 6px 2px 0; }
+    @media (max-width: 860px) {
+      .hero { grid-template-columns: 1fr; padding-top: 36px; }
+      .hero h1 { font-size: 36px; }
       .mosaic { display: none; }
-      .stats, .how { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr 1fr; }
+      .gal { grid-template-columns: 1fr 1fr; }
+      .lb-in { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -45,9 +63,11 @@
     <div class="wrap">
       <a class="brand" href="./index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
       <nav class="links">
-        <a href="./index.html" aria-current="page">Inicio</a>
+        <a href="./index.html" aria-current="page">Visión general</a>
+        <a href="./docs/index.html">Documentación</a>
         <a href="./compare/index.html">Comparador</a>
-        <a href="./demo/index.html">Demo web</a>
+        <a href="./demo/index.html">Demo</a>
+        <a class="ext" href="https://github.com/davidpalmerojara/FVD">GitHub</a>
       </nav>
     </div>
   </header>
@@ -55,81 +75,200 @@
   <main class="wrap">
     <section class="hero">
       <div>
-        <h1>Imágenes más ligeras, decodificadas al instante.</h1>
-        <p>Tesela es un formato de imagen escrito desde cero en Rust. Divide cada imagen en teselas de
-          tamaño adaptativo, como un mosaico. Ocupa menos que WebP y JPEG XL, compite con AVIF y lo
-          supera en capturas e ilustraciones. Funciona en cualquier navegador gracias a WebAssembly.</p>
+        <p class="eyebrow">Formato de imagen · Rust · WebAssembly</p>
+        <h1>Las mismas imágenes, <em>con menos bytes</em>.</h1>
+        <p>Tesela es un formato de imagen con pérdida escrito desde cero. A igual calidad perceptual ocupa
+          un 30&nbsp;% menos que WebP en fotos y un 60&nbsp;% menos en capturas e ilustraciones, por delante de
+          AVIF y JPEG XL. Y funciona hoy en cualquier navegador.</p>
         <div class="cta">
-          <a class="primary" href="./compare/index.html">Compara con tus fotos</a>
-          <a href="./demo/index.html">Verlo en una web</a>
+          <a class="btn primary" href="./compare/index.html">Pruébalo con tus fotos</a>
+          <a class="btn" href="./docs/index.html#empezar">Empezar</a>
         </div>
       </div>
       <div class="mosaic" id="mosaic" aria-hidden="true"></div>
     </section>
 
     <div class="stats">
-      <div class="card stat"><b>−27 %</b><span>bytes frente a WebP en fotos, a igual calidad perceptual</span></div>
-      <div class="card stat"><b>−58 %</b><span>frente a WebP en capturas de pantalla (AVIF: −51&nbsp;%)</span></div>
-      <div class="card stat"><b>8×</b><span>más rápido que AVIF al decodificar fotos de 2,7 MP</span></div>
+      <div class="card stat"><b>−30&nbsp;%</b><span>bytes frente a WebP en fotos a igual calidad (AVIF: −25&nbsp;%)</span></div>
+      <div class="card stat"><b>−60&nbsp;%</b><span>en capturas de pantalla (AVIF: −51&nbsp;%, JPEG XL: −36&nbsp;%)</span></div>
+      <div class="card stat"><b>−62&nbsp;%</b><span>en ilustraciones (AVIF: −54&nbsp;%)</span></div>
+      <div class="card stat"><b>2–5×</b><span>más rápido que AVIF al decodificar fotos</span></div>
     </div>
 
-    <h2>Resultados por tipo de contenido</h2>
-    <p class="muted">BD-rate frente a WebP con SSIMULACRA2 (calidad perceptual): porcentaje medio de bytes a igual
-      calidad. Más negativo es mejor.</p>
-    <div class="card tw">
-      <table>
-        <thead><tr><th>Conjunto</th><th>Tesela</th><th>AVIF</th><th>JPEG XL</th><th>Decodificación Tesela / AVIF</th></tr></thead>
-        <tbody>
-          <tr><td>Kodak · 24 fotos de 768×512</td><td><b>−26,6 %</b></td><td>−24,8 %</td><td>−12,1 %</td><td>46 ms / 164 ms</td></tr>
-          <tr><td>DIV2K · 12 fotos de 2,7 MP</td><td>−29,2 %</td><td><b>−30,2 %</b></td><td>−21,2 %</td><td>0,28 s / 2,36 s</td></tr>
-          <tr><td>Capturas de pantalla · 9</td><td><b>−57,9 %</b></td><td>−50,6 %</td><td>−36,0 %</td><td>0,11 s / 0,18 s</td></tr>
-          <tr><td>Ilustraciones · 6</td><td><b>−60,2 %</b></td><td>−53,9 %</td><td>+9,5 %</td><td>0,08 s / 0,09 s</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="muted" style="font-size:13px">AVIF: libavif 1.4 + aom, speed 4. JPEG XL: libjxl 0.12, effort 7. WebP: método 6.
-      En fotos grandes el resultado es un empate técnico: Tesela gana en alta calidad, SSIM y PSNR RGB, y AVIF gana
-      a tasas muy bajas. Las probabilidades de Tesela se entrenaron con otras imágenes (BSD100 y sintéticas propias).
-      Metodología y datos crudos en el repositorio (<code>bench/results</code>).</p>
+    <section class="section" id="galeria">
+      <div class="gal-head">
+        <div>
+          <p class="eyebrow">Compruébalo</p>
+          <h2>Mismo peso, más calidad</h2>
+          <p class="lead">Cada formato codifica la imagen completa con el mismo presupuesto de bytes. Este es el mismo
+            recorte de cada resultado. Pulsa en uno para verlo ampliado junto al original.</p>
+        </div>
+        <div>
+          <div class="tabs" role="tablist" id="gal-tabs"></div>
+          <label class="muted" style="display:block;font-size:14px"><input type="checkbox" id="gal-zoom" checked> Ampliar 2×</label>
+        </div>
+      </div>
+      <div class="gal zoom" id="gal"></div>
+      <p class="muted gal-note" id="gal-note"></p>
+    </section>
 
-    <h2>Cómo funciona</h2>
-    <div class="how">
-      <div class="card"><h3>Bloques adaptativos</h3><p>Cada región se divide en bloques de 64×64 a 4×4 según cuánto detalle tenga, y se elige
-        la partición que minimiza distorsión + bits.</p></div>
-      <div class="card"><h3>Predicción a medida</h3><p>35 modos intra y croma predicho desde la luma. En capturas, además: paleta, copia de
-        bloques repetidos (letras, iconos) y residuo sin transformada.</p></div>
-      <div class="card"><h3>Codificación y filtro</h3><p>Codificador aritmético con contextos entrenados y un filtro de restauración por clases que el
-        codificador ajusta por mínimos cuadrados.</p></div>
-    </div>
+    <section class="section" id="resultados">
+      <p class="eyebrow">Resultados</p>
+      <h2>Medido, no prometido</h2>
+      <p class="lead">Ahorro medio de bytes frente a WebP a igual calidad perceptual (BD-rate con SSIMULACRA2; más negativo
+        es mejor). Todos los formatos se miden con el mismo programa, y los datos crudos están en el repositorio.</p>
+      <div class="card tw">
+        <table class="data">
+          <thead><tr><th>Conjunto</th><th>Tesela</th><th>AVIF</th><th>JPEG XL</th><th>Decodificación Tesela / AVIF</th></tr></thead>
+          <tbody>
+            <tr><td>Fotos · Kodak, 24 de 768×512</td><td class="best">−30,3 %</td><td>−24,8 %</td><td>−12,1 %</td><td>67 ms / 164 ms</td></tr>
+            <tr><td>Fotos grandes · DIV2K, 12 de 2,7 MP</td><td class="best">−32,4 %</td><td>−30,2 %</td><td>−21,2 %</td><td>0,47 s / 2,36 s</td></tr>
+            <tr><td>Capturas de pantalla · 9</td><td class="best">−59,9 %</td><td>−50,6 %</td><td>−36,0 %</td><td>0,12 s / 0,18 s</td></tr>
+            <tr><td>Ilustraciones · 6</td><td class="best">−61,8 %</td><td>−53,9 %</td><td>+9,5 %</td><td>0,10 s / 0,09 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size:13px">AVIF: libavif 1.4 con aom, speed 4. JPEG XL: libjxl 0.12, effort 7. WebP: libwebp 1.6, método 6.
+        Codificar con Tesela es más lento que con AVIF. Metodología, curvas y otras métricas en la
+        <a href="./docs/index.html#resultados">documentación</a>.</p>
+    </section>
 
-    <h2>Preparado para la web</h2>
-    <div class="how">
-      <div class="card"><h3>Transparencia</h3><p>Canal alfa sin pérdida, para logos e imágenes recortadas.</p></div>
-      <div class="card"><h3>Vista previa progresiva</h3><p>Una miniatura de ~300 bytes al principio del archivo: se ve algo al instante incluso con
-        red lenta.</p></div>
-      <div class="card"><h3>Sin pérdida</h3><p>Modo exacto bit a bit. Mejor que PNG y a la par de WebP en capturas; en fotos, por detrás de WebP y JPEG XL.</p></div>
-    </div>
+    <section class="section" id="caracteristicas">
+      <p class="eyebrow">Características</p>
+      <h2>Pensado para la web de hoy</h2>
+      <div class="grid-3">
+        <div class="card feature"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h8v8H3zM13 3h4v4h-4zM19 3h2v2h-2zM13 9h8v12h-8zM3 13h8v8H3z"/></svg></div>
+          <h3>Bloques que se adaptan</h3><p>Divide cada imagen en teselas de 64×64 a 4×4, también rectangulares, y elige
+            para cada una la predicción y la partición que menos bytes gastan para la calidad pedida.</p></div>
+        <div class="card feature"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 9h6M7 13h10"/></svg></div>
+          <h3>Capturas y texto nítidos</h3><p>Detecta el contenido sintético y activa paleta, copia de bloques repetidos y
+            residuo sin transformada: letras e iconos limpios con la mitad de bytes.</p></div>
+        <div class="card feature"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></div>
+          <h3>En cualquier navegador</h3><p>Un módulo WebAssembly decodifica en paralelo en Web Workers, con los mismos
+            píxeles que la versión nativa. Basta un <code>&lt;img src="foto.tsl"&gt;</code>.</p></div>
+        <div class="card feature"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z" stroke-dasharray="3 3"/><path d="M8 16l3-4 2 2 3-5"/></svg></div>
+          <h3>Transparencia y sin pérdida</h3><p>Canal alfa para logos y recortes, y un modo exacto bit a bit para cuando no
+            se puede perder nada.</p></div>
+        <div class="card feature"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="4"/></svg></div>
+          <h3>Vista previa progresiva</h3><p>Una miniatura de ~300 bytes al principio del archivo: se ve algo al instante,
+            incluso con mala conexión.</p></div>
+        <div class="card feature"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l3 3v15H6z"/><path d="M9 11h6M9 15h6"/></svg></div>
+          <h3>Especificación abierta</h3><p>Formato v1 congelado, con especificación completa y archivos de conformidad
+            para comprobar cualquier decodificador.</p></div>
+      </div>
+    </section>
 
-    <h2>Úsalo en tu web</h2>
-    <pre><code>&lt;script type="module" src="tesela.js"&gt;&lt;/script&gt;
-&lt;tesela-img src="foto.tsl" alt="Descripción" fallback="foto.jpg" loading="lazy"&gt;&lt;/tesela-img&gt;</code></pre>
-    <p class="muted">El módulo WebAssembly pesa 515 KB, reparte las teselas de la imagen entre varios
-      Web Workers y produce exactamente los mismos píxeles que la versión nativa (verificado bit a bit).</p>
+    <section class="section start" id="empezar">
+      <p class="eyebrow">Empieza en un minuto</p>
+      <h2>De tu foto a tu web</h2>
+      <div class="grid-2">
+        <div>
+          <p class="muted">1. Convierte tus imágenes con la línea de comandos:</p>
+          <pre><code>cargo build --release
+./target/release/tesela encode foto.jpg foto.tsl -q 85</code></pre>
+        </div>
+        <div>
+          <p class="muted">2. Úsalas en tu web con HTML normal:</p>
+          <pre><code>&lt;script src="/tesela-auto.js"&gt;&lt;/script&gt;
+&lt;img src="foto.tsl" alt="..."&gt;</code></pre>
+        </div>
+      </div>
+      <div class="browsers"><span>Chrome</span><span>Edge</span><span>Firefox</span><span>Safari</span><span>Android e iOS</span></div>
+      <p class="muted" style="font-size:14px">Funciona en todos los navegadores modernos con WebAssembly. <a href="./docs/index.html#web">Guía completa de uso en la web</a>.</p>
+    </section>
+
+    <section class="section faq" id="faq">
+      <p class="eyebrow">Preguntas frecuentes</p>
+      <h2>Antes de usarlo</h2>
+      <details class="card"><summary>¿Es un formato estándar?</summary>
+        <p>No. Es un proyecto independiente y experimental. Ningún navegador lo soporta de forma nativa; funciona gracias a una
+          librería de WebAssembly. Conviene servir también una versión en JPEG como respaldo.</p></details>
+      <details class="card"><summary>¿Los visitantes pueden guardar las imágenes?</summary>
+        <p>Sí. Con <code>tesela-auto.js</code>, el navegador recibe la imagen ya decodificada y «Guardar imagen como» funciona
+          igual que con cualquier otra.</p></details>
+      <details class="card"><summary>¿Por qué codifica más lento que AVIF?</summary>
+        <p>Porque prueba muchas más combinaciones de bloques y predicciones para ahorrar bytes. Usa todos los núcleos del
+          procesador, también en el navegador, y codificar se hace una vez mientras que decodificar, miles.</p></details>
+      <p><a href="./docs/index.html#faq">Más preguntas en la documentación →</a></p>
+    </section>
   </main>
-  <footer class="wrap">Tesela · proyecto experimental. Código, banco de pruebas y metodología en el repositorio.</footer>
 
-  <script>
-    // Mosaico decorativo: bloques de tamaño variable como los de una partición quadtree.
+  <footer class="site">
+    <div class="wrap">
+      <div><a class="brand" href="./index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+        <p>Formato de imagen experimental escrito en Rust. Código, banco de pruebas y metodología, abiertos.</p></div>
+      <div><h4>Producto</h4><a href="./compare/index.html">Comparador</a><a href="./demo/index.html">Demo web</a><a href="./demo/img.html">HTML normal</a></div>
+      <div><h4>Documentación</h4><a href="./docs/index.html#empezar">Empezar</a><a href="./docs/index.html#web">En la web</a><a href="./docs/index.html#formato">Cómo funciona</a><a href="./docs/index.html#faq">Preguntas</a></div>
+      <div><h4>Proyecto</h4><a href="https://github.com/davidpalmerojara/FVD">GitHub</a><a href="https://github.com/davidpalmerojara/FVD/blob/main/docs/especificacion-v1.md">Especificación v1</a><a href="https://github.com/davidpalmerojara/FVD/tree/main/bench/results">Datos del banco</a></div>
+    </div>
+  </footer>
+
+  <dialog class="lb" id="lb"><div class="lb-in" id="lb-in"></div></dialog>
+
+  <script type="module">
+    // Mosaico decorativo: bloques de tamaño variable como los de una partición.
     const m = document.getElementById('mosaic');
     const cells = [[0,0,4],[4,0,2],[6,0,2],[4,2,1],[5,2,1],[4,3,1],[5,3,1],[6,2,2],[0,4,2],[2,4,2],[0,6,1],[1,6,1],[0,7,1],[1,7,1],[2,6,2],[4,4,4]];
     const shades = [1, .8, .55, .7, .4, .9, .6, .5, .75, .45, .85, .35, .65, .5, .3, .95];
-    cells.forEach(([x, y, s], i) => {
+    const tiles = cells.map(([x, y, s], i) => {
       const el = document.createElement('i');
       el.style.gridColumn = `${x + 1} / span ${s}`;
       el.style.gridRow = `${y + 1} / span ${s}`;
       el.style.opacity = shades[i];
       m.appendChild(el);
+      return el;
     });
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setInterval(() => {
+        const t = tiles[Math.floor(Math.random() * tiles.length)];
+        t.style.opacity = (0.3 + Math.random() * 0.7).toFixed(2);
+      }, 900);
+    }
+
+    // Galería: mismo presupuesto de bytes para todos los formatos.
+    const ORDER = ['tesela', 'avif', 'jxl', 'webp', 'jpeg'];
+    const COLORS = { tesela: 'var(--c-tesela)', avif: 'var(--c-avif)', jxl: 'var(--c-jxl)', webp: 'var(--c-webp)', jpeg: 'var(--c-jpeg)' };
+    const NAMES = { foto: 'Foto', captura: 'Captura', ilustracion: 'Ilustración' };
+    const kb = (b) => (b / 1024).toFixed(1).replace('.', ',') + ' KB';
+    const gal = document.getElementById('gal');
+    const tabs = document.getElementById('gal-tabs');
+    let data = [];
+    let cur = 0;
+    function show(i) {
+      cur = i;
+      const e = data[i];
+      [...tabs.children].forEach((b, k) => b.setAttribute('aria-selected', String(k === i)));
+      const items = [{ codec: 'original', label: 'Original', bytes: null }, ...ORDER.map((c) => e.codecs.find((x) => x.codec === c)).filter(Boolean)];
+      gal.innerHTML = items.map((c) => `
+        <figure class="card tile${c.codec === 'tesela' ? ' us' : ''}" data-c="${c.codec}">
+          <div class="img"><img src="gallery/${e.name}_${c.codec}.png" alt="${c.label}" loading="lazy" width="${e.crop[2]}" height="${e.crop[2]}"></div>
+          <figcaption><b>${c.label}</b><span class="muted num">${c.bytes ? kb(c.bytes) : '—'}</span></figcaption>
+          ${c.bytes ? `<div class="muted num" style="font-size:13px;margin-top:4px">SSIMULACRA2 ${String(c.ssimulacra2).replace('.', ',')}</div>
+          <div class="meter"><i style="width:${Math.max(0, c.ssimulacra2)}%;background:${COLORS[c.codec]}"></i></div>` : '<div class="muted" style="font-size:13px;margin-top:4px">referencia</div><div class="meter"></div>'}
+        </figure>`).join('');
+      document.getElementById('gal-note').textContent =
+        `${NAMES[e.name] ?? e.name} de ${e.width}×${e.height}, todas a como mucho ${kb(e.budget)}. SSIMULACRA2 (0–100, más es mejor) medido sobre la imagen completa; el recorte es de ${e.crop[2]}×${e.crop[2]} píxeles.`;
+    }
+    fetch('gallery/gallery.json').then((r) => r.json()).then((d) => {
+      data = d;
+      tabs.innerHTML = d.map((e, i) => `<button role="tab" aria-selected="false">${NAMES[e.name] ?? e.name}</button>`).join('');
+      [...tabs.children].forEach((b, i) => (b.onclick = () => show(i)));
+      show(0);
+    });
+    document.getElementById('gal-zoom').onchange = (ev) => gal.classList.toggle('zoom', ev.target.checked);
+    const lb = document.getElementById('lb');
+    gal.addEventListener('click', (ev) => {
+      const t = ev.target.closest('.tile');
+      if (!t) return;
+      const e = data[cur];
+      const c = t.dataset.c;
+      const info = e.codecs.find((x) => x.codec === c);
+      document.getElementById('lb-in').innerHTML = `
+        <figure><img src="gallery/${e.name}_original.png" alt="Original"><figcaption>Original</figcaption></figure>
+        <figure><img src="gallery/${e.name}_${c}.png" alt="${info ? info.label : 'Original'}"><figcaption>${info ? `${info.label} · ${kb(info.bytes)} · SSIMULACRA2 ${String(info.ssimulacra2).replace('.', ',')}` : 'Original'}</figcaption></figure>`;
+      lb.showModal();
+    });
+    lb.addEventListener('click', () => lb.close());
   </script>
 </body>
 </html>
