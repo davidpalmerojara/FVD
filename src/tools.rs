@@ -98,7 +98,8 @@ impl PalCtx {
         &mut self,
         c: &mut C,
         pc: usize,
-        n: usize,
+        w: usize,
+        h: usize,
         pal: &Palette,
         last: &mut Option<Vec<u8>>,
     ) -> Palette {
@@ -129,11 +130,11 @@ impl PalCtx {
             cols
         };
         let k = colors.len();
-        let mut idx = vec![0u8; n * n];
-        for y in 0..n {
-            for x in 0..n {
-                let (order, cls) = neighbor_order(&idx, n, k, x, y);
-                let target = pal.idx.get(y * n + x).copied().unwrap_or(0);
+        let mut idx = vec![0u8; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let (order, cls) = neighbor_order(&idx, w, k, x, y);
+                let target = pal.idx.get(y * w + x).copied().unwrap_or(0);
                 let r_enc = order[..k].iter().position(|&o| o == target).unwrap_or(0);
                 let mut r = 0;
                 while r + 1 < k {
@@ -143,17 +144,24 @@ impl PalCtx {
                     }
                     r += 1;
                 }
-                idx[y * n + x] = order[r];
+                idx[y * w + x] = order[r];
             }
         }
         *last = Some(colors.clone());
         Palette { colors, idx }
     }
 
-    pub fn cost(&mut self, pc: usize, n: usize, pal: &Palette, last: &Option<Vec<u8>>) -> f32 {
+    pub fn cost(
+        &mut self,
+        pc: usize,
+        w: usize,
+        h: usize,
+        pal: &Palette,
+        last: &Option<Vec<u8>>,
+    ) -> f32 {
         let mut cc = CostCounter::default();
         let mut l = last.clone();
-        self.code(&mut cc, pc, n, pal, &mut l);
+        self.code(&mut cc, pc, w, h, pal, &mut l);
         cc.bits
     }
 }
@@ -165,9 +173,10 @@ pub fn predict_palette(pal: &Palette, out: &mut [i32]) {
 }
 
 /// Paletas candidatas para un bloque (vacío si el bloque no parece sintético).
-pub fn palette_candidates(src: &[f32], n: usize) -> Vec<Palette> {
+pub fn palette_candidates(src: &[f32], w: usize, h: usize) -> Vec<Palette> {
+    let nn = w * h;
     let mut hist = [0u32; 256];
-    for &v in &src[..n * n] {
+    for &v in &src[..nn] {
         hist[v.round().clamp(0.0, 255.0) as usize] += 1;
     }
     let distinct: Vec<usize> = (0..256).filter(|&v| hist[v] > 0).collect();
@@ -184,12 +193,12 @@ pub fn palette_candidates(src: &[f32], n: usize) -> Vec<Palette> {
         }
     }
     ks.into_iter()
-        .map(|k| kmeans_palette(src, n, &hist, k))
+        .map(|k| kmeans_palette(src, nn, &hist, k))
         .collect()
 }
 
 /// k-medias 1-D sobre el histograma del bloque.
-fn kmeans_palette(src: &[f32], n: usize, hist: &[u32; 256], k: usize) -> Palette {
+fn kmeans_palette(src: &[f32], nn: usize, hist: &[u32; 256], k: usize) -> Palette {
     // Inicialización: los k valores más frecuentes.
     let mut by_freq: Vec<usize> = (0..256).filter(|&v| hist[v] > 0).collect();
     by_freq.sort_by(|&a, &b| hist[b].cmp(&hist[a]).then(a.cmp(&b)));
@@ -226,10 +235,7 @@ fn kmeans_palette(src: &[f32], n: usize, hist: &[u32; 256], k: usize) -> Palette
         }
     }
     let cf: Vec<f32> = colors.iter().map(|&c| c as f32).collect();
-    let idx = src[..n * n]
-        .iter()
-        .map(|&v| nearest(&cf, v) as u8)
-        .collect();
+    let idx = src[..nn].iter().map(|&v| nearest(&cf, v) as u8).collect();
     Palette { colors, idx }
 }
 
@@ -294,18 +300,18 @@ impl BvCtx {
 
 /// ¿Es válido el vector? La zona de referencia debe estar entera dentro del
 /// plano y ya decodificada.
-pub fn bv_valid(p: &Plane, x0: usize, y0: usize, n: usize, bv: (i32, i32)) -> bool {
+pub fn bv_valid(p: &Plane, x0: usize, y0: usize, w: usize, h: usize, bv: (i32, i32)) -> bool {
     let rx = x0 as i64 + bv.0 as i64;
     let ry = y0 as i64 + bv.1 as i64;
-    if rx < 0 || ry < 0 || rx + n as i64 > p.w as i64 || ry + n as i64 > p.h as i64 || bv == (0, 0)
+    if rx < 0 || ry < 0 || rx + w as i64 > p.w as i64 || ry + h as i64 > p.h as i64 || bv == (0, 0)
     {
         return false;
     }
     let (rx, ry) = (rx as usize, ry as usize);
     let gy0 = ry / 4;
-    let gy1 = (ry + n - 1) / 4;
+    let gy1 = (ry + h - 1) / 4;
     let gx0 = rx / 4;
-    let gx1 = (rx + n - 1) / 4;
+    let gx1 = (rx + w - 1) / 4;
     for gy in gy0..=gy1 {
         for gx in gx0..=gx1 {
             if !p.avail[gy * p.gw + gx] {
@@ -316,12 +322,20 @@ pub fn bv_valid(p: &Plane, x0: usize, y0: usize, n: usize, bv: (i32, i32)) -> bo
     true
 }
 
-pub fn predict_ibc(p: &Plane, x0: usize, y0: usize, n: usize, bv: (i32, i32), out: &mut [i32]) {
+pub fn predict_ibc(
+    p: &Plane,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    bv: (i32, i32),
+    out: &mut [i32],
+) {
     let rx = (x0 as i64 + bv.0 as i64) as usize;
     let ry = (y0 as i64 + bv.1 as i64) as usize;
-    for y in 0..n {
-        for x in 0..n {
-            out[y * n + x] = p.data[(ry + y) * p.w + rx + x] as i32;
+    for y in 0..h {
+        for x in 0..w {
+            out[y * w + x] = p.data[(ry + y) * p.w + rx + x] as i32;
         }
     }
 }

@@ -74,21 +74,22 @@ impl Plane {
             && self.avail[(y as usize / 4) * self.gw + x as usize / 4]
     }
 
-    pub fn set_block(&mut self, x0: usize, y0: usize, n: usize, mode: u8, nz: bool) {
-        for gy in y0 / 4..(y0 + n) / 4 {
-            for gx in x0 / 4..(x0 + n) / 4 {
+    /// Marca un bloque `w × h` como decodificado (el tamaño guardado es el lado menor).
+    pub fn set_block(&mut self, x0: usize, y0: usize, w: usize, h: usize, mode: u8, nz: bool) {
+        for gy in y0 / 4..(y0 + h) / 4 {
+            for gx in x0 / 4..(x0 + w) / 4 {
                 let i = gy * self.gw + gx;
                 self.avail[i] = true;
                 self.modes[i] = mode;
-                self.sizes[i] = n as u8;
+                self.sizes[i] = w.min(h) as u8;
                 self.nz[i] = nz;
             }
         }
     }
 
-    pub fn clear_avail(&mut self, x0: usize, y0: usize, n: usize) {
-        for gy in y0 / 4..(y0 + n) / 4 {
-            for gx in x0 / 4..(x0 + n) / 4 {
+    pub fn clear_avail(&mut self, x0: usize, y0: usize, w: usize, h: usize) {
+        for gy in y0 / 4..(y0 + h) / 4 {
+            for gx in x0 / 4..(x0 + w) / 4 {
                 self.avail[gy * self.gw + gx] = false;
             }
         }
@@ -109,40 +110,42 @@ impl Plane {
         }
     }
 
-    pub fn read_block(&self, x0: usize, y0: usize, n: usize, out: &mut [u8]) {
-        for y in 0..n {
-            out[y * n..y * n + n].copy_from_slice(&self.data[(y0 + y) * self.w + x0..][..n]);
+    pub fn read_block(&self, x0: usize, y0: usize, w: usize, h: usize, out: &mut [u8]) {
+        for y in 0..h {
+            out[y * w..y * w + w].copy_from_slice(&self.data[(y0 + y) * self.w + x0..][..w]);
         }
     }
 
-    pub fn write_block(&mut self, x0: usize, y0: usize, n: usize, src: &[u8]) {
-        for y in 0..n {
-            self.data[(y0 + y) * self.w + x0..][..n].copy_from_slice(&src[y * n..y * n + n]);
+    pub fn write_block(&mut self, x0: usize, y0: usize, w: usize, h: usize, src: &[u8]) {
+        for y in 0..h {
+            self.data[(y0 + y) * self.w + x0..][..w].copy_from_slice(&src[y * w..y * w + w]);
         }
     }
 }
 
-/// Muestras de referencia: `top[0]` = esquina, `top[1+i]` = fila superior,
-/// `left[1+i]` = columna izquierda (`left[0]` también es la esquina).
+/// Muestras de referencia de un bloque `w × h`: `top[0]` = esquina,
+/// `top[1+i]` = fila superior (w + h muestras, incluida la parte de arriba a
+/// la derecha) y `left[1+i]` = columna izquierda (h + w muestras).
 pub struct Refs {
     pub top: [i32; 130],
     pub left: [i32; 130],
     pub any: bool,
 }
 
-pub fn build_refs(p: &Plane, x0: usize, y0: usize, n: usize) -> Refs {
+pub fn build_refs(p: &Plane, x0: usize, y0: usize, w: usize, h: usize) -> Refs {
     let (x0i, y0i) = (x0 as isize, y0 as isize);
+    let (nl, nt) = (h + w, w + h);
     // Orden de sustitución HEVC: abajo-izquierda -> esquina -> arriba-derecha.
-    let total = 4 * n + 1;
+    let total = nl + 1 + nt;
     let mut vals = [0i32; 257];
     let mut av = [false; 257];
     for k in 0..total {
-        let (x, y) = if k < 2 * n {
-            (x0i - 1, y0i + (2 * n - 1 - k) as isize)
-        } else if k == 2 * n {
+        let (x, y) = if k < nl {
+            (x0i - 1, y0i + (nl - 1 - k) as isize)
+        } else if k == nl {
             (x0i - 1, y0i - 1)
         } else {
-            (x0i + (k - 2 * n - 1) as isize, y0i - 1)
+            (x0i + (k - nl - 1) as isize, y0i - 1)
         };
         if p.is_avail(x, y) {
             av[k] = true;
@@ -169,15 +172,22 @@ pub fn build_refs(p: &Plane, x0: usize, y0: usize, n: usize) -> Refs {
         left: [0; 130],
         any,
     };
-    r.top[0] = vals[2 * n];
-    r.left[0] = vals[2 * n];
-    for i in 0..2 * n {
-        r.left[1 + i] = vals[2 * n - 1 - i];
-        r.top[1 + i] = vals[2 * n + 1 + i];
+    r.top[0] = vals[nl];
+    r.left[0] = vals[nl];
+    for i in 0..nl {
+        r.left[1 + i] = vals[nl - 1 - i];
     }
-    r.top[2 * n + 1] = r.top[2 * n];
-    r.left[2 * n + 1] = r.left[2 * n];
+    for i in 0..nt {
+        r.top[1 + i] = vals[nl + 1 + i];
+    }
+    r.top[nt + 1] = r.top[nt];
+    r.left[nl + 1] = r.left[nl];
     r
+}
+
+/// Tamaño "equivalente" de un bloque w×h para decidir el filtrado (VVC).
+fn eq_size(w: usize, h: usize) -> usize {
+    1 << ((w.trailing_zeros() + h.trailing_zeros()) / 2)
 }
 
 fn needs_filter(mode: u8, n: usize) -> bool {
@@ -196,15 +206,18 @@ fn needs_filter(mode: u8, n: usize) -> bool {
     d > thr
 }
 
-fn filter_refs(r: &Refs, n: usize) -> Refs {
-    // Concatenación: left[2n]..left[1], esquina, top[1]..top[2n]
-    let total = 4 * n + 1;
+fn filter_refs(r: &Refs, w: usize, h: usize) -> Refs {
+    // Concatenación: left[nl]..left[1], esquina, top[1]..top[nt]
+    let (nl, nt) = (h + w, w + h);
+    let total = nl + 1 + nt;
     let mut a = [0i32; 257];
-    for i in 0..2 * n {
-        a[i] = r.left[2 * n - i];
-        a[2 * n + 1 + i] = r.top[1 + i];
+    for i in 0..nl {
+        a[i] = r.left[nl - i];
     }
-    a[2 * n] = r.top[0];
+    a[nl] = r.top[0];
+    for i in 0..nt {
+        a[nl + 1 + i] = r.top[1 + i];
+    }
     let mut f = a;
     for i in 1..total - 1 {
         f[i] = (a[i - 1] + 2 * a[i] + a[i + 1] + 2) >> 2;
@@ -214,83 +227,89 @@ fn filter_refs(r: &Refs, n: usize) -> Refs {
         left: [0; 130],
         any: r.any,
     };
-    o.top[0] = f[2 * n];
-    o.left[0] = f[2 * n];
-    for i in 0..2 * n {
-        o.left[1 + i] = f[2 * n - 1 - i];
-        o.top[1 + i] = f[2 * n + 1 + i];
+    o.top[0] = f[nl];
+    o.left[0] = f[nl];
+    for i in 0..nl {
+        o.left[1 + i] = f[nl - 1 - i];
     }
-    o.top[2 * n + 1] = o.top[2 * n];
-    o.left[2 * n + 1] = o.left[2 * n];
+    for i in 0..nt {
+        o.top[1 + i] = f[nl + 1 + i];
+    }
+    o.top[nt + 1] = o.top[nt];
+    o.left[nl + 1] = o.left[nl];
     o
 }
 
-/// Predicción de un modo planar/DC/angular en `out` (N×N, orden fila).
-pub fn predict(raw: &Refs, mode: u8, n: usize, out: &mut [i32]) {
+/// Predicción planar/DC/angular de un bloque `w × h` en `out` (orden fila).
+/// En bloques cuadrados coincide bit a bit con la formulación de HEVC.
+pub fn predict(raw: &Refs, mode: u8, w: usize, h: usize, out: &mut [i32]) {
     let filtered;
-    let r = if needs_filter(mode, n) {
-        filtered = filter_refs(raw, n);
+    let r = if needs_filter(mode, eq_size(w, h)) {
+        filtered = filter_refs(raw, w, h);
         &filtered
     } else {
         raw
     };
-    let log2n = n.trailing_zeros();
+    let (lw, lh) = (w.trailing_zeros(), h.trailing_zeros());
     match mode {
         MODE_PLANAR => {
-            let tr = r.top[n + 1];
-            let bl = r.left[n + 1];
-            for y in 0..n {
-                for x in 0..n {
-                    out[y * n + x] = ((n - 1 - x) as i32 * r.left[y + 1]
-                        + (x + 1) as i32 * tr
-                        + (n - 1 - y) as i32 * r.top[x + 1]
-                        + (y + 1) as i32 * bl
-                        + n as i32)
-                        >> (log2n + 1);
+            let tr = r.top[w + 1];
+            let bl = r.left[h + 1];
+            for y in 0..h {
+                for x in 0..w {
+                    let pv = ((h - 1 - y) as i32 * r.top[x + 1] + (y + 1) as i32 * bl) << lw;
+                    let ph = ((w - 1 - x) as i32 * r.left[y + 1] + (x + 1) as i32 * tr) << lh;
+                    out[y * w + x] = (pv + ph + (w * h) as i32) >> (lw + lh + 1);
                 }
             }
         }
         MODE_DC => {
-            let s: i32 = r.top[1..=n].iter().sum::<i32>() + r.left[1..=n].iter().sum::<i32>();
-            let dc = (s + n as i32) >> (log2n + 1);
-            out[..n * n].fill(dc);
+            let s: i32 = r.top[1..=w].iter().sum::<i32>() + r.left[1..=h].iter().sum::<i32>();
+            let dc = if w == h {
+                (s + w as i32) >> (lw + 1)
+            } else {
+                (s + ((w + h) / 2) as i32) / (w + h) as i32
+            };
+            out[..w * h].fill(dc);
         }
         _ => {
             let angle = ANGLE[mode as usize - 2];
             let vertical = mode >= 18;
-            let (main, side) = if vertical {
-                (&r.top, &r.left)
+            // Eje principal: columnas (vertical) o filas (horizontal).
+            let (main, side, len_main, len_side) = if vertical {
+                (&r.top, &r.left, w, h)
             } else {
-                (&r.left, &r.top)
+                (&r.left, &r.top, h, w)
             };
-            // buffer con índice desplazado: refb[n + k] = ref[k], k en [-n, 2n+1]
+            // buffer con índice desplazado: refb[off + k] = ref[k], k en [-len_side, len_main+len_side+1]
+            let off = len_side;
             let mut refb = [0i32; 64 * 3 + 2];
-            for k in 0..=2 * n + 1 {
-                refb[n + k] = main[k];
+            for k in 0..=len_main + len_side + 1 {
+                refb[off + k] = main[k];
             }
             if angle < 0 {
                 let inv = inv_angle(angle);
-                let last = (n as i32 * angle) >> 5;
+                let last = (len_side as i32 * angle) >> 5;
                 if last < -1 {
                     let mut k = -1;
                     while k >= last {
                         let idx = ((k * inv + 128) >> 8) as usize;
-                        refb[(n as i32 + k) as usize] = side[idx.min(2 * n)];
+                        refb[(off as i32 + k) as usize] = side[idx.min(len_side + len_main)];
                         k -= 1;
                     }
                 }
             }
-            for j in 0..n {
+            for j in 0..len_side {
                 let pos = (j as i32 + 1) * angle;
                 let idx = pos >> 5;
                 let f = pos & 31;
-                for i in 0..n {
-                    let base = (n as i32 + i as i32 + idx + 1) as usize;
+                for i in 0..len_main {
+                    let base = (off as i32 + i as i32 + idx + 1) as usize;
                     let v = ((32 - f) * refb[base] + f * refb[base + 1] + 16) >> 5;
                     if vertical {
-                        out[j * n + i] = v;
+                        out[j * w + i] = v;
                     } else {
-                        out[i * n + j] = v;
+                        out[i * w + j] = v;
                     }
                 }
             }
@@ -307,7 +326,8 @@ pub fn predict_cclm(
     lh: usize,
     x0: usize,
     y0: usize,
-    n: usize,
+    w: usize,
+    h: usize,
     out: &mut [i32],
 ) {
     let lpx = |x: usize, y: usize| luma[y.min(lh - 1) * lw + x.min(lw - 1)] as f64;
@@ -317,7 +337,7 @@ pub fn predict_cclm(
     let mut sxy = 0f64;
     let mut cnt = 0f64;
     if chroma.is_avail(x0 as isize, y0 as isize - 1) {
-        for i in 0..n {
+        for i in 0..w {
             let l = lpx(x0 + i, y0 - 1);
             let c = chroma.px(x0 + i, y0 - 1) as f64;
             sx += l;
@@ -328,7 +348,7 @@ pub fn predict_cclm(
         }
     }
     if chroma.is_avail(x0 as isize - 1, y0 as isize) {
-        for i in 0..n {
+        for i in 0..h {
             let l = lpx(x0 - 1, y0 + i);
             let c = chroma.px(x0 - 1, y0 + i) as f64;
             sx += l;
@@ -349,10 +369,10 @@ pub fn predict_cclm(
         };
         (a, (sy - a * sx) / cnt)
     };
-    for y in 0..n {
-        for x in 0..n {
+    for y in 0..h {
+        for x in 0..w {
             let v = alpha * lpx(x0 + x, y0 + y) + beta;
-            out[y * n + x] = v.round().clamp(0.0, 255.0) as i32;
+            out[y * w + x] = v.round().clamp(0.0, 255.0) as i32;
         }
     }
 }

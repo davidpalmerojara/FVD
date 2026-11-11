@@ -214,6 +214,98 @@ pub fn inverse(blk: &mut [f32], n: usize) {
     }
 }
 
+/// DCT 1-D ortonormal de un vector de longitud 4..64 (directa o inversa).
+fn dct1_ortho(v: &mut [f32], inverse: bool) {
+    let n = v.len();
+    if n <= 8 {
+        let m = small_matrix(n);
+        let mut out = [0f32; 8];
+        for k in 0..n {
+            let mut s = 0f32;
+            for i in 0..n {
+                s += if inverse { m[i * n + k] } else { m[k * n + i] } * v[i];
+            }
+            out[k] = s;
+        }
+        v.copy_from_slice(&out[..n]);
+        return;
+    }
+    let (s0, s1) = norm(n);
+    let mut tmp = [0f32; 64];
+    if inverse {
+        v[0] *= s0;
+        for c in &mut v[1..] {
+            *c *= s1;
+        }
+        idct_1d(v, &mut tmp[..n]);
+    } else {
+        dct_1d(v, &mut tmp[..n]);
+        v[0] *= s0;
+        for c in &mut v[1..] {
+            *c *= s1;
+        }
+    }
+}
+
+/// DCT 2-D ortonormal de un bloque `w × h` (orden fila). Los bloques
+/// cuadrados usan exactamente el mismo camino que `forward`/`inverse`.
+pub fn transform_rect(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
+    if w == h {
+        if inverse {
+            inverse_sq(blk, w)
+        } else {
+            forward(blk, w)
+        }
+        return;
+    }
+    let mut col = [0f32; 64];
+    for y in 0..h {
+        dct1_ortho(&mut blk[y * w..y * w + w], inverse);
+    }
+    for x in 0..w {
+        for y in 0..h {
+            col[y] = blk[y * w + x];
+        }
+        dct1_ortho(&mut col[..h], inverse);
+        for y in 0..h {
+            blk[y * w + x] = col[y];
+        }
+    }
+}
+
+fn inverse_sq(blk: &mut [f32], n: usize) {
+    inverse(blk, n)
+}
+
+/// SATD de un bloque `w × h` (teselas Hadamard de 8×8, o 4×4 si un lado es 4).
+pub fn satd_rect(res: &[f32], w: usize, h: usize) -> f32 {
+    if w == h {
+        return satd(res, w);
+    }
+    let t = if w.min(h) == 4 { 4 } else { 8 };
+    let mut total = 0f32;
+    let mut b16 = [0f32; 16];
+    let mut b64 = [0f32; 64];
+    for by in (0..h).step_by(t) {
+        for bx in (0..w).step_by(t) {
+            if t == 4 {
+                for y in 0..4 {
+                    b16[y * 4..y * 4 + 4]
+                        .copy_from_slice(&res[(by + y) * w + bx..(by + y) * w + bx + 4]);
+                }
+                total += had4(&mut b16) / 4.0;
+            } else {
+                for y in 0..8 {
+                    b64[y * 8..y * 8 + 8]
+                        .copy_from_slice(&res[(by + y) * w + bx..(by + y) * w + bx + 8]);
+                }
+                total += had8(&mut b64) / 8.0;
+            }
+        }
+    }
+    total
+}
+
 /// SATD con Hadamard 4×4 u 8×8 sobre un residuo N×N (para preselección de modos).
 pub fn satd(res: &[f32], n: usize) -> f32 {
     if n == 4 {
@@ -332,6 +424,33 @@ mod tests {
                 .collect();
             let (a, b) = (satd(&r, n), satd_ref(&r, n));
             assert!((a - b).abs() / b.max(1.0) < 1e-4, "n={n}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn rect_roundtrip() {
+        for (w, h) in [
+            (8usize, 4usize),
+            (4, 8),
+            (16, 8),
+            (8, 16),
+            (32, 16),
+            (16, 32),
+            (64, 32),
+            (32, 64),
+        ] {
+            let orig: Vec<f32> = (0..w * h)
+                .map(|i| ((i * 37 + 11) % 255) as f32 - 128.0)
+                .collect();
+            let mut b = orig.clone();
+            transform_rect(&mut b, w, h, false);
+            let e_in: f32 = orig.iter().map(|v| v * v).sum();
+            let e_out: f32 = b.iter().map(|v| v * v).sum();
+            assert!((e_in - e_out).abs() / e_in < 1e-4, "Parseval {w}x{h}");
+            transform_rect(&mut b, w, h, true);
+            for (a, c) in orig.iter().zip(&b) {
+                assert!((a - c).abs() < 1e-2, "{w}x{h}");
+            }
         }
     }
 

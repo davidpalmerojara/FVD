@@ -522,7 +522,7 @@ fn code_leaf_head<C: Coder>(
                     Kind::Palette(pl) => pl,
                     _ => &dummy,
                 };
-                Kind::Palette(ctx.pal.code(c, pc, n, pal, &mut st.last_pal))
+                Kind::Palette(ctx.pal.code(c, pc, n, n, pal, &mut st.last_pal))
             } else {
                 let bv = match leaf.kind {
                     Kind::Ibc(b) => b,
@@ -618,9 +618,9 @@ fn predict_mode(
 ) {
     if mode == MODE_CCLM {
         let l = lref.expect("CCLM solo en croma");
-        predict::predict_cclm(p, &l.data, l.w, l.h, x0, y0, n, out);
+        predict::predict_cclm(p, &l.data, l.w, l.h, x0, y0, n, n, out);
     } else {
-        predict::predict(refs, mode, n, out);
+        predict::predict(refs, mode, n, n, out);
     }
 }
 
@@ -639,8 +639,8 @@ fn predict_leaf(
         Kind::Intra(m) => predict_mode(p, refs, lref, *m, x0, y0, n, out),
         Kind::Palette(pal) => tools::predict_palette(pal, out),
         Kind::Ibc(bv) => {
-            if tools::bv_valid(p, x0, y0, n, *bv) {
-                tools::predict_ibc(p, x0, y0, n, *bv, out)
+            if tools::bv_valid(p, x0, y0, n, n, *bv) {
+                tools::predict_ibc(p, x0, y0, n, n, *bv, out)
             } else {
                 out[..n * n].fill(128)
             }
@@ -736,7 +736,7 @@ impl EncState {
             for i in 0..nn {
                 levels[i] = (src[i] - pred[i] as f32).round() as i32;
             }
-            let bits = self.ctx.coef_ts.block_cost(pc, n, cctx, &levels);
+            let bits = self.ctx.coef_ts.block_cost(pc, n, n, cctx, &levels);
             return (lambda * bits, levels, true);
         }
         if allow_dct {
@@ -749,7 +749,7 @@ impl EncState {
             let (d, bits) =
                 self.ctx
                     .coef
-                    .quantize_rdo(pc, n, cctx, &res[..nn], &qs, lambda, &mut levels);
+                    .quantize_rdo(pc, n, n, cctx, &res[..nn], &qs, lambda, &mut levels);
             best = (d + lambda * bits, levels.clone(), false);
         }
         if try_ts {
@@ -760,7 +760,7 @@ impl EncState {
             let (d, bits) =
                 self.ctx
                     .coef_ts
-                    .quantize_rdo(pc, n, cctx, &res[..nn], &qs, lambda, &mut levels);
+                    .quantize_rdo(pc, n, n, cctx, &res[..nn], &qs, lambda, &mut levels);
             let j = d + lambda * bits;
             if j < best.0 {
                 best = (j, levels.clone(), true);
@@ -788,7 +788,7 @@ impl EncState {
                 src[y * n + x] = pe.src[(y0 + y) * pe.plane.w + x0 + x];
             }
         }
-        let refs = predict::build_refs(&pe.plane, x0, y0, n);
+        let refs = predict::build_refs(&pe.plane, x0, y0, n, n);
         let mpm = mpm_list(&pe.plane, x0, y0);
         let cctx = cbf_ctx(&pe.plane, x0, y0);
         let nmodes = if pc == 1 && lref.is_some() {
@@ -868,7 +868,7 @@ impl EncState {
         }
         if self.screen && n <= 32 {
             // Paleta
-            for pal in tools::palette_candidates(&src, n) {
+            for pal in tools::palette_candidates(&src, n, n) {
                 tools::predict_palette(&pal, &mut pred);
                 let (jr, lv, ts) =
                     self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
@@ -886,18 +886,18 @@ impl EncState {
                 let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
                 for bv in bvs {
                     if scored.iter().any(|s| s.1 == bv)
-                        || !tools::bv_valid(&pe.plane, x0, y0, n, bv)
+                        || !tools::bv_valid(&pe.plane, x0, y0, n, n, bv)
                     {
                         continue;
                     }
-                    tools::predict_ibc(&pe.plane, x0, y0, n, bv, &mut pred);
+                    tools::predict_ibc(&pe.plane, x0, y0, n, n, bv, &mut pred);
                     let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
                     let bits = self.ctx.bv.cost(pc, bv, pe.sc.last_bv);
                     scored.push((sad + slam * bits, bv));
                 }
                 scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 for &(_, bv) in scored.iter().take(2) {
-                    tools::predict_ibc(&pe.plane, x0, y0, n, bv, &mut pred);
+                    tools::predict_ibc(&pe.plane, x0, y0, n, n, bv, &mut pred);
                     let (jr, lv, ts) =
                         self.rd_residual(pc, n, cctx, &src, &pred, q, lambda, try_ts, true);
                     let kind = Kind::Ibc(bv);
@@ -929,8 +929,8 @@ impl EncState {
 
     /// Aplica una hoja elegida al plano y al estado sintético aproximado.
     fn commit_leaf(pe: &mut PlaneEnc, x0: usize, y0: usize, n: usize, ev: &LeafEval) {
-        pe.plane.write_block(x0, y0, n, &ev.recon);
-        pe.plane.set_block(x0, y0, n, ev.leaf.kind.mark(), ev.nz);
+        pe.plane.write_block(x0, y0, n, n, &ev.recon);
+        pe.plane.set_block(x0, y0, n, n, ev.leaf.kind.mark(), ev.nz);
         match &ev.leaf.kind {
             Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
             Kind::Ibc(bv) => pe.sc.last_bv = *bv,
@@ -1020,7 +1020,7 @@ impl EncState {
                 } else {
                     &mut self.ctx.coef
                 };
-                coef.code_block(enc, pc, n, cbf_ctx(p, x0, y0), &mut l);
+                coef.code_block(enc, pc, n, n, cbf_ctx(p, x0, y0), &mut l);
             }
         }
     }
@@ -1573,8 +1573,8 @@ impl DecState {
         } else {
             &mut self.ctx.coef
         };
-        let nz = coef.code_block(dec, pc, n, cbf_ctx(p, x0, y0), &mut levels);
-        let refs = predict::build_refs(p, x0, y0, n);
+        let nz = coef.code_block(dec, pc, n, n, cbf_ctx(p, x0, y0), &mut levels);
+        let refs = predict::build_refs(p, x0, y0, n, n);
         let mut pred = vec![0i32; n * n];
         predict_leaf(p, &refs, lref, &kind, x0, y0, n, &mut pred);
         let mut recon = vec![0u8; n * n];
@@ -1588,8 +1588,8 @@ impl DecState {
             ts,
             &mut recon,
         );
-        p.write_block(x0, y0, n, &recon);
-        p.set_block(x0, y0, n, kind.mark(), nz);
+        p.write_block(x0, y0, n, n, &recon);
+        p.set_block(x0, y0, n, n, kind.mark(), nz);
     }
 }
 

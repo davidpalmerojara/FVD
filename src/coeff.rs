@@ -18,22 +18,27 @@ const NM: usize = 6; // clases de magnitud de vecinos
 const NPC: usize = 2; // luma / croma
 const NSZ: usize = 5;
 
-pub fn scan(n: usize) -> &'static [(u8, u8)] {
-    static S: OnceLock<[Vec<(u8, u8)>; 5]> = OnceLock::new();
+/// Orden de barrido diagonal de un bloque `w × h` (lados de 4 a 64).
+pub fn scan(w: usize, h: usize) -> &'static [(u8, u8)] {
+    static S: OnceLock<Vec<Vec<(u8, u8)>>> = OnceLock::new();
     let all = S.get_or_init(|| {
-        crate::dct::SIZES.map(|n| {
-            let mut v = Vec::with_capacity(n * n);
-            for d in 0..2 * n - 1 {
-                for y in 0..n {
-                    if d >= y && d - y < n {
-                        v.push(((d - y) as u8, y as u8));
+        let mut out = Vec::new();
+        for &h in &crate::dct::SIZES {
+            for &w in &crate::dct::SIZES {
+                let mut v = Vec::with_capacity(w * h);
+                for d in 0..w + h - 1 {
+                    for y in 0..h {
+                        if d >= y && d - y < w {
+                            v.push(((d - y) as u8, y as u8));
+                        }
                     }
                 }
+                out.push(v);
             }
-            v
-        })
+        }
+        out
     });
-    &all[size_index(n)]
+    &all[size_index(h) * 5 + size_index(w)]
 }
 
 #[inline]
@@ -48,11 +53,11 @@ fn freq_class(x: usize, y: usize) -> usize {
 }
 
 #[inline]
-fn mag_class(levels: &[i32], n: usize, x: usize, y: usize) -> usize {
+fn mag_class(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
     let mut s = 0;
     let get = |xx: usize, yy: usize| -> i32 {
-        if xx < n && yy < n {
-            levels[yy * n + xx].abs().min(3)
+        if xx < w && yy < h {
+            levels[yy * w + xx].abs().min(3)
         } else {
             0
         }
@@ -122,12 +127,15 @@ impl CoefCtx {
         &mut self,
         c: &mut C,
         pc: usize,
-        n: usize,
+        w: usize,
+        h: usize,
         cbf_ctx: usize,
         levels: &mut [i32],
     ) -> bool {
-        let sz = size_index(n);
-        let sc = scan(n);
+        let n = w;
+        let nn = w * h;
+        let sz = size_index(w.max(h));
+        let sc = scan(w, h);
         let mut eob_enc = 0;
         for (i, &(x, y)) in sc.iter().enumerate() {
             if levels[y as usize * n + x as usize] != 0 {
@@ -136,18 +144,18 @@ impl CoefCtx {
         }
         let nz = c.bit(&mut self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx], eob_enc > 0);
         if !nz {
-            levels[..n * n].fill(0);
+            levels[..nn].fill(0);
             return false;
         }
         let eob = self.eob[pc * NSZ + sz].code(c, eob_enc.saturating_sub(1) as u32) as usize + 1;
-        let enc_vals: Vec<i32> = levels[..n * n].to_vec();
-        levels[..n * n].fill(0);
-        for i in (0..eob.min(n * n)).rev() {
+        let enc_vals: Vec<i32> = levels[..nn].to_vec();
+        levels[..nn].fill(0);
+        for i in (0..eob.min(nn)).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let pos = y * n + x;
             let v = enc_vals[pos];
             let a = v.unsigned_abs();
-            let idx = cidx(pc, sz, freq_class(x, y), mag_class(levels, n, x, y));
+            let idx = cidx(pc, sz, freq_class(x, y), mag_class(levels, w, h, x, y));
             if i != eob - 1 && !c.bit(&mut self.sig[idx], a != 0) {
                 continue;
             }
@@ -198,9 +206,10 @@ impl CoefCtx {
         bits
     }
 
-    pub fn block_cost(&self, pc: usize, n: usize, cbf_ctx: usize, levels: &[i32]) -> f32 {
-        let sz = size_index(n);
-        let sc = scan(n);
+    pub fn block_cost(&self, pc: usize, w: usize, h: usize, cbf_ctx: usize, levels: &[i32]) -> f32 {
+        let n = w;
+        let sz = size_index(w.max(h));
+        let sc = scan(w, h);
         let mut eob = 0;
         for (i, &(x, y)) in sc.iter().enumerate() {
             if levels[y as usize * n + x as usize] != 0 {
@@ -215,7 +224,7 @@ impl CoefCtx {
         for i in (0..eob).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let a = levels[y * n + x].unsigned_abs();
-            let mc = mag_class(levels, n, x, y);
+            let mc = mag_class(levels, w, h, x, y);
             bits += self.level_cost(pc, sz, x, y, mc, a, i == eob - 1);
         }
         bits
@@ -226,16 +235,19 @@ impl CoefCtx {
     pub fn quantize_rdo(
         &self,
         pc: usize,
-        n: usize,
+        w: usize,
+        h: usize,
         cbf_ctx: usize,
         coefs: &[f32],
         qs: &[f32],
         lambda: f32,
         levels: &mut [i32],
     ) -> (f32, f32) {
-        let sz = size_index(n);
-        let sc = scan(n);
-        let nn = n * n;
+        let n = w;
+        let nn = w * h;
+        let sz = size_index(w.max(h));
+        let sc = scan(w, h);
+
         let mut last = None;
         for (i, &(x, y)) in sc.iter().enumerate() {
             let p = y as usize * n + x as usize;
@@ -262,7 +274,7 @@ impl CoefCtx {
             let ca = coefs[p].abs();
             let q = qs[p];
             let l0 = levels[p] as u32;
-            let mc = mag_class(levels, n, x, y);
+            let mc = mag_class(levels, w, h, x, y);
             let mut best_l = 0u32;
             let mut best_cost = f32::INFINITY;
             let mut best_d = 0.0;
@@ -305,7 +317,7 @@ impl CoefCtx {
         if !seen_nz {
             return (zero_dist, zero_bits);
         }
-        let mut bits = self.block_cost(pc, n, cbf_ctx, levels);
+        let mut bits = self.block_cost(pc, w, h, cbf_ctx, levels);
         // Optimización del final del barrido (EOB): prueba a truncar el bloque
         // en cada uno de los últimos coeficientes no nulos.
         let nz_pos: Vec<usize> = (0..=last)
@@ -323,7 +335,7 @@ impl CoefCtx {
                 let l = trial[p].unsigned_abs() as f32;
                 d_trial += c * c - (c - l * qs[p]).powi(2);
                 trial[p] = 0;
-                let b = self.block_cost(pc, n, cbf_ctx, &trial);
+                let b = self.block_cost(pc, w, h, cbf_ctx, &trial);
                 let j = d_trial + lambda * b;
                 if j < best.0 {
                     best = (j, k);
@@ -339,7 +351,7 @@ impl CoefCtx {
                     levels[p] = 0;
                 }
                 dist = d;
-                bits = self.block_cost(pc, n, cbf_ctx, levels);
+                bits = self.block_cost(pc, w, h, cbf_ctx, levels);
             }
         }
         if zero_dist + lambda * zero_bits <= dist + lambda * bits {
