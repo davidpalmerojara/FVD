@@ -42,8 +42,42 @@ fn factors(n: usize) -> &'static [f32] {
 }
 
 /// DCT-II 1-D sin normalizar (algoritmo recursivo de Byeong Gi Lee, O(n log n)).
+/// Matriz DCT-II sin normalizar de 8 puntos: cos(π(2i+1)k/16).
+fn cos8() -> &'static [f32; 64] {
+    static M: OnceLock<[f32; 64]> = OnceLock::new();
+    M.get_or_init(|| {
+        let mut m = [0f32; 64];
+        for k in 0..8 {
+            for i in 0..8 {
+                m[k * 8 + i] =
+                    (std::f64::consts::PI * (2 * i + 1) as f64 * k as f64 / 16.0).cos() as f32;
+            }
+        }
+        m
+    })
+}
+
 fn dct_1d(x: &mut [f32], tmp: &mut [f32]) {
     let n = x.len();
+    if n == 8 {
+        // Caso base directo: evita tres niveles de recursión (solo lo usa el
+        // codificador; la inversa del decodificador no cambia).
+        let m = cos8();
+        let mut out = [0f32; 8];
+        for k in 0..8 {
+            let row = &m[k * 8..k * 8 + 8];
+            out[k] = row[0] * x[0]
+                + row[1] * x[1]
+                + row[2] * x[2]
+                + row[3] * x[3]
+                + row[4] * x[4]
+                + row[5] * x[5]
+                + row[6] * x[6]
+                + row[7] * x[7];
+        }
+        x.copy_from_slice(&out);
+        return;
+    }
     if n == 1 {
         return;
     }

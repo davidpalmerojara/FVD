@@ -52,29 +52,31 @@ fn freq_class(x: usize, y: usize) -> usize {
     }
 }
 
-#[inline]
+/// Clase de magnitud de la plantilla de vecinos de mayor frecuencia ya
+/// codificados: (x+1,y), (x,y+1), (x+1,y+1), (x+2,y), (x,y+2).
+#[inline(always)]
 fn mag_class(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
+    const LUT: [u8; 16] = [0, 1, 2, 3, 3, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5];
+    let i = y * w + x;
+    let c = |v: i32| v.unsigned_abs().min(3) as usize;
+    let (xr, xr2, yd, yd2) = (x + 1 < w, x + 2 < w, y + 1 < h, y + 2 < h);
     let mut s = 0;
-    let get = |xx: usize, yy: usize| -> i32 {
-        if xx < w && yy < h {
-            levels[yy * w + xx].abs().min(3)
-        } else {
-            0
+    if xr {
+        s += c(levels[i + 1]);
+        if yd {
+            s += c(levels[i + w + 1]);
         }
-    };
-    s += get(x + 1, y);
-    s += get(x, y + 1);
-    s += get(x + 1, y + 1);
-    s += get(x + 2, y);
-    s += get(x, y + 2);
-    match s {
-        0 => 0,
-        1 => 1,
-        2 => 2,
-        3 | 4 => 3,
-        5 | 6 => 4,
-        _ => 5,
     }
+    if xr2 {
+        s += c(levels[i + 2]);
+    }
+    if yd {
+        s += c(levels[i + w]);
+    }
+    if yd2 {
+        s += c(levels[i + 2 * w]);
+    }
+    LUT[s] as usize
 }
 
 #[derive(Clone)]
@@ -327,7 +329,12 @@ impl CoefCtx {
             let mut trial = levels[..nn].to_vec();
             let mut d_trial = dist;
             let mut best = (dist + lambda * bits, nz_pos.len());
-            for k in (1..nz_pos.len()).rev().take(6) {
+            for k in (1..nz_pos.len()).rev().take(4) {
+                // Solo compensa recortar coeficientes ±1 del final del barrido.
+                let pk = sc[nz_pos[k]].1 as usize * n + sc[nz_pos[k]].0 as usize;
+                if trial[pk].abs() > 1 {
+                    break;
+                }
                 // Quita el coeficiente no nulo k (y con él todo lo posterior).
                 let i = nz_pos[k];
                 let p = sc[i].1 as usize * n + sc[i].0 as usize;

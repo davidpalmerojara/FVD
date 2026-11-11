@@ -965,6 +965,11 @@ impl EncState {
             let (j, node) = self.rdo_node(pe, lref, qm, x0 + dx * h, y0 + dy * h, h);
             jb += j;
             kids.push(node);
+            // Poda exacta: los costes son no negativos, así que si la suma
+            // parcial ya supera al bloque sin dividir, dividir no puede ganar.
+            if jb >= ev.j {
+                break;
+            }
         }
         if ev.j <= jb {
             pe.sc = sc_before;
