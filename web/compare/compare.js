@@ -36,6 +36,29 @@ let nextPhotoId = 1;
 
 // ------------------------------------------------------------ Workers
 
+// Memoria aproximada de cada trabajo en WebAssembly, en bytes por píxel
+// (medida en Chromium con una foto de 12 MP, con margen): la del códec más la
+// de las métricas, que son lo que más pesa (SSIMULACRA2 trabaja en coma
+// flotante a varias escalas: ~165 B/px, casi 2 GB a 12 MP). Con fotos grandes,
+// lanzar todos a la vez agota la RAM y puede colgar el ordenador: el grupo
+// solo arranca en paralelo los trabajos que caben en el presupuesto, y
+// siempre al menos uno.
+const METRICS_BYTES_PER_PX = 170;
+const BYTES_PER_PX = { jxl: 220, avif: 60, tesela: 40, webp: 30, jpeg: 20 };
+const MEMORY_BUDGET = Math.min(navigator.deviceMemory || 4, 8) * 0.3 * 2 ** 30;
+// Aunque vaya de uno en uno, un trabajo no puede pasar de esto (más lo que
+// ocupa la página: original, resultados y miniaturas, ~100 B/px). Si la foto
+// no cabe, se reduce lo justo y se avisa.
+const PAGE_BYTES_PER_PX = 100;
+const PEAK_BUDGET = Math.max(2, Math.min(navigator.deviceMemory || 4, 8) * 0.5) * 2 ** 30;
+// Un worker no puede devolver la memoria de WebAssembly: tras un trabajo
+// grande se cierra y se crea otro.
+const RECYCLE_BYTES = 384 * 2 ** 20;
+
+function jobBytes(msg) {
+  return msg.width * msg.height * ((BYTES_PER_PX[msg.codec] ?? 100) + METRICS_BYTES_PER_PX);
+}
+
 class Pool {
   constructor(n) {
     this.n = n;
@@ -44,10 +67,11 @@ class Pool {
     this.queue = [];
     this.jobs = new Map();
     this.nextId = 1;
+    this.used = 0;
   }
   run(msg, onProgress) {
     return new Promise((resolve, reject) => {
-      this.queue.push({ msg, onProgress, resolve, reject });
+      this.queue.push({ msg, onProgress, resolve, reject, bytes: jobBytes(msg) });
       this.pump();
     });
   }
@@ -60,37 +84,55 @@ class Pool {
       return true;
     });
   }
+  spawn() {
+    const w = new Worker(new URL('./lab-worker.js', import.meta.url), { type: 'module' });
+    w.onmessage = (ev) => {
+      const { id, progress, result, error } = ev.data;
+      const job = this.jobs.get(id);
+      if (!job) return;
+      if (progress) return job.onProgress?.(progress);
+      this.jobs.delete(id);
+      this.finish(w, job);
+      error ? job.reject(new Error(error)) : job.resolve(result);
+    };
+    w.onerror = (ev) => {
+      ev.preventDefault();
+      for (const [id, job] of this.jobs) {
+        if (job.worker === w) {
+          this.jobs.delete(id);
+          this.finish(w, job, true);
+          job.reject(new Error(ev.message || 'error en el worker (¿sin memoria?)'));
+        }
+      }
+    };
+    this.workers.push(w);
+    this.idle.push(w);
+  }
+  finish(w, job, broken = false) {
+    this.used -= job.bytes;
+    if (broken || job.bytes > RECYCLE_BYTES) {
+      w.terminate();
+      this.workers = this.workers.filter((x) => x !== w);
+    } else {
+      this.idle.push(w);
+    }
+    this.pump();
+  }
   pump() {
     while (this.queue.length) {
+      const busy = this.jobs.size;
+      // El primero que quepa (o cualquiera si no hay nada en marcha).
+      const k = this.queue.findIndex((j) => busy === 0 || this.used + j.bytes <= MEMORY_BUDGET);
+      if (k < 0) return;
       if (!this.idle.length) {
         if (this.workers.length >= this.n) return;
-        const w = new Worker(new URL('./lab-worker.js', import.meta.url), { type: 'module' });
-        w.onmessage = (ev) => {
-          const { id, progress, result, error } = ev.data;
-          const job = this.jobs.get(id);
-          if (!job) return;
-          if (progress) return job.onProgress?.(progress);
-          this.jobs.delete(id);
-          error ? job.reject(new Error(error)) : job.resolve(result);
-          this.idle.push(w);
-          this.pump();
-        };
-        w.onerror = (ev) => {
-          ev.preventDefault();
-          for (const [id, job] of this.jobs) {
-            if (job.worker === w) {
-              this.jobs.delete(id);
-              job.reject(new Error(ev.message || 'error en el worker'));
-            }
-          }
-        };
-        this.workers.push(w);
-        this.idle.push(w);
+        this.spawn();
       }
       const w = this.idle.pop();
-      const job = this.queue.shift();
+      const [job] = this.queue.splice(k, 1);
       const id = this.nextId++;
       job.worker = w;
+      this.used += job.bytes;
       this.jobs.set(id, job);
       w.postMessage({ id, ...job.msg });
     }
@@ -98,12 +140,22 @@ class Pool {
 }
 const pool = new Pool(Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1)));
 
+
 // ------------------------------------------------------------ Fotos
 
 async function loadPixels(photo) {
   const { bitmap } = photo;
   const md = state.settings.maxDim;
-  const s = md && Math.max(bitmap.width, bitmap.height) > md ? md / Math.max(bitmap.width, bitmap.height) : 1;
+  let s = md && Math.max(bitmap.width, bitmap.height) > md ? md / Math.max(bitmap.width, bitmap.height) : 1;
+  // Límite de memoria: el trabajo más pesado de los códecs elegidos.
+  const heaviest = Math.max(...[...state.settings.codecs].map((c) => BYTES_PER_PX[c] ?? 100), 0);
+  const maxPx = PEAK_BUDGET / (heaviest + METRICS_BYTES_PER_PX + PAGE_BYTES_PER_PX);
+  const px = bitmap.width * bitmap.height * s * s;
+  photo.capped = null;
+  if (px > maxPx) {
+    s *= Math.sqrt(maxPx / px);
+    photo.capped = { from: bitmap.width * bitmap.height, to: Math.round(bitmap.width * s) * Math.round(bitmap.height * s), jxl: state.settings.codecs.has('jxl') };
+  }
   const w = Math.max(8, Math.round(bitmap.width * s));
   const h = Math.max(8, Math.round(bitmap.height * s));
   const c = new OffscreenCanvas(w, h);
@@ -146,9 +198,10 @@ async function process(photo) {
   photo.mode = st.mode;
   photo.target = st.target;
   photo.results = {};
+  const big = jobBytes({ width: photo.w, height: photo.h, codec: 'avif' }) > MEMORY_BUDGET / 2;
   for (const c of ORDER) {
     if (!st.codecs.has(c)) continue;
-    photo.results[c] = { status: 'en cola' };
+    photo.results[c] = { status: big ? 'en cola (foto grande: de uno en uno)' : 'en cola' };
   }
   render();
   await Promise.all(
@@ -294,6 +347,12 @@ function renderDetail() {
     p.mode === 'target'
       ? 'Cada formato se codifica varias veces hasta rodear la calidad objetivo; el tamaño se interpola en ese punto exacto. El botón de descarga entrega el archivo real más cercano por encima del objetivo.'
       : 'Las escalas de calidad no son equivalentes entre formatos: compara tamaño y métricas a la vez.';
+  if (p.capped) {
+    const mp = (n) => (n / 1e6).toFixed(1).replace('.', ',');
+    $('d-note').textContent +=
+      ` La foto (${mp(p.capped.from)} MP) se ha reducido a ${mp(p.capped.to)} MP para no agotar la memoria del navegador.` +
+      (p.capped.jxl ? ' JPEG XL es el que más necesita: desactívalo para comparar fotos más grandes.' : '');
+  }
   $('d-note').textContent += self.crossOriginIsolated
     ? ' Tesela codifica con varios hilos; los demás formatos, con uno.'
     : ' Tesela codifica con un solo hilo: abre la página con web/serve.py (o recárgala) para usar varios.';

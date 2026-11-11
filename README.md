@@ -357,6 +357,13 @@ orígenes: `web/serve.py` envía las cabeceras necesarias, y donde el servidor n
 Pages) las añade un service worker (`compare/coi-sw.js`), que recarga la página una vez. Si nada de
 eso es posible, se codifica con un hilo y la página lo indica.
 
+**Fotos grandes.** Las métricas son lo que más memoria gasta en el navegador (SSIMULACRA2 necesita
+~165 bytes por píxel: casi 2 GB con una foto de 12 MP), y cada códec la suya. El comparador estima
+lo que necesita cada trabajo y solo lanza en paralelo los que caben en la memoria del equipo; con
+fotos grandes van de uno en uno. Si aun así la foto no cabe, la reduce lo justo y lo indica
+(JPEG XL es el más exigente: sin él caben fotos más grandes). Para medir fotos enormes a tamaño
+completo está la línea de comandos (`tesela roundtrip`) y el banco de pruebas.
+
 ## Banco de pruebas
 
 ```sh
