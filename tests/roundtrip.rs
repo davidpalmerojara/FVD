@@ -496,3 +496,89 @@ fn animation_zoom_matches_decoder() {
         }
     }
 }
+
+/// Perfil ICC de matriz mínimo con estos primarios (D50) y curva gamma 2.2 o sRGB (paramétrica).
+fn matrix_icc(prim: [[f64; 3]; 3], srgb_curve: bool) -> Vec<u8> {
+    let s15 = |v: f64| ((v * 65536.0).round() as i32).to_be_bytes();
+    let mut tags: Vec<([u8; 4], Vec<u8>)> = Vec::new();
+    for (sig, p) in [
+        (*b"rXYZ", prim[0]),
+        (*b"gXYZ", prim[1]),
+        (*b"bXYZ", prim[2]),
+    ] {
+        let mut d = b"XYZ \0\0\0\0".to_vec();
+        for v in p {
+            d.extend_from_slice(&s15(v));
+        }
+        tags.push((sig, d));
+    }
+    let mut curve = b"para\0\0\0\0".to_vec();
+    if srgb_curve {
+        curve.extend_from_slice(&3u16.to_be_bytes());
+        curve.extend_from_slice(&[0, 0]);
+        for v in [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045] {
+            curve.extend_from_slice(&s15(v));
+        }
+    } else {
+        curve.extend_from_slice(&0u16.to_be_bytes());
+        curve.extend_from_slice(&[0, 0]);
+        curve.extend_from_slice(&s15(2.2));
+    }
+    for sig in [*b"rTRC", *b"gTRC", *b"bTRC"] {
+        tags.push((sig, curve.clone()));
+    }
+    let mut out = vec![0u8; 128];
+    out[16..20].copy_from_slice(b"RGB ");
+    out[20..24].copy_from_slice(b"XYZ ");
+    out.extend_from_slice(&(tags.len() as u32).to_be_bytes());
+    let mut off = 128 + 4 + 12 * tags.len();
+    let mut data = Vec::new();
+    for (sig, d) in &tags {
+        out.extend_from_slice(sig);
+        out.extend_from_slice(&(off as u32).to_be_bytes());
+        out.extend_from_slice(&(d.len() as u32).to_be_bytes());
+        data.extend_from_slice(d);
+        off += d.len();
+    }
+    out.extend_from_slice(&data);
+    out
+}
+
+#[test]
+fn srgb_icc_is_dropped_others_kept() {
+    use tesela::codec::icc_is_srgb;
+    let srgb = [
+        [0.4361, 0.2225, 0.0139],
+        [0.3851, 0.7169, 0.0971],
+        [0.1431, 0.0606, 0.7141],
+    ];
+    let p3 = [
+        [0.5151, 0.2412, -0.0011],
+        [0.2920, 0.6922, 0.0419],
+        [0.1571, 0.0666, 0.7841],
+    ];
+    assert!(icc_is_srgb(&matrix_icc(srgb, true)));
+    assert!(
+        !icc_is_srgb(&matrix_icc(srgb, false)),
+        "gamma 2.2 no es sRGB"
+    );
+    assert!(!icc_is_srgb(&matrix_icc(p3, true)), "Display P3 no es sRGB");
+    assert!(!icc_is_srgb(b"basura"));
+    // Al codificar, el perfil sRGB no se guarda y el de Display P3 sí.
+    let (w, h) = (16, 16);
+    let rgb = synthetic(w, h, 1);
+    for (icc, kept) in [
+        (matrix_icc(srgb, true), false),
+        (matrix_icc(p3, true), true),
+    ] {
+        let p = Params {
+            meta: tesela::codec::Metadata {
+                icc: Some(icc.clone()),
+                exif: None,
+            },
+            ..Default::default()
+        };
+        let d = tesela::decode(&tesela::encode(&rgb, w, h, &p).bytes).unwrap();
+        assert_eq!(d.meta.icc.is_some(), kept);
+    }
+}

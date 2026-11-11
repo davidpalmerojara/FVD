@@ -64,7 +64,8 @@ def run_one(job):
         t0 = time.perf_counter()
         if codec in ("tesela", "tesela-psnr"):
             extra = ["--tune", "psnr"] if codec == "tesela-psnr" else []
-            subprocess.run([TESELA, "encode", img, enc, "-q", str(param), *extra, *tesela_args],
+            # Sin metadatos, como los demás códecs (que pasan por PIL .convert("RGB")).
+            subprocess.run([TESELA, "encode", img, enc, "-q", str(param), "--sin-metadatos", *extra, *tesela_args],
                            check=True, capture_output=True)
             t1 = time.perf_counter()
             subprocess.run([TESELA, "decode", enc, dec], check=True, capture_output=True)

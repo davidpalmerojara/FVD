@@ -54,11 +54,11 @@ n veces (v = entero LEB128: 7 bits por byte, primero los bajos; el bit alto indi
          como mucho 5 bytes y 2³² − 1):
   v    duración (ms)
   v    x, v y, v ancho, v alto     rectángulo dentro del lienzo
-  u8   forma
+  u8   forma: bit 0 = abreviada; bit 1 = referencia larga (ver 1.3); el resto, 0
   forma 0:
     v      longitud
     datos: un archivo .tsl completo del rectángulo (sin ANIM)
-  forma 1 (abreviada; no en el primer fotograma):
+  forma 1 (abreviada, bit 0; no en el primer fotograma):
     u8     tools
     v      longitud de cada tesela (tantas como teselas tenga el rectángulo)
     datos de las teselas, seguidos
@@ -96,17 +96,22 @@ espacio de color: (sin pérdida, 4:2:0). Al empezar, no hay planos. Antes de cad
    visible de cada plano (en 4:2:0, `⌈w / 2⌉ × ⌈h / 2⌉` en la croma). Si el archivo tiene croma 4:2:0
    y `x` o `y` es impar, en lugar de copiarlos se descartan los planos de referencia.
 
+4. Si el fotograma es el primero o su forma tiene el bit 1, los planos de referencia (tras el paso
+   3) se copian también como **referencia larga**, con su espacio de color. Si en ese momento no hay
+   planos de referencia, la referencia larga queda vacía.
+
 Así, una zona que no cambia o que solo se desplaza se copia exacta, sin pasar por RGB en cada
 fotograma. Para una tesela que empieza en (tx, ty) dentro del fotograma, el origen en el plano de
 referencia es `((x + tx) / d, (y + ty) / d)`.
 
 **Movimiento global.** Al principio de los datos de cada tesela de un archivo con `INTER`, antes
-del primer plano, va un bit sin contexto. Si vale 1, siguen seis enteros con signo (a, b, c, d, e, f),
+del primer plano, va un bit sin contexto. Si vale 1, sigue otro bit sin contexto, `larga`, y seis
+enteros con signo (a, b, c, d, e, f),
 cada uno así: 6 bits sin contexto con n, el número de bits de la magnitud (0 = valor 0); si n > 0,
 los n − 1 bits bajos de la magnitud (el alto es 1) y un bit de signo (1 = negativo). Se recortan a
-±2²⁰ (a, b, d, e) y a ±2³⁰ (c, f). El vector de luma en cuartos de píxel en el punto (X, Y) del
-lienzo es `((a·X + b·Y + c + 2¹⁵) >> 16, (d·X + e·Y + f + 2¹⁵) >> 16)` (en 64 bits; cada
-componente se recorta a ±2²⁰).
+±2²⁰ (a, b, d, e) y a ±2³⁰ (c, f). El vector de luma en 1/16 de píxel en el punto (X, Y) del
+lienzo es `((a·X + b·Y + c + 2¹³) >> 14, (d·X + e·Y + f + 2¹³) >> 14)` (en 64 bits; cada
+componente se recorta a ±2²²).
 
 **Sintaxis.** Al principio de la cabecera de cada hoja (antes de la clase especial de la v1) va el
 bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
@@ -122,10 +127,29 @@ ninguno, el último vector. Tras decodificar la hoja, el último vector pasa a s
 con movimiento global no lo cambian). La marca de la hoja en el mapa es 202, y la cabecera sigue
 con `ts` como cualquier otra hoja.
 
+Si `larga` vale 1 y hay referencia larga en el espacio de color del archivo del fotograma, las
+hojas con movimiento global predicen de sus planos (con el mismo origen); si no, de los planos de
+referencia del fotograma anterior. Las hojas con vector propio predicen siempre de estos.
+
 Una hoja con movimiento global se predice por bloques de 4 × 4: el bloque que empieza en (x, y)
 del plano (coordenadas del lienzo en ese plano) usa el vector de luma en el punto
-`(x·d + 2d, y·d + 2d)`; en la croma submuestreada, cada componente v pasa a `(v + 1) >> 1`. En el
-mapa, cada bloque de 4 × 4 guarda su vector, que es el que ven los vecinos al calcular el predictor.
+`(x·d + 2d, y·d + 2d)`; en la croma submuestreada, cada componente v pasa a `(v + 1) >> 1`. La
+predicción es como la de abajo pero con vectores en 1/16 de píxel (`mv >> 4` y `mv & 15`) y la
+tabla `G` de 16 filtros:
+
+```
+G[0]  = [ 0, 0,   0, 64,  0,   0, 0,  0]     G[8]  = [-1, 4, -10, 39, 39, -10, 4, -1]
+G[1]  = [ 0, 1,  -3, 63,  4,  -1, 0,  0]     G[9]  = [-1, 3,  -9, 34, 45, -11, 4, -1]
+G[2]  = [-1, 2,  -6, 63,  8,  -3, 1,  0]     G[10] = [ 0, 3,  -8, 29, 48, -11, 4, -1]
+G[3]  = [-1, 3,  -8, 60, 13,  -4, 1,  0]     G[11] = [ 0, 2,  -7, 23, 53, -10, 4, -1]
+G[4]  = [-1, 3,  -9, 57, 18,  -6, 2,  0]     G[12] = [ 0, 2,  -6, 18, 57,  -9, 3, -1]
+G[5]  = [-1, 4, -10, 53, 23,  -7, 2,  0]     G[13] = [ 0, 1,  -4, 13, 60,  -8, 3, -1]
+G[6]  = [-1, 4, -11, 48, 29,  -8, 3,  0]     G[14] = [ 0, 1,  -3,  8, 63,  -6, 2, -1]
+G[7]  = [-1, 4, -11, 45, 34,  -9, 3, -1]     G[15] = [ 0, 0,  -1,  4, 63,  -3, 1,  0]
+```
+
+En el mapa, cada bloque de 4 × 4 guarda su vector redondeado a cuartos de píxel
+(`(v + 2) >> 2`), que es el que ven los vecinos al calcular el predictor.
 
 **Predicción.** Los vectores están en **cuartos de píxel**. Con la parte entera
 `(ix, iy) = (mvx >> 2, mvy >> 2)` (desplazamiento aritmético) y la fracción `(fx, fy) = (mvx & 3,

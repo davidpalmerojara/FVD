@@ -91,6 +91,108 @@ pub struct Params {
     pub meta: Metadata,
 }
 
+/// ¿Es este perfil ICC equivalente a sRGB? Perfil de matriz (sin tablas
+/// A2B0/B2A0) con los primarios de sRGB adaptados a D50 y curvas de tono como
+/// la de sRGB. Ante la duda, no: entonces el perfil se guarda tal cual.
+pub fn icc_is_srgb(p: &[u8]) -> bool {
+    let be32 = |o: usize| -> Option<u32> {
+        p.get(o..o + 4)
+            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+    };
+    let be16 = |o: usize| -> Option<u32> {
+        p.get(o..o + 2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]) as u32)
+    };
+    let s15 = |o: usize| be32(o).map(|v| v as i32 as f64 / 65536.0);
+    if p.len() < 132 || &p[16..20] != b"RGB " || &p[20..24] != b"XYZ " {
+        return false;
+    }
+    let n = match be32(128) {
+        Some(n) if n <= 100 => n as usize,
+        _ => return false,
+    };
+    let tag = |sig: &[u8; 4]| -> Option<(usize, usize)> {
+        (0..n).find_map(|i| {
+            let o = 132 + 12 * i;
+            (p.get(o..o + 4)? == sig)
+                .then(|| Some((be32(o + 4)? as usize, be32(o + 8)? as usize)))?
+        })
+    };
+    if tag(b"A2B0").is_some() || tag(b"B2A0").is_some() {
+        return false;
+    }
+    let xyz = |sig: &[u8; 4]| -> Option<[f64; 3]> {
+        let (o, _) = tag(sig)?;
+        (p.get(o..o + 4)? == b"XYZ ").then_some(())?;
+        Some([s15(o + 8)?, s15(o + 12)?, s15(o + 16)?])
+    };
+    let want = [
+        (b"rXYZ", [0.4361, 0.2225, 0.0139]),
+        (b"gXYZ", [0.3851, 0.7169, 0.0971]),
+        (b"bXYZ", [0.1431, 0.0606, 0.7141]),
+    ];
+    for (sig, w) in want {
+        match xyz(sig) {
+            Some(v) if v.iter().zip(w).all(|(a, b)| (a - b).abs() < 0.003) => {}
+            _ => return false,
+        }
+    }
+    // Curva de tono evaluada en x ∈ [0, 1].
+    let trc = |sig: &[u8; 4], x: f64| -> Option<f64> {
+        let (o, _) = tag(sig)?;
+        match p.get(o..o + 4)? {
+            b"curv" => {
+                let cnt = be32(o + 8)? as usize;
+                match cnt {
+                    0 => Some(x),
+                    1 => Some(x.powf(be16(o + 12)? as f64 / 256.0)),
+                    _ => {
+                        let f = x * (cnt - 1) as f64;
+                        let i = (f as usize).min(cnt - 2);
+                        let a = be16(o + 12 + 2 * i)? as f64;
+                        let b = be16(o + 12 + 2 * (i + 1))? as f64;
+                        Some((a + (b - a) * (f - i as f64)) / 65535.0)
+                    }
+                }
+            }
+            b"para" => {
+                let ty = be16(o + 8)?;
+                let g = s15(o + 12)?;
+                let prm = |k: usize| s15(o + 12 + 4 * k);
+                match ty {
+                    0 => Some(x.powf(g)),
+                    3 => {
+                        let (a, b, c, d) = (prm(1)?, prm(2)?, prm(3)?, prm(4)?);
+                        Some(if x >= d {
+                            (a * x + b).max(0.0).powf(g)
+                        } else {
+                            c * x
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    let srgb = |x: f64| {
+        if x <= 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    for sig in [b"rTRC", b"gTRC", b"bTRC"] {
+        for x in [0.02, 0.1, 0.25, 0.5, 0.75, 0.95] {
+            match trc(sig, x) {
+                Some(v) if (v - srgb(x)).abs() < 0.006 => {}
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
 /// Metadatos de la imagen: se guardan tal cual, sin interpretarlos.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metadata {
@@ -103,6 +205,15 @@ pub struct Metadata {
 impl Metadata {
     pub fn is_empty(&self) -> bool {
         self.icc.is_none() && self.exif.is_none()
+    }
+
+    /// Los mismos metadatos sin el perfil ICC si es sRGB: sin perfil, los
+    /// valores ya se interpretan como sRGB, así que solo ocupa (~3 KB).
+    pub fn without_srgb(&self) -> Metadata {
+        Metadata {
+            icc: self.icc.clone().filter(|p| !icc_is_srgb(p)),
+            exif: self.exif.clone(),
+        }
     }
 
     /// Sección de metadatos: `u32` de longitud y fragmentos `etiqueta (4 B) | u32 | datos`.
@@ -961,6 +1072,8 @@ struct InterPlane<'a> {
     d: usize,
     /// Movimiento global de la tesela, si lo lleva.
     warp: Option<Warp>,
+    /// Plano de la referencia larga (fotograma dorado), si la hay.
+    gdata: Option<&'a [u8]>,
 }
 
 /// Movimiento global (afín) de un fotograma, en coordenadas de luma del
@@ -969,6 +1082,8 @@ struct InterPlane<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Warp {
     pub p: [i32; 6],
+    /// Predice de la referencia larga (fotograma dorado) en vez del anterior.
+    pub gold: bool,
 }
 
 /// Límites de los parámetros del movimiento global (el decodificador los recorta).
@@ -997,8 +1112,9 @@ impl Warp {
             return None;
         }
         let w = w.unwrap_or_default();
+        let gold = c.bypass(w.gold);
         let p = w.p.map(|v| code_sint_bypass(c, v));
-        Some(Warp { p }.clamped())
+        Some(Warp { p, gold }.clamped())
     }
 }
 
@@ -1071,11 +1187,16 @@ impl InterPlane<'_> {
 
     /// Predicción con el movimiento global: un vector por bloque de 4 × 4.
     fn predict_warp(&self, x0: usize, y0: usize, w: usize, h: usize, out: &mut [i32]) {
+        // Con la referencia larga, las mismas coordenadas en su plano.
+        let ip = match (self.warp.is_some_and(|w| w.gold), self.gdata) {
+            (true, Some(g)) => InterPlane { data: g, ..*self },
+            _ => *self,
+        };
         let mut sub = [0i32; 16];
         for by in (0..h).step_by(4) {
             for bx in (0..w).step_by(4) {
-                let mv = self.warp_mv16(x0 + bx, y0 + by);
-                self.predict_with(x0 + bx, y0 + by, 4, 4, mv, 4, &WARP16, &mut sub);
+                let mv = ip.warp_mv16(x0 + bx, y0 + by);
+                ip.predict_with(x0 + bx, y0 + by, 4, 4, mv, 4, &WARP16, &mut sub);
                 for y in 0..4 {
                     out[(by + y) * w + bx..(by + y) * w + bx + 4]
                         .copy_from_slice(&sub[y * 4..y * 4 + 4]);
@@ -1164,6 +1285,8 @@ pub struct RefCanvas {
     sub: bool,
     /// Solo en el codificador: movimiento global elegido para el fotograma.
     warp: Option<Warp>,
+    /// Planos de la referencia larga (mismo espacio de color), si la hay.
+    gold: Option<RefPlanes>,
     /// Solo en el codificador: dq extra por celda AQ del fotograma (más
     /// grueso donde el fotograma anterior ya lo predice bien) y su ancho.
     tdq: Option<(Vec<i32>, usize)>,
@@ -1243,6 +1366,10 @@ pub struct AnimState {
     pub width: usize,
     pub height: usize,
     refp: Option<((bool, bool), RefPlanes)>,
+    /// Referencia larga (fotograma dorado): planos y su espacio de color.
+    gold: Option<((bool, bool), RefPlanes)>,
+    /// ¿El último fotograma pasó a ser la referencia larga?
+    last_gold: bool,
 }
 
 impl AnimState {
@@ -1252,7 +1379,17 @@ impl AnimState {
             width,
             height,
             refp: None,
+            gold: None,
+            last_gold: false,
         }
+    }
+
+    /// Planos de la referencia larga si están en el espacio de color de `h`.
+    fn gold_for(&self, h: &Header) -> Option<RefPlanes> {
+        self.gold
+            .as_ref()
+            .filter(|g| g.0 == ref_kind(h))
+            .map(|g| g.1.clone())
     }
 
     /// Antes de un fotograma: si los planos de referencia no están en su
@@ -1269,18 +1406,23 @@ impl AnimState {
         }
     }
 
-    /// Tras un fotograma: lo pega en el lienzo y sus planos en los de referencia.
+    /// Tras un fotograma: lo pega en el lienzo y sus planos en los de
+    /// referencia; si `f.gold`, los de referencia pasan a ser también la
+    /// referencia larga.
     fn commit(&mut self, f: &FrameInfo, d: &Decoded, planes: &RefPlanes) {
         compose(&mut self.canvas, self.width, d, f);
-        let Some((kind, rp)) = self.refp.as_mut() else {
-            return;
-        };
-        if kind.1 && (f.x | f.y) & 1 != 0 {
-            // La croma no queda alineada: se recalculará del lienzo.
-            self.refp = None;
-            return;
+        if let Some((kind, rp)) = self.refp.as_mut() {
+            if kind.1 && (f.x | f.y) & 1 != 0 {
+                // La croma no queda alineada: se recalculará del lienzo.
+                self.refp = None;
+            } else {
+                paste_planes(rp, planes, f.x, f.y, kind.1);
+            }
         }
-        paste_planes(rp, planes, f.x, f.y, kind.1);
+        if f.gold {
+            self.gold = self.refp.clone();
+        }
+        self.last_gold = f.gold;
     }
 }
 
@@ -1311,6 +1453,7 @@ impl RefCanvas {
             sub: header.subsample && header.tools & TOOL_LOSSLESS == 0,
             warp: None,
             tdq: None,
+            gold: None,
         }
     }
 
@@ -1327,6 +1470,7 @@ impl RefCanvas {
             hash: self.hashes[pi].as_ref(),
             d,
             warp: self.warp,
+            gdata: self.gold.as_ref().map(|g| &g[pi].0[..]),
         }
     }
 }
@@ -2201,6 +2345,7 @@ pub fn assemble_full(
     } else {
         h.tools &= !TOOL_PREVIEW;
     }
+    let meta = &meta.without_srgb();
     let with_meta = h.version >= 2 && !meta.is_empty();
     if with_meta {
         h.tools |= TOOL_META;
@@ -2258,7 +2403,8 @@ struct AnimFrame<'a> {
     src: &'a [u8],
     f: FrameInfo,
     inter: bool,
-    warp: Option<Warp>,
+    /// Movimiento global candidato respecto al anterior y a la referencia larga.
+    warps: [Option<Warp>; 2],
     tdq: Option<(Vec<i32>, usize)>,
 }
 
@@ -2282,7 +2428,13 @@ fn encode_with_alpha_ref(
             let planes = a.st.refp.as_ref().unwrap().1.clone();
             let (cw, ch) = (a.st.width, a.st.height);
             let mut r = RefCanvas::new(planes, Some(a.src), cw, ch, &header, a.f.x, a.f.y);
-            r.warp = a.warp;
+            r.gold = a.st.gold_for(&header);
+            let (warp, stale) = choose_warp(&r, rgb, width, height, &header, a.warps);
+            r.warp = warp;
+            // Si la referencia larga ya predice claramente peor que el
+            // fotograma anterior (o no hay movimiento común con ella), este
+            // fotograma la sustituye.
+            a.f.gold = stale;
             r.tdq = a.tdq.take();
             if r.tdq.is_some() {
                 header.aq = true;
@@ -3435,6 +3587,8 @@ pub struct FrameInfo {
     pub h: usize,
     pub range: std::ops::Range<usize>,
     pub prefix: Vec<u8>,
+    /// Tras decodificarlo, pasa a ser la referencia larga (siempre en el primero).
+    pub gold: bool,
 }
 
 impl FrameInfo {
@@ -3540,7 +3694,11 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
         }
         let form = *data.get(pos).ok_or("archivo truncado")?;
         pos += 1;
-        let (range, prefix, hdr) = match form {
+        if form & !3 != 0 {
+            return Err("forma de fotograma desconocida".into());
+        }
+        let gold = i == 0 || form & 2 != 0;
+        let (range, prefix, hdr) = match form & 1 {
             0 => {
                 let len = read_varint(data, &mut pos)?;
                 let end = pos
@@ -3592,6 +3750,7 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
             h: fh,
             range,
             prefix,
+            gold,
         });
     }
     Ok(Some(AnimInfo {
@@ -3631,9 +3790,9 @@ pub fn decode_frame(
     st.prepare(&h);
     let rc = inter.then(|| {
         let planes = st.refp.as_ref().unwrap().1.clone();
-        std::sync::Arc::new(RefCanvas::new(
-            planes, None, st.width, st.height, &h, f.x, f.y,
-        ))
+        let mut r = RefCanvas::new(planes, None, st.width, st.height, &h, f.x, f.y);
+        r.gold = st.gold_for(&h);
+        std::sync::Arc::new(r)
     });
     let (d, planes) = decode_with_ref(inner, rc, true)?;
     st.commit(f, &d, &planes);
@@ -3828,6 +3987,7 @@ fn estimate_warp(
     );
     let to_w = |m: [f64; 6]| Warp {
         p: m.map(|v| (v * k).round() as i32),
+        gold: false,
     };
     let cands = [
         to_w([0.0, 0.0, tx.round(), 0.0, 0.0, ty.round()]),
@@ -3845,6 +4005,7 @@ fn estimate_warp(
             hash: None,
             d: 1,
             warp: Some(*w),
+            gdata: None,
         };
         let mut pred = vec![0i32; B * B];
         let mut e = 0f64;
@@ -3868,8 +4029,57 @@ fn estimate_warp(
         2
     };
     let w = cands[i];
-    // Sin movimiento: no hace falta.
-    (w.clamped() == w && w != Warp::default()).then_some(w)
+    // Sin movimiento también vale (respecto a la referencia larga es útil).
+    (w.clamped() == w).then_some(w)
+}
+
+/// Elige entre los movimientos globales candidatos (respecto al fotograma
+/// anterior y a la referencia larga) el que mejor predice la luma del
+/// fotograma con los planos reconstruidos de verdad (así cuenta la pérdida
+/// acumulada de encadenar interpolaciones). Devuelve también si la
+/// referencia larga se ha quedado vieja (predice un 25 % peor o no sirve).
+fn choose_warp(
+    rc: &RefCanvas,
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    header: &Header,
+    cands: [Option<Warp>; 2],
+) -> (Option<Warp>, bool) {
+    const B: usize = 16;
+    let luma = color_planes(rgb, w, h, header).swap_remove(0).0;
+    let mut errs = [f64::INFINITY; 2];
+    let mut best: Option<(f64, Warp)> = None;
+    for c in cands.into_iter().flatten() {
+        if c.gold && rc.gold.is_none() {
+            continue;
+        }
+        let ip = InterPlane {
+            warp: Some(c),
+            hash: None,
+            ..rc.plane(0, 0, 0)
+        };
+        let mut pred = vec![0i32; B * B];
+        let mut e = 0f64;
+        for by in (0..h.saturating_sub(B - 1)).step_by(B) {
+            for bx in (0..w.saturating_sub(B - 1)).step_by(B) {
+                ip.predict_warp(bx, by, B, B, &mut pred);
+                for y in 0..B {
+                    for x in 0..B {
+                        e += (luma[(by + y) * w + bx + x] - pred[y * B + x] as f32).abs() as f64;
+                    }
+                }
+            }
+        }
+        errs[c.gold as usize] = e;
+        // Ante la duda, la referencia larga (no acumula interpolaciones).
+        let e = if c.gold { e * 0.99 } else { e };
+        if best.is_none_or(|b| e < b.0) {
+            best = Some((e, c));
+        }
+    }
+    let stale = !(errs[1] <= errs[0] * 1.25);
+    (best.map(|b| b.1), stale)
 }
 
 /// dq extra por celda AQ (en coordenadas del fotograma `r`): `d` donde el
@@ -3903,6 +4113,7 @@ fn temporal_dq(
         hash: None,
         d: 1,
         warp: Some(warp.unwrap_or_default()),
+        gdata: None,
     };
     let mut out = vec![0; gw * gh];
     let mut pred = vec![0i32; AQ * AQ];
@@ -4009,13 +4220,15 @@ pub fn encode_animation_recon(
     };
     // Lienzo y referencia tal como los verá el decodificador.
     let mut st = AnimState::new(width, height);
+    // Fotograma original de la referencia larga.
+    let mut gold_idx = 0;
     // ¿Contenido fotográfico? Se decide una vez con el primer fotograma
     // completo (los rectángulos que cambian pueden ser muy pequeños).
     let photo = !p
         .screen
         .unwrap_or_else(|| tools::looks_synthetic(&rgb_of(&frames[0]), width, height));
-    // (duración, x, y, w, h, datos)
-    let mut list: Vec<(u32, usize, usize, usize, usize, Vec<u8>)> = Vec::new();
+    // (duración, x, y, w, h, datos, nueva referencia larga)
+    let mut list: Vec<(u32, usize, usize, usize, usize, Vec<u8>, bool)> = Vec::new();
     for (i, f) in frames.iter().enumerate() {
         let rect = if i == 0 {
             Some((0, 0, width, height))
@@ -4069,9 +4282,18 @@ pub fn encode_animation_recon(
                     h,
                     range: 0..0,
                     prefix: Vec::new(),
+                    gold: i == 0,
                 };
+                let rect = (x, y, w, h);
                 let warp = if inter && use_warp {
-                    estimate_warp(&frames[i - 1], f, width, height, (x, y, w, h))
+                    estimate_warp(&frames[i - 1], f, width, height, rect)
+                        .filter(|w| *w != Warp::default())
+                } else {
+                    None
+                };
+                let wgold = if inter && use_warp {
+                    estimate_warp(&frames[gold_idx], f, width, height, rect)
+                        .map(|w| Warp { gold: true, ..w })
                 } else {
                     None
                 };
@@ -4083,7 +4305,7 @@ pub fn encode_animation_recon(
                     src: &prev_src,
                     f: fi,
                     inter,
-                    warp,
+                    warps: [warp, wgold],
                     tdq,
                 };
                 let e = encode_with_alpha_ref(
@@ -4095,7 +4317,10 @@ pub fn encode_animation_recon(
                     Some(af),
                 );
                 recons.push(st.canvas.clone());
-                list.push((durations_ms[i], x, y, w, h, e.bytes));
+                if st.last_gold {
+                    gold_idx = i;
+                }
+                list.push((durations_ms[i], x, y, w, h, e.bytes, st.last_gold && i > 0));
             }
         }
     }
@@ -4105,19 +4330,21 @@ pub fn encode_animation_recon(
         .collect();
     let mut header = make_header(&rgb, width, height, &sub);
     header.tools = (header.tools & !(TOOL_PREVIEW | TOOL_META)) | TOOL_ANIM;
-    if !p.meta.is_empty() {
+    let meta = p.meta.without_srgb();
+    if !meta.is_empty() {
         header.tools |= TOOL_META;
     }
     let mut out = Vec::new();
     header.write(&mut out);
-    if !p.meta.is_empty() {
-        p.meta.write(&mut out);
+    if !meta.is_empty() {
+        meta.write(&mut out);
     }
     out.extend_from_slice(&loops.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&(list.len() as u32).to_le_bytes());
     let mut prev: Option<Header> = None;
-    for (d, x, y, w, h, bytes) in &list {
+    for (d, x, y, w, h, bytes, gold) in &list {
+        let gbit = if *gold { 2 } else { 0 };
         for v in [*d, *x as u32, *y as u32, *w as u32, *h as u32] {
             write_varint(&mut out, v);
         }
@@ -4134,7 +4361,7 @@ pub fn encode_animation_recon(
                 } == *p
         });
         if abbrev {
-            out.push(1);
+            out.push(1 | gbit);
             out.push(hdr.tools);
             let ntiles = tile_grid(*w, *h, hdr.tile_size()).len();
             for k in 0..ntiles {
@@ -4146,7 +4373,7 @@ pub fn encode_animation_recon(
             }
             out.extend_from_slice(&bytes[HEADER_LEN + 4 * ntiles..]);
         } else {
-            out.push(0);
+            out.push(gbit);
             write_varint(&mut out, bytes.len() as u32);
             out.extend_from_slice(bytes);
         }
