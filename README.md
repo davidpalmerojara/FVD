@@ -217,6 +217,8 @@ pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
 | Transformadas múltiples (estilo MTS) | sin ganancia neta | **Descartado** |
 | Tablas de probabilidad entrenadas con DIV2K | sin ganancia neta | **Descartado**; se siguen usando BSD100 e imágenes sintéticas |
 | Tablas v2 entrenadas (incluyen los contextos nuevos) | −0,2 a −0,3 % en recortes de validación | **Adoptado** |
+| Cuantización dependiente (trellis de 4 estados, como en VVC), con tablas reentrenadas | Kodak −29,8 % (igual); recortes: +0,8 % en calidad baja, −0,8 % en alta | **Descartado**: neutro de media y un 25 % más lento. Nuestro RDOQ ya era ajustado y SSIMULACRA2 no es error cuadrático |
+| RDO psicovisual (penalizar la diferencia de energía AC, como el `psy-rd` de x264) | de +2 % (débil) a +32 % (fuerte) en calidad baja | **Descartado**: SSIMULACRA2 mide estructura, y forzar textura la empeora |
 
 **Codificador multihilo.** Dentro de cada tesela, los superbloques de 64×64 se deciden en
 *frente de onda*: el (x, y) puede empezar en cuanto están el (x−1, y) y el (x+1, y−1). Para que
