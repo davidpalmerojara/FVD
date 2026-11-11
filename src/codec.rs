@@ -26,7 +26,7 @@ pub const MIN_VERSION: u8 = 1;
 /// Bits de `tools` definidos en la v1.
 const KNOWN_TOOLS: u8 = 1 | 2 | 4 | 8;
 /// Bits añadidos en la v2.
-const KNOWN_TOOLS_V2: u8 = KNOWN_TOOLS | TOOL_META | TOOL_ANIM;
+const KNOWN_TOOLS_V2: u8 = KNOWN_TOOLS | TOOL_META | TOOL_ANIM | TOOL_INTER;
 const SB: usize = 64;
 /// Granularidad de la cuantización adaptativa (AQ).
 const AQ: usize = 32;
@@ -43,6 +43,10 @@ pub const TOOL_PREVIEW: u8 = 8;
 pub const TOOL_META: u8 = 32;
 /// v2: animación (lista de fotogramas en lugar de tabla de teselas).
 pub const TOOL_ANIM: u8 = 64;
+/// v2, en el archivo de un fotograma: predicción desde el fotograma anterior.
+pub const TOOL_INTER: u8 = 128;
+/// Marca en el mapa de modos de las hojas predichas desde el fotograma anterior.
+const MARK_INTER: u8 = 202;
 /// Lado mayor de la vista previa, en píxeles.
 const PREVIEW_SIDE: usize = 48;
 
@@ -332,6 +336,9 @@ struct Ctx {
     bv: BvCtx,
     rect: Vec<Model>,
     rect_dir: Vec<Model>,
+    /// v2, fotogramas con referencia: ¿hoja predicha del fotograma anterior? y su vector.
+    inter: Vec<Model>,
+    mv: BvCtx,
 }
 
 impl Visit for Ctx {
@@ -353,6 +360,8 @@ impl Visit for Ctx {
         // v2 (al final para que las tablas de la v1 sigan aplicándose igual)
         self.rect.visit(f);
         self.rect_dir.visit(f);
+        self.inter.visit(f);
+        self.mv.visit(f);
     }
 }
 
@@ -426,6 +435,8 @@ impl Ctx {
             bv: BvCtx::default(),
             rect: vec![Model::new(); 2 * 4],
             rect_dir: vec![Model::new(); 2 * 4],
+            inter: vec![Model::new(); 2 * 5 * 3],
+            mv: BvCtx::default(),
         }
     }
 }
@@ -599,6 +610,8 @@ enum Kind {
     Intra(u8),
     Palette(Palette),
     Ibc((i32, i32)),
+    /// Copia del fotograma anterior desplazada por el vector (píxeles enteros).
+    Inter((i32, i32)),
 }
 
 impl Kind {
@@ -608,6 +621,7 @@ impl Kind {
             Kind::Intra(m) => *m,
             Kind::Palette(_) => MARK_PALETTE,
             Kind::Ibc(_) => MARK_IBC,
+            Kind::Inter(_) => MARK_INTER,
         }
     }
 }
@@ -662,6 +676,12 @@ fn code_rect<C: Coder>(
 struct ScState {
     last_pal: Option<Vec<u8>>,
     last_bv: (i32, i32),
+    last_mv: (i32, i32),
+}
+
+fn inter_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
+    let it = |v: Option<(u8, u8, bool)>| v.is_some_and(|(m, _, _)| m == MARK_INTER) as usize;
+    it(p.neighbor(x0, y0, true)) + it(p.neighbor(x0, y0, false))
 }
 
 fn special_ctx(p: &Plane, x0: usize, y0: usize) -> usize {
@@ -686,11 +706,24 @@ fn code_leaf_head<C: Coder>(
     lossless: bool,
     leaf: &Leaf,
     st: &mut ScState,
+    inter: bool,
 ) -> (Kind, bool) {
     let n = w.max(h);
     let sz = size_index(n);
     let mut kind = None;
-    if screen {
+    if inter
+        && c.bit(
+            &mut ctx.inter[(pc * 5 + sz) * 3 + inter_ctx(p, x0, y0)],
+            matches!(leaf.kind, Kind::Inter(_)),
+        )
+    {
+        let mv = match leaf.kind {
+            Kind::Inter(m) => m,
+            _ => (0, 0),
+        };
+        kind = Some(Kind::Inter(ctx.mv.code(c, pc, mv, &mut st.last_mv)));
+    }
+    if screen && kind.is_none() {
         let special = !matches!(leaf.kind, Kind::Intra(_));
         if c.bit(
             &mut ctx.special[(pc * 5 + sz) * 3 + special_ctx(p, x0, y0)],
@@ -830,9 +863,14 @@ fn predict_leaf(
     y0: usize,
     w: usize,
     h: usize,
+    ip: Option<&InterPlane>,
     out: &mut [i32],
 ) {
     match kind {
+        Kind::Inter(mv) => match ip {
+            Some(ip) => ip.predict(x0, y0, w, h, *mv, out),
+            None => out[..w * h].fill(128),
+        },
         Kind::Intra(m) => predict_mode(p, refs, lref, *m, x0, y0, w, h, out),
         Kind::Palette(pal) => tools::predict_palette(pal, out),
         Kind::Ibc(bv) => {
@@ -845,12 +883,80 @@ fn predict_leaf(
     }
 }
 
+/// Plano del fotograma anterior (lienzo completo) para la predicción entre
+/// fotogramas, con el origen de la tesela actual dentro de él.
+#[derive(Clone, Copy)]
+struct InterPlane<'a> {
+    data: &'a [u8],
+    w: usize,
+    h: usize,
+    ox: usize,
+    oy: usize,
+    /// Solo en el codificador: hash del fotograma anterior original.
+    hash: Option<&'a tools::HashIndex>,
+}
+
+impl InterPlane<'_> {
+    /// Copia desplazada; fuera del lienzo se repite el borde.
+    fn predict(&self, x0: usize, y0: usize, w: usize, h: usize, mv: (i32, i32), out: &mut [i32]) {
+        let bx = (self.ox + x0) as i64 + mv.0 as i64;
+        let by = (self.oy + y0) as i64 + mv.1 as i64;
+        let (mw, mh) = (self.w as i64 - 1, self.h as i64 - 1);
+        for y in 0..h {
+            let ry = (by + y as i64).clamp(0, mh) as usize;
+            let row = &self.data[ry * self.w..(ry + 1) * self.w];
+            for x in 0..w {
+                out[y * w + x] = row[(bx + x as i64).clamp(0, mw) as usize] as i32;
+            }
+        }
+    }
+}
+
+/// Fotograma anterior (lienzo completo) en el espacio de color del fotograma
+/// actual, y dónde empieza el fotograma dentro del lienzo (coordenadas pares).
+pub struct RefCanvas {
+    planes: Vec<(Vec<u8>, usize, usize)>,
+    hashes: Vec<Option<tools::HashIndex>>,
+    x: usize,
+    y: usize,
+    sub: bool,
+}
+
+impl RefCanvas {
+    /// `recon`: lienzo anterior decodificado (RGB). `src`: lienzo anterior
+    /// original (solo el codificador, para buscar coincidencias exactas).
+    fn new(recon: &[u8], src: Option<&[u8]>, w: usize, h: usize, header: &Header, x: usize, y: usize) -> Self {
+        let to_u8 = |p: &[f32]| p.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect::<Vec<u8>>();
+        let planes = color_planes(recon, w, h, header)
+            .into_iter()
+            .map(|(p, pw, ph)| (to_u8(&p), pw, ph))
+            .collect();
+        let hashes = match src {
+            Some(s) => color_planes(s, w, h, header)
+                .into_iter()
+                .map(|(p, pw, ph)| Some(tools::HashIndex::build(&p, pw, ph)))
+                .collect(),
+            None => vec![None, None, None],
+        };
+        RefCanvas { planes, hashes, x, y, sub: header.subsample && header.tools & TOOL_LOSSLESS == 0 }
+    }
+
+    /// Plano `pi` para la tesela que empieza en (tx, ty) dentro del fotograma.
+    fn plane(&self, pi: usize, tx: usize, ty: usize) -> InterPlane<'_> {
+        let d = if pi > 0 && self.sub { 2 } else { 1 };
+        let (data, w, h) = &self.planes[pi];
+        InterPlane { data, w: *w, h: *h, ox: (self.x + tx) / d, oy: (self.y + ty) / d, hash: self.hashes[pi].as_ref() }
+    }
+}
+
 // ------------------------------------------------------------- Codificador
 
 struct PlaneEnc<'a> {
     src: &'a [f32],
     plane: Plane,
     pc: usize,
+    /// Fotograma anterior, si este fotograma predice de él.
+    inter: Option<InterPlane<'a>>,
     /// Índice hash para la búsqueda de IBC (solo con herramientas sintéticas).
     hash: Option<&'a tools::HashIndex>,
     /// Estado sintético aproximado durante el RDO.
@@ -868,6 +974,8 @@ struct EncState {
     v2: bool,
     /// Esfuerzo (1..9): los niveles bajos recortan la búsqueda para ir más rápido.
     effort: u8,
+    /// Fotograma con predicción desde el anterior (cada hoja lleva el bit inter).
+    inter: bool,
 }
 
 /// Resultado de evaluar una hoja.
@@ -890,6 +998,7 @@ impl EncState {
             lossless: self.lossless,
             v2: self.v2,
             effort: self.effort,
+            inter: self.inter,
         }
     }
 
@@ -925,6 +1034,7 @@ impl EncState {
             self.lossless,
             &leaf,
             &mut st,
+            self.inter,
         );
         cc.bits
     }
@@ -1128,8 +1238,64 @@ impl EncState {
                 }
             }
         }
+        if let Some(ip) = pe.inter {
+            // Predicción desde el fotograma anterior: vectores candidatos (el
+            // nulo, el último, coincidencias exactas del hash y una búsqueda
+            // por pasos alrededor del mejor), ordenados por SAD + bits.
+            let mut seen: Vec<(i32, i32)> = Vec::new();
+            let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
+            let mut score = |mv: (i32, i32), this: &mut Self, scored: &mut Vec<(f32, (i32, i32))>, pred: &mut [i32]| {
+                if seen.contains(&mv) || mv.0.abs() > 4096 || mv.1.abs() > 4096 {
+                    return f32::INFINITY;
+                }
+                seen.push(mv);
+                ip.predict(x0, y0, w, h, mv, pred);
+                let sad: f32 = (0..nn).map(|i| (src[i] - pred[i] as f32).abs()).sum();
+                let s = sad + slam * this.ctx.mv.cost(pc, mv, pe.sc.last_mv);
+                scored.push((s, mv));
+                s
+            };
+            let mut start = vec![(0, 0), pe.sc.last_mv];
+            if let Some(hi) = ip.hash.filter(|_| w.min(h) >= 8) {
+                for c in hi.candidates(pe.src, pe.plane.w, x0, y0).into_iter().take(8) {
+                    start.push((c.0 - ip.ox as i32, c.1 - ip.oy as i32));
+                }
+            }
+            let mut best_mv = (f32::INFINITY, (0, 0));
+            for mv in start {
+                let s = score(mv, self, &mut scored, &mut pred);
+                if s < best_mv.0 {
+                    best_mv = (s, mv);
+                }
+            }
+            if self.effort >= 2 && w.min(h) >= 8 {
+                for step in [8, 4, 2, 1] {
+                    let mut improved = true;
+                    while improved {
+                        improved = false;
+                        let c = best_mv.1;
+                        for (dx, dy) in [(step, 0), (-step, 0), (0, step), (0, -step), (step, step), (-step, -step), (step, -step), (-step, step)] {
+                            let mv = (c.0 + dx, c.1 + dy);
+                            let s = score(mv, self, &mut scored, &mut pred);
+                            if s < best_mv.0 {
+                                best_mv = (s, mv);
+                                improved = true;
+                            }
+                        }
+                    }
+                }
+            }
+            scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            for &(_, mv) in scored.iter().take(2) {
+                ip.predict(x0, y0, w, h, mv, &mut pred);
+                let (jr, lv, ts) = self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true);
+                let kind = Kind::Inter(mv);
+                let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
+                consider(&mut best, jr + lambda * hb, kind, lv, ts);
+            }
+        }
         let (j, kind, levels, ts) = best.expect("al menos un candidato");
-        predict_leaf(&pe.plane, &refs, lref, &kind, x0, y0, w, h, &mut pred);
+        predict_leaf(&pe.plane, &refs, lref, &kind, x0, y0, w, h, pe.inter.as_ref(), &mut pred);
         let mut recon = vec![0u8; nn];
         reconstruct(
             &levels,
@@ -1157,6 +1323,7 @@ impl EncState {
         match &ev.leaf.kind {
             Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
             Kind::Ibc(bv) => pe.sc.last_bv = *bv,
+            Kind::Inter(mv) => pe.sc.last_mv = *mv,
             Kind::Intra(_) => {}
         }
     }
@@ -1290,6 +1457,7 @@ impl EncState {
             self.lossless,
             leaf,
             st,
+            self.inter,
         );
         let mut l = leaf.levels.clone();
         let coef = if leaf.ts {
@@ -1583,10 +1751,36 @@ fn encode_with_alpha(
     height: usize,
     p: &Params,
 ) -> Encoded {
+    encode_with_alpha_ref(rgb, alpha, width, height, p, None)
+}
+
+/// Fotograma anterior para predecir de él: lienzo reconstruido y original
+/// (RGB), su tamaño y el origen (par) del fotograma dentro del lienzo.
+struct RefSource<'a> {
+    recon: &'a [u8],
+    src: &'a [u8],
+    w: usize,
+    h: usize,
+    x: usize,
+    y: usize,
+}
+
+fn encode_with_alpha_ref(
+    rgb: &[u8],
+    alpha: Option<&[u8]>,
+    width: usize,
+    height: usize,
+    p: &Params,
+    rsrc: Option<RefSource>,
+) -> Encoded {
     let mut header = make_header(rgb, width, height, p);
     if alpha.is_some() {
         header.tools |= TOOL_ALPHA;
     }
+    if rsrc.is_some() {
+        header.tools |= TOOL_INTER;
+    }
+    let rc = rsrc.map(|r| RefCanvas::new(r.recon, Some(r.src), r.w, r.h, &header, r.x, r.y));
     let tiles = tile_grid(width, height, header.tile_size());
     // Hilos por tesela: todos los disponibles aunque las teselas también vayan
     // en paralelo, porque suelen ser de tamaños distintos (las del borde son
@@ -1598,7 +1792,16 @@ fn encode_with_alpha(
     let p = &p2;
     let res = par_map(&tiles, |t| {
         let a = alpha.map(|a| crop(a, 1, width, t));
-        encode_tile(&crop(rgb, 3, width, t), a.as_deref(), t.w, t.h, &header, p)
+        let r = encode_tile_ref(
+            &crop(rgb, 3, width, t),
+            a.as_deref(),
+            t.w,
+            t.h,
+            &header,
+            p,
+            rc.as_ref().map(|rc| (rc, t.x, t.y)),
+        );
+        (r.0, r.1, r.2)
     });
     let mut recon_rgb = vec![0u8; width * height * 3];
     let mut recon_alpha = alpha.map(|_| vec![0u8; width * height]);
@@ -1707,6 +1910,7 @@ fn encode_plane(
     qm: &mut QMap,
     code_dq: bool,
     threads: usize,
+    ip: Option<InterPlane<'_>>,
 ) -> (Plane, Vec<f32>) {
     use std::sync::{Condvar, Mutex};
     let (src, pw, ph) = pad_plane(src, w, h);
@@ -1816,6 +2020,7 @@ fn encode_plane(
             src: &src,
             plane,
             pc,
+            inter: ip,
             hash: hash.as_ref(),
             sc: ScState::default(),
         };
@@ -1919,6 +2124,23 @@ fn encode_plane(
     (plane, src)
 }
 
+/// `encode_plane` para el alfa (sin predicción entre fotogramas).
+#[allow(clippy::too_many_arguments)]
+fn encode_plane_alpha(
+    st: &mut EncState,
+    enc: &mut Encoder,
+    src: &[f32],
+    w: usize,
+    h: usize,
+    pc: usize,
+    lref: Option<&LumaRef>,
+    qm: &mut QMap,
+    code_dq: bool,
+    threads: usize,
+) -> (Plane, Vec<f32>) {
+    encode_plane(st, enc, src, w, h, pc, lref, qm, code_dq, threads, None)
+}
+
 /// Mapa de cuantización plano con paso 1 (alfa y modo sin pérdida).
 fn unit_qmap(w: usize, h: usize) -> QMap {
     let (qw, qh) = (w.div_ceil(SB) * SB / AQ, h.div_ceil(SB) * SB / AQ);
@@ -1941,6 +2163,21 @@ pub fn encode_tile_stats(
     header: &Header,
     p: &Params,
 ) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(u32, u32)>) {
+    encode_tile_ref(rgb, alpha, width, height, header, p, None)
+}
+
+/// Como `encode_tile_stats`, con el fotograma anterior como referencia
+/// (y el origen de la tesela dentro del fotograma).
+#[allow(clippy::type_complexity)]
+fn encode_tile_ref(
+    rgb: &[u8],
+    alpha: Option<&[u8]>,
+    width: usize,
+    height: usize,
+    header: &Header,
+    p: &Params,
+    iref: Option<(&RefCanvas, usize, usize)>,
+) -> (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Vec<(u32, u32)>) {
     let lossless = header.tools & TOOL_LOSSLESS != 0;
     let sub = header.subsample && !lossless;
     let base_q = header.qstep();
@@ -1961,6 +2198,7 @@ pub fn encode_tile_stats(
         lossless,
         v2: header.version >= 2,
         effort: p.effort.clamp(1, 9),
+        inter: iref.is_some(),
     };
     let mut enc = Encoder::new();
     let mut planes: Vec<Plane> = Vec::new();
@@ -1993,6 +2231,7 @@ pub fn encode_tile_stats(
             &mut qm,
             pi == 0 && header.aq,
             p.threads.max(1),
+            iref.map(|(rc, tx, ty)| rc.plane(pi, tx, ty)),
         );
         if pi == 0 {
             lref = Some(LumaRef::new(&plane, sub));
@@ -2031,9 +2270,10 @@ pub fn encode_tile_stats(
             lossless: true,
             v2: header.version >= 2,
             effort: st.effort,
+            inter: false,
         };
         let mut aq = unit_qmap(width, height);
-        let (plane, _) = encode_plane(
+        let (plane, _) = encode_plane_alpha(
             &mut ast,
             &mut enc,
             &a,
@@ -2101,6 +2341,11 @@ struct DecState {
     lossless: bool,
     /// Flujo de bits v2 (particiones rectangulares).
     v2: bool,
+    /// Fotograma con predicción desde el anterior.
+    inter: bool,
+    /// Fotograma anterior y (plano, origen de la tesela) que se decodifica ahora.
+    rc: Option<std::sync::Arc<RefCanvas>>,
+    cur: (usize, usize, usize),
 }
 
 impl DecState {
@@ -2170,6 +2415,7 @@ impl DecState {
             self.lossless,
             &dummy,
             st,
+            self.inter,
         );
         let kind = match kind {
             Kind::Intra(m) if m == MODE_CCLM && lref.is_none() => Kind::Intra(MODE_DC),
@@ -2185,7 +2431,9 @@ impl DecState {
         let nz = coef.code_block(dec, pc, w, h, cbf_ctx(p, x0, y0), &mut levels);
         let refs = predict::build_refs(p, x0, y0, w, h);
         let mut pred = vec![0i32; w * h];
-        predict_leaf(p, &refs, lref, &kind, x0, y0, w, h, &mut pred);
+        let (pi, tx, ty) = self.cur;
+        let ip = self.rc.as_ref().map(|rc| rc.plane(pi, tx, ty));
+        predict_leaf(p, &refs, lref, &kind, x0, y0, w, h, ip.as_ref(), &mut pred);
         let mut recon = vec![0u8; w * h];
         let q = qm.q(pc, x0, y0, w, h);
         reconstruct(
@@ -2365,6 +2613,19 @@ fn decode_plane(
 
 /// Decodifica una tesela de `w × ht`. Devuelve (RGB, alfa).
 pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>, Option<Vec<u8>>) {
+    decode_tile_ref(payload, w, ht, h, None, 0, 0)
+}
+
+/// Como `decode_tile`, con el fotograma anterior y el origen de la tesela.
+fn decode_tile_ref(
+    payload: &[u8],
+    w: usize,
+    ht: usize,
+    h: &Header,
+    rc: Option<std::sync::Arc<RefCanvas>>,
+    tx: usize,
+    ty: usize,
+) -> (Vec<u8>, Option<Vec<u8>>) {
     let lossless = h.tools & TOOL_LOSSLESS != 0;
     let sub = h.subsample && !lossless;
     let base_q = h.qstep();
@@ -2385,6 +2646,9 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
         screen: h.tools & TOOL_SCREEN != 0,
         lossless,
         v2: h.version >= 2,
+        inter: h.tools & TOOL_INTER != 0,
+        rc,
+        cur: (0, tx, ty),
     };
     let mut dec = Decoder::new(payload);
     let mut planes = Vec::new();
@@ -2403,6 +2667,7 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
             qm.h = ph0.div_ceil(SB) * SB / AQ;
             qm.dq = vec![0; qm.w * qm.h];
         }
+        st.cur.0 = pi;
         let plane = decode_plane(
             &mut st,
             &mut dec,
@@ -2435,6 +2700,9 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
             screen: true,
             lossless: true,
             v2: h.version >= 2,
+            inter: false,
+            rc: None,
+            cur: (0, 0, 0),
         };
         let mut aq = unit_qmap(w, ht);
         let plane = decode_plane(&mut ast, &mut dec, w, ht, 0, None, &mut aq, false);
@@ -2446,15 +2714,24 @@ pub fn decode_tile(payload: &[u8], w: usize, ht: usize, h: &Header) -> (Vec<u8>,
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
     // Una animación se decodifica como su primer fotograma (que cubre todo el lienzo).
     if let Some(a) = anim_info(data)? {
-        let d = decode_frame(data, &a.frames[0])?;
+        let d = decode_frame(data, &a.frames[0], None)?;
         return Ok(Decoded { meta: a.meta, ..d });
     }
+    decode_with_ref(data, None)
+}
+
+/// Decodifica un archivo fijo; si es un fotograma con predicción entre
+/// fotogramas, necesita el fotograma anterior (`rc`).
+fn decode_with_ref(data: &[u8], rc: Option<std::sync::Arc<RefCanvas>>) -> Result<Decoded, String> {
     let inf = info(data)?;
+    if inf.header.tools & TOOL_INTER != 0 && rc.is_none() {
+        return Err("fotograma que depende del anterior: decodifica la animación completa".into());
+    }
     let (w, ht) = (inf.header.width as usize, inf.header.height as usize);
     let idx: Vec<usize> = (0..inf.tiles.len()).collect();
     let parts = par_map(&idx, |&i| {
         let t = inf.tiles[i];
-        decode_tile(&data[inf.ranges[i].clone()], t.w, t.h, &inf.header)
+        decode_tile_ref(&data[inf.ranges[i].clone()], t.w, t.h, &inf.header, rc.clone(), t.x, t.y)
     });
     let mut rgb = vec![0u8; w * ht * 3];
     let mut alpha = (inf.header.tools & TOOL_ALPHA != 0).then(|| vec![255u8; w * ht]);
@@ -2572,13 +2849,27 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
 }
 
 /// Decodifica el rectángulo de un fotograma (sin componer).
-pub fn decode_frame(data: &[u8], f: &FrameInfo) -> Result<Decoded, String> {
+pub fn decode_frame(
+    data: &[u8],
+    f: &FrameInfo,
+    prev: Option<(&[u8], usize, usize)>,
+) -> Result<Decoded, String> {
     let inner = &data[f.range.clone()];
     let h = Header::read(inner)?;
     if h.tools & TOOL_ANIM != 0 || h.width as usize != f.w || h.height as usize != f.h {
         return Err("fotograma no válido".into());
     }
-    decode(inner)
+    if h.tools & TOOL_INTER == 0 {
+        return decode(inner);
+    }
+    // Predice del lienzo anterior (RGBA de cw × ch).
+    let (canvas, cw, ch) = prev.ok_or("fotograma que depende del anterior")?;
+    if h.subsample && (f.x | f.y) & 1 != 0 {
+        return Err("fotograma con predicción en coordenadas impares".into());
+    }
+    let rgb: Vec<u8> = canvas.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let rc = std::sync::Arc::new(RefCanvas::new(&rgb, None, cw, ch, &h, f.x, f.y));
+    decode_with_ref(inner, Some(rc))
 }
 
 /// Pega un fotograma decodificado en el lienzo RGBA.
@@ -2604,7 +2895,7 @@ pub fn decode_animation(
     let mut canvas = vec![0u8; a.width * a.height * 4];
     let mut out = Vec::with_capacity(a.frames.len());
     for f in &a.frames {
-        let d = decode_frame(data, f)?;
+        let d = decode_frame(data, f, Some((&canvas, a.width, a.height)))?;
         compose(&mut canvas, a.width, &d, f);
         out.push((canvas.clone(), f.duration_ms));
     }
@@ -2657,6 +2948,11 @@ pub fn encode_animation(
         preview: false,
         ..p.clone()
     };
+    // Predicción entre fotogramas (TESELA_NOINTER=1 la desactiva, para comparar).
+    let use_inter = std::env::var_os("TESELA_NOINTER").is_none();
+    let rgb_of = |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|px| [px[0], px[1], px[2]]).collect() };
+    // Lienzo tal como lo verá el decodificador (RGBA).
+    let mut recon = vec![0u8; width * height * 4];
     // (duración, x, y, w, h, datos)
     let mut list: Vec<(u32, usize, usize, usize, usize, Vec<u8>)> = Vec::new();
     for (i, f) in frames.iter().enumerate() {
@@ -2668,11 +2964,34 @@ pub fn encode_animation(
         match rect {
             None => list.last_mut().unwrap().0 += durations_ms[i],
             Some((x, y, w, h)) => {
+                // Origen par: la croma 4:2:0 del fotograma y la de la referencia coinciden.
+                let (x, y, w, h) = (x & !1, y & !1, w + (x & 1), h + (y & 1));
                 let mut crop = Vec::with_capacity(w * h * 4);
                 for yy in y..y + h {
                     crop.extend_from_slice(&f[(yy * width + x) * 4..(yy * width + x + w) * 4]);
                 }
-                let e = encode_rgba(&crop, w, h, &sub);
+                let crgb = rgb_of(&crop);
+                let alpha: Vec<u8> = crop.chunks_exact(4).map(|px| px[3]).collect();
+                let has_alpha = alpha.iter().any(|&a| a != 255);
+                let (prev_recon, prev_src) = (rgb_of(&recon), rgb_of(&frames[i.max(1) - 1]));
+                let rsrc = (i > 0 && use_inter).then(|| RefSource {
+                    recon: &prev_recon,
+                    src: &prev_src,
+                    w: width,
+                    h: height,
+                    x,
+                    y,
+                });
+                let e = encode_with_alpha_ref(&crgb, has_alpha.then_some(&alpha[..]), w, h, &sub, rsrc);
+                let d = Decoded {
+                    width: w,
+                    height: h,
+                    rgb: e.recon_rgb.clone(),
+                    alpha: e.recon_alpha.clone(),
+                    meta: Metadata::default(),
+                };
+                let fi = FrameInfo { duration_ms: 0, x, y, w, h, range: 0..0 };
+                compose(&mut recon, width, &d, &fi);
                 list.push((durations_ms[i], x, y, w, h, e.bytes));
             }
         }

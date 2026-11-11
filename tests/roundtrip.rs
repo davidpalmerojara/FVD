@@ -357,3 +357,45 @@ fn animation_roundtrip() {
         assert_eq!((first.width, first.height), (w, h));
     }
 }
+
+#[test]
+fn animation_inter_no_drift() {
+    use tesela::codec::{anim_info, decode_animation, encode_animation};
+    // Una franja de texto sintético que se desplaza (como al hacer scroll):
+    // la predicción entre fotogramas debe aprovecharla sin acumular error.
+    let (w, h) = (128, 96);
+    let base = synthetic(w, 3 * h, 5);
+    let frames: Vec<Vec<u8>> = (0..8)
+        .map(|t| {
+            let mut f = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                for x in 0..w {
+                    let i = ((y + 6 * t) * w + x) * 3;
+                    f.extend_from_slice(&[base[i], base[i + 1], base[i + 2], 255]);
+                }
+            }
+            f
+        })
+        .collect();
+    let durations = vec![50; frames.len()];
+    for lossless in [true, false] {
+        let p = Params { lossless, quality: 85.0, ..Default::default() };
+        let bytes = encode_animation(&frames, &durations, w, h, 0, &p).unwrap();
+        let (_, dec) = decode_animation(&bytes, 1 << 26).unwrap();
+        assert_eq!(dec.len(), frames.len());
+        let rgb = |f: &[u8]| -> Vec<u8> { f.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect() };
+        let first = metrics::psnr_rgb(&rgb(&frames[0]), &rgb(&dec[0].0));
+        for (k, (canvas, _)) in dec.iter().enumerate() {
+            if lossless {
+                assert_eq!(canvas, &frames[k], "sin pérdida, fotograma {k}");
+            } else {
+                // Sin deriva: ningún fotograma mucho peor que el primero (que no predice).
+                let ps = metrics::psnr_rgb(&rgb(&frames[k]), &rgb(canvas));
+                assert!(ps > first - 3.0, "fotograma {k}: PSNR {ps:.1} frente a {first:.1} del primero");
+            }
+        }
+        // Un fotograma que depende del anterior no se decodifica solo.
+        let a = anim_info(&bytes).unwrap().unwrap();
+        assert!(tesela::codec::decode_frame(&bytes, &a.frames[1], None).is_err());
+    }
+}

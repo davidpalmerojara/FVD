@@ -16,6 +16,7 @@ El byte de versión vale **2**. El resto de la cabecera no cambia, salvo un bit 
 |---|---|---|
 | 32 | `META` | Hay una sección de metadatos tras la cabecera (sección 1.1). |
 | 64 | `ANIM` | Animación: lista de fotogramas en lugar de la tabla de teselas (sección 1.2). |
+| 128 | `INTER` | Solo en el archivo de un fotograma (no el primero): predicción desde el fotograma anterior (sección 1.3). |
 
 Un decodificador v1 rechaza un archivo con un bit de `tools` que no conoce.
 
@@ -60,9 +61,32 @@ El lienzo empieza vacío y cada fotograma sustituye su rectángulo (RGBA, tambi�
 resultado tras cada uno es la imagen que se muestra durante su duración. El primer fotograma cubre
 todo el lienzo. Un decodificador que solo muestre imágenes fijas usa el primer fotograma.
 
-No hay predicción entre fotogramas: cada rectángulo se codifica como una imagen fija. El
-codificador de referencia guarda solo el rectángulo que cambia respecto al fotograma anterior y une
-los fotogramas idénticos sumando sus duraciones.
+El codificador de referencia guarda solo el rectángulo que cambia respecto al fotograma anterior y
+une los fotogramas idénticos sumando sus duraciones.
+
+### 1.3 Predicción entre fotogramas
+
+Un fotograma cuyo archivo tiene `INTER` puede predecir sus bloques del lienzo anterior (el resultado
+compuesto del fotograma previo). Si el archivo tiene croma 4:2:0, `x` e `y` deben ser pares.
+
+**Referencia.** El lienzo anterior (RGB) se convierte con la transformación de color del archivo
+del fotograma (YCbCr con o sin submuestreo, o G, B, R sin pérdida, como en la v1) y cada muestra se
+redondea a 8 bits (`round` y `clamp(0, 255)`). Para una tesela que empieza en (tx, ty) dentro del
+fotograma, el origen en el plano de referencia es `((x + tx) / d, (y + ty) / d)`, con d = 2 en croma
+submuestreada y 1 en otro caso.
+
+**Sintaxis.** Al principio de la cabecera de cada hoja (antes de la clase especial de la v1) va el
+bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
+202. Si vale 1, sigue un vector de movimiento con la misma sintaxis que el vector de la copia intra
+(sección 6.5 de la v1), pero con modelos propios (`mv`) y su propio «último vector», que empieza en
+(0, 0) en cada plano de cada tesela. La marca de la hoja en el mapa es 202, y la cabecera sigue con
+`ts` como cualquier otra hoja.
+
+**Predicción.** La muestra (x, y) del bloque en (x0, y0) es la de la referencia en
+`(ox + x0 + x + mvx, oy + y0 + y + mvy)`, con las coordenadas recortadas al plano (se repite el
+borde). Los vectores son de píxeles enteros. El residuo y la reconstrucción son los de la v1.
+
+Los modelos `inter` y `mv` van al final del orden de visita, detrás de los de la v2.
 
 ## 2. Bloques rectangulares
 
