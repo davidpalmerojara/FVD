@@ -34,7 +34,8 @@ const CODECS = {
   },
   avif: {
     async encode(img, q, o) {
-      return new Uint8Array(await (await jsq('avif', 'encode'))(img, { quality: q, speed: o.avifSpeed ?? 6 }));
+      // subsample: 1 = 4:2:0 (por defecto), 3 = 4:4:4.
+      return new Uint8Array(await (await jsq('avif', 'encode'))(img, { quality: q, speed: o.avifSpeed ?? 6, subsample: o.avifSub ?? 1 }));
     },
     async decode(bytes) {
       return (await (await jsq('avif', 'decode'))(bytes.buffer)).data;
@@ -145,7 +146,18 @@ self.onmessage = async (ev) => {
   try {
     const img = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), width, height);
     const progress = (msg) => self.postMessage({ id, progress: msg });
-    const r = mode === 'target' ? await search(codec, img, target, opts, progress) : await runOnce(codec, img, quality, opts);
+    let r;
+    if (mode === 'target' && codec === 'avif') {
+      // AVIF admite croma completa (4:4:4): como Tesela elige sola, a AVIF se
+      // le prueban las dos y se queda la que ocupe menos a igual calidad.
+      const a = await search(codec, img, target, { ...opts, avifSub: 1 }, (m) => progress('4:2:0 ' + m));
+      const b = await search(codec, img, target, { ...opts, avifSub: 3 }, (m) => progress('4:4:4 ' + m));
+      const sa = a.sizeAtTarget ?? Infinity;
+      const sb = b.sizeAtTarget ?? Infinity;
+      r = sb < sa ? { ...b, note: (b.note ? b.note + '; ' : '') + 'croma 4:4:4' } : a;
+    } else {
+      r = mode === 'target' ? await search(codec, img, target, opts, progress) : await runOnce(codec, img, quality, opts);
+    }
     const result = {
       q: r.q,
       size: r.bytes.length,

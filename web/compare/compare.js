@@ -298,6 +298,11 @@ function render() {
   });
 }
 
+// SSIMULACRA2 más alto que consiguió un formato en la búsqueda (si no llega al objetivo).
+function maxS2(r) {
+  return Math.max(r.metrics?.ssimulacra2 ?? 0, ...(r.evals || []).map((e) => e.s2));
+}
+
 function sizeOf(r, mode) {
   return mode === 'target' ? r.sizeAtTarget ?? null : r.size;
 }
@@ -363,9 +368,9 @@ function renderDetail() {
       const s = sizeOf(r, p.mode);
       const m = r.metrics;
       tr.innerHTML = `
-        <td class="fmt"><span class="swatch" style="background:${info.color}"></span>${info.label}</td>
+        <td class="fmt"><span class="swatch" style="background:${info.color}"></span>${info.label}${/croma 4:4:4/.test(r.note || '') ? ' <small class="muted">4:4:4</small>' : ''}</td>
         <td class="r sizecell" title="${p.mode === 'target' ? `Archivo real: ${kb(r.size)} con SSIMULACRA2 ${m.ssimulacra2.toFixed(1)}` : ''}">
-          <span class="v">${s ? kb(s) : '—'}</span>
+          <span class="v">${s ? kb(s) : p.mode === 'target' && /no alcanza/.test(r.note || '') ? `no llega <small>(máx. ${maxS2(r).toFixed(1)})</small>` : '—'}</span>
           <span class="bar" style="width:calc(${s ? (s / max) * 100 : 0}% - 16px);background:${info.color}"></span></td>
         <td class="r">${s && jpeg && c !== 'jpeg' ? pct(s, jpeg) : '—'}</td>
         <td class="r">${s && webp && c !== 'webp' ? pct(s, webp) : '—'}</td>
@@ -393,10 +398,14 @@ function renderDetail() {
   } else {
     $('d-verdict').textContent = '';
   }
+  const noLlegan = rows.filter(({ r }) => r.status === 'ok' && p.mode === 'target' && /no alcanza/.test(r.note || '')).map(({ c }) => CODECS[c].label);
   $('d-note').textContent =
-    p.mode === 'target'
+    (p.mode === 'target'
       ? 'Cada formato se codifica varias veces hasta rodear la calidad objetivo; el tamaño se interpola en ese punto exacto. El botón de descarga entrega el archivo real más cercano por encima del objetivo.'
-      : 'Las escalas de calidad no son equivalentes entre formatos: compara tamaño y métricas a la vez.';
+      : 'Las escalas de calidad no son equivalentes entre formatos: compara tamaño y métricas a la vez.') +
+    (noLlegan.length
+      ? ` ${noLlegan.join(' y ')} no ${noLlegan.length > 1 ? 'llegan' : 'llega'} a la calidad objetivo en esta foto ni con su calidad máxima: con pérdida reduce${noLlegan.length > 1 ? 'n' : ''} el color a la mitad de resolución (4:2:0), y esta foto tiene detalle fino de color.`
+      : '');
   if (p.capped) {
     const mp = (n) => (n / 1e6).toFixed(1).replace('.', ',');
     $('d-note').textContent +=
