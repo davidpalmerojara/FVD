@@ -212,12 +212,10 @@ impl CoefCtx {
         let n = w;
         let sz = size_index(w.max(h));
         let sc = scan(w, h);
-        let mut eob = 0;
-        for (i, &(x, y)) in sc.iter().enumerate() {
-            if levels[y as usize * n + x as usize] != 0 {
-                eob = i + 1;
-            }
-        }
+        let eob = sc
+            .iter()
+            .rposition(|&(x, y)| levels[y as usize * n + x as usize] != 0)
+            .map_or(0, |i| i + 1);
         let cbf = &self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx];
         if eob == 0 {
             return cbf.cost(false);
@@ -281,19 +279,40 @@ impl CoefCtx {
             let mut best_cost = f32::INFINITY;
             let mut best_d = 0.0;
             let lo = l0.saturating_sub(1);
-            for l in [l0, lo, 0] {
-                if l > l0 {
+            // Los mismos costes que `level_cost`, sumados en el mismo orden,
+            // pero con el contexto y los modelos consultados una sola vez.
+            let fc = freq_class(x, y);
+            let idx = cidx(pc, sz, fc, mc);
+            let (sig, gt1, gt2) = (&self.sig[idx], &self.gt1[idx], &self.gt2[idx]);
+            let rem = &self.rem[pc * NF + fc];
+            let lcost = |a: u32, is_last: bool| -> f32 {
+                let mut bits = 0.0;
+                if !is_last {
+                    bits += sig.cost(a != 0);
+                    if a == 0 {
+                        return bits;
+                    }
+                }
+                bits += 1.0;
+                bits += gt1.cost(a > 1);
+                if a > 1 {
+                    bits += gt2.cost(a > 2);
+                    if a > 2 {
+                        bits += rem.cost(a - 3);
+                    }
+                }
+                bits
+            };
+            for (k, l) in [l0, lo, 0].into_iter().enumerate() {
+                // Candidatos repetidos (l0 ≤ 1): mismo coste, gana el primero.
+                if (k == 1 && l == l0) || (k == 2 && (l == lo || l == l0)) {
                     continue;
                 }
                 let d = (ca - l as f32 * q).powi(2);
                 let r = if !seen_nz {
-                    if l == 0 {
-                        0.0
-                    } else {
-                        self.level_cost(pc, sz, x, y, mc, l, true)
-                    }
+                    if l == 0 { 0.0 } else { lcost(l, true) }
                 } else {
-                    self.level_cost(pc, sz, x, y, mc, l, false)
+                    lcost(l, false)
                 };
                 let cost = d + lambda * r;
                 if cost < best_cost {
@@ -328,7 +347,7 @@ impl CoefCtx {
         if nz_pos.len() > 1 {
             let mut trial = levels[..nn].to_vec();
             let mut d_trial = dist;
-            let mut best = (dist + lambda * bits, nz_pos.len());
+            let mut best = (dist + lambda * bits, nz_pos.len(), bits);
             for k in (1..nz_pos.len()).rev().take(4) {
                 // Solo compensa recortar coeficientes ±1 del final del barrido.
                 let pk = sc[nz_pos[k]].1 as usize * n + sc[nz_pos[k]].0 as usize;
@@ -345,7 +364,7 @@ impl CoefCtx {
                 let b = self.block_cost(pc, w, h, cbf_ctx, &trial);
                 let j = d_trial + lambda * b;
                 if j < best.0 {
-                    best = (j, k);
+                    best = (j, k, b);
                 }
             }
             if best.1 < nz_pos.len() {
@@ -358,7 +377,8 @@ impl CoefCtx {
                     levels[p] = 0;
                 }
                 dist = d;
-                bits = self.block_cost(pc, w, h, cbf_ctx, levels);
+                // Es el mismo bloque que el de la prueba ganadora.
+                bits = best.2;
             }
         }
         if zero_dist + lambda * zero_bits <= dist + lambda * bits {
