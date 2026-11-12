@@ -4358,11 +4358,25 @@ fn choose_warp(
         let e = if ci >= 2 { e * 0.985 } else { e };
         all.push((e, c, ci >= 2));
     }
-    let stale = !(errs[1] <= errs[0].min(e_still) * 1.25);
     let best = all
         .into_iter()
         .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
         .filter(|b| b.0 < e_still * 0.9);
+    if best.is_none() && rc.gold.is_some() {
+        // Sin movimiento de cámara: copia sin mover de la referencia larga,
+        // para que las hojas que lo prefieran (fondo que vuelve a verse al
+        // apartarse un objeto) lo tomen de ahí. Se renueva solo si ya
+        // predice mucho peor que el anterior (un cambio de escena).
+        let stale = !(errs[1] <= e_still * 4.0);
+        return (
+            Some(Warp {
+                p: [0; 6],
+                gold: true,
+            }),
+            stale,
+        );
+    }
+    let stale = !(errs[1] <= errs[0].min(e_still) * 1.25);
     (best.map(|b| b.1), stale)
 }
 
