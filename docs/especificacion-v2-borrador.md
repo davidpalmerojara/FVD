@@ -54,7 +54,10 @@ n veces (v = entero LEB128: 7 bits por byte, primero los bajos; el bit alto indi
          como mucho 5 bytes y 2³² − 1):
   v    duración (ms)
   v    x, v y, v ancho, v alto     rectángulo dentro del lienzo
-  u8   forma: bit 0 = abreviada; bit 1 = referencia larga (ver 1.3); el resto, 0
+  u8   forma: bit 0 = abreviada; bit 1 = renueva la referencia larga; bit 2 = movimiento global;
+       bit 3 = respecto a la referencia larga; bit 4 = parámetros iguales a la predicción
+       (los bits 3 y 4 solo con el 2; ver 1.3); el resto, 0
+  si bit 2 y no bit 4: 6 × v (zigzag)      diferencia de cada parámetro con la predicción
   forma 0:
     v      longitud
     datos: un archivo .tsl completo del rectángulo (sin ANIM)
@@ -104,13 +107,16 @@ Así, una zona que no cambia o que solo se desplaza se copia exacta, sin pasar p
 fotograma. Para una tesela que empieza en (tx, ty) dentro del fotograma, el origen en el plano de
 referencia es `((x + tx) / d, (y + ty) / d)`.
 
-**Movimiento global.** Al principio de los datos de cada tesela de un archivo con `INTER`, antes
-del primer plano, va un bit sin contexto. Si vale 1, sigue otro bit sin contexto, `larga`, y seis
-enteros con signo (a, b, c, d, e, f),
-cada uno así: 6 bits sin contexto con n, el número de bits de la magnitud (0 = valor 0); si n > 0,
-los n − 1 bits bajos de la magnitud (el alto es 1) y un bit de signo (1 = negativo). Se recortan a
-±2²⁰ (a, b, d, e) y a ±2³⁰ (c, f). El vector de luma en 1/16 de píxel en el punto (X, Y) del
-lienzo es `((a·X + b·Y + c + 2¹³) >> 14, (d·X + e·Y + f + 2¹³) >> 14)` (en 64 bits; cada
+**Movimiento global.** Si la forma del fotograma tiene el bit 2, el fotograma lleva un movimiento
+global: seis enteros (a, b, c, d, e, f) y si es respecto a la referencia larga (`larga`, bit 3). Se
+**predicen** de la tabla de fotogramas: con los dos fotogramas anteriores de la tabla (el más
+reciente, P1, y el anterior, P2), cada uno con movimiento global del mismo tipo (`larga` igual) y,
+si `larga`, usado con la misma referencia larga (sin renovación entre medias), la predicción es
+2·P1 − P2 (recortada a los límites); si solo P1 cumple, P1; si no, ceros. Un fotograma sin
+movimiento global vacía la historia. Si el bit 4 está activo, los parámetros son la predicción; si
+no, se leen seis diferencias en zigzag (`v` par = v/2, impar = −(v+1)/2) que se suman a ella. Se
+recortan a ±2²⁰ (a, b, d, e) y a ±2³⁰ (c, f). El vector de luma en 1/16 de píxel en el punto (X, Y)
+del lienzo es `((a·X + b·Y + c + 2¹³) >> 14, (d·X + e·Y + f + 2¹³) >> 14)` (en 64 bits; cada
 componente se recorta a ±2²²).
 
 **Mapa de cuantización adaptativa.** En un archivo con `INTER` y `AQ`, el dq de cada celda no se
@@ -126,7 +132,7 @@ deducido más el valor leído (recortado a ±64, como en la v1).
 
 **Sintaxis.** Al principio de la cabecera de cada hoja (antes de la clase especial de la v1) va el
 bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
-202 o 203. Si vale 1 y la tesela lleva movimiento global, sigue el bit
+202 o 203. Si vale 1 y el fotograma lleva movimiento global, sigue el bit
 `warp[(pc·5 + sz)·3 + c']`, con c' el número de esos vecinos con la marca 203; si vale 1, la hoja
 usa el movimiento global (marca 203) y no lleva vector. Si no, sigue un vector de movimiento con la
 misma sintaxis que el vector de la copia intra (sección 6.5 de la v1), con modelos propios (`mv`),
@@ -138,7 +144,7 @@ ninguno, el último vector. Tras decodificar la hoja, el último vector pasa a s
 con movimiento global no lo cambian). La marca de la hoja en el mapa es 202, y la cabecera sigue
 con `ts` como cualquier otra hoja.
 
-Si `larga` vale 1 y hay referencia larga en el espacio de color del archivo del fotograma, las
+Si `larga` y hay referencia larga en el espacio de color del archivo del fotograma, las
 hojas con movimiento global predicen de sus planos (con el mismo origen); si no, de los planos de
 referencia del fotograma anterior. Las hojas con vector propio predicen siempre de estos.
 
