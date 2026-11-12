@@ -2528,7 +2528,7 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
         };
     }
     let subsample = p.subsample.unwrap_or_else(|| {
-        !screen && base_q > 1.04 && chroma_loss_420(rgb, width, height) < 0.25 * base_q
+        !screen && base_q > 1.04 && chroma_loss_420(rgb, width, height) < 0.15 * base_q
     });
     // Parámetros de croma propios solo si la elección de 4:4:4 fue automática
     // en una foto (las capturas y el 4:4:4 forzado usan los de siempre).

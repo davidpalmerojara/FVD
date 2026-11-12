@@ -247,6 +247,7 @@ croma entera (sin cambiar el formato: el campo ya existía):
 |---|---|
 | 4:4:4 cuando el error del submuestreo supera 0,25 × el paso | Fotos del usuario: Tesela pasa a ganar a JPEG XL en 20 de 21 (−11 % de media) |
 | En 4:4:4, croma más gruesa (factor 1,2 en vez de 0,8; matriz 4,5 en vez de 3,0), ajustada en DIV2K 851-900 | 29 fotos de ajuste −4,7 %; fotos del usuario −4,3 % (ninguna empeora); Kodak, CLIC y DIV2K-50 −0,2 a −0,3 % |
+| Con la croma ya más barata, umbral 0,15 en vez de 0,25 (más fotos en 4:4:4) | DIV2K 851-900: −0,6 % (baja), −1,0 % (media), −0,3 % (alta). Con 0 (siempre 4:4:4) −1,7 %, pero decodificar cuesta 1,3 veces más: **0,15 adoptado** |
 | Forzar 4:4:4 en animación | de −2 a +12 %. **Descartado** |**Animación.** Tamaño total a igual SSIMULACRA2 medio por fotograma
 ([`bench/results/animacion`](bench/results/animacion/REPORT.md); `python3 bench/anim_bench.py`):
 
