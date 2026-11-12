@@ -88,6 +88,38 @@
     </aside>
 
     <main id="main">
+      <div class="tabs" id="tabs" role="tablist" hidden>
+        <button role="tab" id="tab-detail" aria-selected="true">Foto</button>
+        <button role="tab" id="tab-overview" aria-selected="false">Resumen</button>
+      </div>
+
+      <section id="overview" hidden>
+        <div class="detail-head">
+          <div>
+            <h2>Todas las fotos</h2>
+            <p class="muted num" id="o-meta"></p>
+          </div>
+          <button class="dl" id="o-csv">⬇ CSV</button>
+        </div>
+        <div class="o-stats" id="o-stats"></div>
+        <div class="o-bar">
+          <label><input type="checkbox" id="o-lose"> Solo donde Tesela no gana</label>
+          <label>Ordenar por <select id="o-sort">
+            <option value="orden">orden de subida</option>
+            <option value="dif">Tesela frente al mejor (peor primero)</option>
+            <option value="nombre">nombre</option>
+          </select></label>
+        </div>
+        <div class="card table-wrap">
+          <table class="results overview">
+            <thead id="o-head"></thead>
+            <tbody id="o-rows"></tbody>
+          </table>
+        </div>
+        <p class="hint muted">Tamaño de cada formato a igual calidad (SSIMULACRA2 objetivo) o, en modo de calidad fija, el tamaño real.
+          «No llega»: ese formato no alcanza la calidad objetivo ni con su calidad máxima. Pulsa una fila para ver la foto.</p>
+      </section>
+
       <section class="empty card" id="empty">
         <h1>Compara Tesela con WebP, AVIF, JPEG XL y JPEG</h1>
         <p>Sube tus fotos. En el modo <b>Misma calidad</b>, cada formato se ajusta automáticamente hasta

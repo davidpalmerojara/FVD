@@ -92,6 +92,22 @@ table.results { width: 100%; border-collapse: collapse; font-size: 14px; }
 .vlabel.l { left: 10px; }
 .vlabel.r { right: 10px; }
 
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 14px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; margin-bottom: -1px; }
+.tabs button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--accent); }
+.o-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 14px; }
+.o-stats .card { padding: 12px 14px; }
+.o-stats b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.o-stats span { font-size: 12.5px; color: var(--muted); }
+.o-bar { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; font-size: 14px; margin-bottom: 10px; }
+.overview tbody tr { cursor: pointer; }
+.overview tbody tr:hover td { background: var(--surface-2); }
+.overview td.win { font-weight: 700; color: var(--good); }
+.overview td.pn { white-space: normal; min-width: 180px; }
+.overview td.pn img { width: 36px; height: 36px; object-fit: cover; border-radius: 5px; vertical-align: middle; margin-right: 8px; }
+.overview .pos { color: var(--bad); font-weight: 600; }
+.overview .neg { color: var(--good); font-weight: 600; }
+.overview tfoot td { font-weight: 600; border-top: 1px solid var(--border); }
 .summary { padding: 16px 18px; margin-top: 24px; }
 .summary h2 { margin: 0 0 10px; font-size: 18px; }
 .sumrow { display: grid; grid-template-columns: 110px 1fr 140px; gap: 12px; align-items: center; font-size: 14px; padding: 5px 0; }

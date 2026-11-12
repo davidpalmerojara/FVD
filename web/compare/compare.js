@@ -30,7 +30,7 @@ const state = {
     q: Object.fromEntries(ORDER.map((c) => [c, CODECS[c].q])),
     opts: { teselaEffort: 4, teselaTune: 'balanced', webpMethod: 6, avifSpeed: 6, jxlEffort: 7 },
   },
-  view: { left: 'tesela', right: 'avif', zoom: 'fit', split: 50, panX: 0, panY: 0 },
+  view: { left: 'tesela', right: 'avif', zoom: 'fit', split: 50, panX: 0, panY: 0, mode: 'detail' },
 };
 let nextPhotoId = 1;
 
@@ -295,6 +295,7 @@ function render() {
     renderList();
     renderDetail();
     renderSummary();
+    renderOverview();
   });
 }
 
@@ -338,9 +339,15 @@ function renderList() {
 
 function renderDetail() {
   const p = state.photos.find((x) => x.id === state.selected);
-  $('empty').hidden = !!p;
-  $('detail').hidden = !p;
-  if (!p) return;
+  const ov = state.view.mode === 'overview' && state.photos.length > 0;
+  $('tabs').hidden = state.photos.length === 0;
+  $('tab-detail').setAttribute('aria-selected', String(!ov));
+  $('tab-overview').setAttribute('aria-selected', String(ov));
+  $('tab-overview').textContent = `Resumen (${state.photos.length})`;
+  $('overview').hidden = !ov;
+  $('empty').hidden = !!p || ov;
+  $('detail').hidden = !p || ov;
+  if (!p || ov) return;
   $('d-name').textContent = p.name;
   const scaled = p.w !== p.origW ? ` (reducida desde ${p.origW}×${p.origH})` : '';
   $('d-meta').textContent = `${p.w}×${p.h} px${scaled} · ${p.mode === 'target' ? `misma calidad: SSIMULACRA2 = ${p.target}` : 'calidad fija'}${p.logged ? ' · guardada en el registro' : ''}`;
@@ -559,7 +566,7 @@ function renderSummary() {
     const rs = Object.values(p.results);
     return rs.length && rs.every((r) => r.status === 'ok' || r.status === 'error');
   });
-  $('summary').hidden = complete.length < 2;
+  $('summary').hidden = complete.length < 2 || state.view.mode === 'overview';
   if (complete.length < 2) return;
   const tot = {};
   const n = {};
@@ -586,6 +593,104 @@ function renderSummary() {
       )
       .join('');
 }
+
+// ------------------------------------------------------------ Resumen de todas las fotos
+
+const RIVALS = ORDER.filter((c) => c !== 'tesela');
+
+// Fila del resumen: tamaño de cada formato (null si no llega o falta) y la
+// comparación de Tesela con el mejor de los demás.
+function overviewRow(p) {
+  const cell = {};
+  for (const c of ORDER) {
+    const r = p.results[c];
+    if (!r) cell[c] = { k: 'off' };
+    else if (r.status === 'error') cell[c] = { k: 'err', txt: r.error };
+    else if (r.status !== 'ok') cell[c] = { k: 'run' };
+    else if (sizeOf(r, p.mode)) cell[c] = { k: 'ok', s: sizeOf(r, p.mode), sub: /croma 4:4:4/.test(r.note || '') };
+    else cell[c] = { k: 'nollega', max: maxS2(r) };
+  }
+  const t = cell.tesela.s;
+  const rivals = RIVALS.filter((c) => cell[c].s);
+  const best = rivals.length ? rivals.reduce((a, b) => (cell[b].s < cell[a].s ? b : a)) : null;
+  const winner = [...ORDER].filter((c) => cell[c].s).reduce((a, b) => (a && cell[a].s <= cell[b].s ? a : b), null);
+  return { p, cell, best, winner, dif: t && best ? t / cell[best].s - 1 : null };
+}
+
+function renderOverview() {
+  if (state.view.mode !== 'overview' || !state.photos.length) return;
+  const o = state.overview || (state.overview = { lose: false, sort: 'orden' });
+  const cols = ORDER.filter((c) => state.photos.some((p) => p.results[c]));
+  let rows = state.photos.map(overviewRow);
+  const all = rows;
+  if (o.lose) rows = rows.filter((r) => r.dif == null || r.dif > 0);
+  if (o.sort === 'dif') rows = [...rows].sort((a, b) => (b.dif ?? -9) - (a.dif ?? -9));
+  else if (o.sort === 'nombre') rows = [...rows].sort((a, b) => a.p.name.localeCompare(b.p.name));
+
+  const modes = new Set(state.photos.map((p) => (p.mode === 'target' ? `SSIMULACRA2 = ${p.target}` : 'calidad fija')));
+  $('o-meta').textContent = `${state.photos.length} fotos · ${[...modes].join(', ')}`;
+
+  // Media geométrica de Tesela frente a cada formato (solo fotos con los dos).
+  const stat = (c) => {
+    const v = all.filter((r) => r.cell.tesela.s && r.cell[c]?.s).map((r) => Math.log(r.cell.tesela.s / r.cell[c].s));
+    const nl = all.filter((r) => r.cell.tesela.s && r.cell[c]?.k === 'nollega').length;
+    return { n: v.length, wins: v.filter((x) => x < 0).length + nl, total: v.length + nl, mean: v.length ? (Math.exp(v.reduce((a, b) => a + b, 0) / v.length) - 1) * 100 : null };
+  };
+  const finished = all.filter((r) => r.cell.tesela.s && r.best);
+  const winsAll = finished.filter((r) => r.dif < 0).length + all.filter((r) => r.cell.tesela.s && !r.best && RIVALS.some((c) => r.cell[c]?.k === 'nollega')).length;
+  $('o-stats').innerHTML =
+    `<div class="card"><b>${winsAll} / ${all.filter((r) => r.cell.tesela.s).length}</b><span>fotos en que Tesela gana a todos</span></div>` +
+    cols.filter((c) => c !== 'tesela').map((c) => {
+      const st = stat(c);
+      return `<div class="card"><b>${st.mean == null ? '—' : (st.mean > 0 ? '+' : '−') + Math.abs(st.mean).toFixed(1) + ' %'}</b><span>Tesela frente a ${CODECS[c].label} (gana en ${st.wins} de ${st.total})</span></div>`;
+    }).join('');
+
+  $('o-head').innerHTML = `<tr><th>Foto</th>${cols.map((c) => `<th class="r"><span class="swatch" style="background:${CODECS[c].color}"></span>${CODECS[c].label}</th>`).join('')}<th class="r">Tesela frente al mejor</th></tr>`;
+  const fmtCell = (r, c) => {
+    const x = r.cell[c];
+    if (x.k === 'ok') return `<td class="r${c === r.winner ? ' win' : ''}">${kb(x.s)}${x.sub ? ' <small class="muted">4:4:4</small>' : ''}</td>`;
+    if (x.k === 'nollega') return `<td class="r muted">no llega <small>(${x.max.toFixed(1)})</small></td>`;
+    if (x.k === 'err') return `<td class="r muted" title="${x.txt}">error</td>`;
+    if (x.k === 'run') return `<td class="r muted">…</td>`;
+    return '<td></td>';
+  };
+  $('o-rows').innerHTML = rows.length
+    ? rows.map((r) => `<tr data-id="${r.p.id}"><td class="pn"><img alt="" src="${r.p.thumb}"></td>${cols.map((c) => fmtCell(r, c)).join('')}
+        <td class="r">${r.dif == null ? (r.cell.tesela.s && RIVALS.some((c) => r.cell[c]?.k === 'nollega') && !r.best ? '<span class="neg">solo llega Tesela</span>' : '—') : `<span class="${r.dif > 0.005 ? 'pos' : r.dif < -0.005 ? 'neg' : ''}">${r.dif > 0 ? '+' : '−'}${Math.abs(r.dif * 100).toFixed(1)} %</span> <small class="muted">${CODECS[r.best].label}</small>`}</td></tr>`).join('')
+    : `<tr><td colspan="${cols.length + 2}" class="muted">Nada que mostrar con este filtro.</td></tr>`;
+  // Nombre como texto (no HTML) y clic para abrir la foto.
+  $('o-rows').querySelectorAll('tr[data-id]').forEach((tr) => {
+    const p = state.photos.find((x) => x.id === Number(tr.dataset.id));
+    tr.querySelector('.pn').append(p.name);
+    tr.onclick = () => {
+      state.selected = p.id;
+      state.view.mode = 'detail';
+      render();
+    };
+  });
+}
+
+function overviewCsv() {
+  const cols = ORDER.filter((c) => state.photos.some((p) => p.results[c]));
+  const lines = [['foto', 'ancho', 'alto', 'modo', ...cols.map((c) => `${c}_bytes`), ...cols.map((c) => `${c}_ssimulacra2`), 'mejor_otro', 'tesela_frente_al_mejor_pct'].join(',')];
+  for (const p of state.photos) {
+    const r = overviewRow(p);
+    const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    lines.push([
+      q(p.name), p.w, p.h, p.mode === 'target' ? `ssimulacra2=${p.target}` : 'fija',
+      ...cols.map((c) => (r.cell[c].s ? Math.round(r.cell[c].s) : r.cell[c].k === 'nollega' ? 'no_llega' : '')),
+      ...cols.map((c) => (p.results[c]?.metrics ? p.results[c].metrics.ssimulacra2.toFixed(2) : '')),
+      r.best || '', r.dif == null ? '' : (r.dif * 100).toFixed(2),
+    ].join(','));
+  }
+  download(new TextEncoder().encode(lines.join('\n') + '\n'), 'comparativa-tesela.csv');
+}
+
+$('tab-detail').onclick = () => ((state.view.mode = 'detail'), render());
+$('tab-overview').onclick = () => ((state.view.mode = 'overview'), render());
+$('o-lose').onchange = (e) => ((state.overview = { ...(state.overview || {}), lose: e.target.checked }), render());
+$('o-sort').onchange = (e) => ((state.overview = { ...(state.overview || {}), sort: e.target.value }), render());
+$('o-csv').onclick = overviewCsv;
 
 // ------------------------------------------------------------ Controles
 
