@@ -6,8 +6,8 @@ Tamaño total a igual SSIMULACRA2 medio por fotograma (KB; menos es mejor).
 
 | SSIMULACRA2 | Tesela | WebP animado | AVIF animado |
 |---|---|---|---|
-| 70 | 11.3 | 281.6 | — |
-| 80 | 19.1 | 454.1 | 18.4 |
+| 70 | 11.4 | 281.6 | — |
+| 80 | 19.3 | 454.1 | 18.4 |
 | 90 | — | — | 48.2 |
 
 GIF: 1967.8 KB (SSIMULACRA2 55.4). WebP sin pérdida: 4300.6 KB.
@@ -17,7 +17,7 @@ GIF: 1967.8 KB (SSIMULACRA2 55.4). WebP sin pérdida: 4300.6 KB.
 | SSIMULACRA2 | Tesela | WebP animado | AVIF animado |
 |---|---|---|---|
 | 70 | — | 39.8 | — |
-| 80 | 4.2 | 57.4 | 4.7 |
+| 80 | 4.3 | 57.4 | 4.7 |
 | 90 | 4.8 | — | — |
 
 GIF: 68.3 KB (SSIMULACRA2 96.0). WebP sin pérdida: 18.4 KB.
@@ -26,8 +26,8 @@ GIF: 68.3 KB (SSIMULACRA2 96.0). WebP sin pérdida: 18.4 KB.
 
 | SSIMULACRA2 | Tesela | WebP animado | AVIF animado |
 |---|---|---|---|
-| 70 | 7.2 | 128.5 | — |
-| 80 | 9.9 | — | — |
+| 70 | 7.3 | 128.5 | — |
+| 80 | 10.0 | — | — |
 | 90 | — | — | — |
 
 GIF: 242.2 KB (SSIMULACRA2 98.0). WebP sin pérdida: 40.5 KB.
