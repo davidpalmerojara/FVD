@@ -685,6 +685,9 @@ struct QMap {
     base: f32,
     cq: f32,
     sub: bool,
+    /// Fotogramas predichos: dq deducido de la referencia; se codifica la
+    /// diferencia con él (vacío = 0).
+    pred: Vec<i32>,
 }
 
 impl QMap {
@@ -713,7 +716,8 @@ impl QMap {
         for cy in sy * k..(sy * k + k).min(self.h) {
             for cx in sx * k..(sx * k + k).min(self.w) {
                 let i = cy * self.w + cx;
-                self.dq[i] = ctx.dq.code(c, self.dq[i]).clamp(-64, 64);
+                let p = self.pred.get(i).copied().unwrap_or(0);
+                self.dq[i] = (p + ctx.dq.code(c, self.dq[i] - p)).clamp(-64, 64);
             }
         }
     }
@@ -2232,6 +2236,56 @@ fn compute_aq(src: &[f32], w: usize, h: usize, strength: f32) -> Vec<i32> {
         .collect()
 }
 
+/// v2, fotogramas predichos: dq de cada celda AQ deducido de la actividad de
+/// la referencia en la posición de la tesela (`w × h`, rellenada hasta el
+/// superbloque repitiendo el borde), en enteros para que codificador y
+/// decodificador coincidan bit a bit. Por bloque de 8 × 8, la varianza
+/// v = (64·Σx² − (Σx)²) / 4096 y su logaritmo en 1/16: con n = ⌊log2(1 + v)⌋,
+/// l = 16n + ((1 + v)·16 >> n) − 16. La actividad de la celda es la media de
+/// sus l; el dq, la diferencia con la media de las celdas, en dieciseisavos,
+/// redondeada y recortada a ±8.
+fn aq_from_ref(ip: &InterPlane, w: usize, h: usize) -> Vec<i32> {
+    let (pw, ph) = (w.div_ceil(SB) * SB, h.div_ceil(SB) * SB);
+    let (sw, sh) = (pw / AQ, ph / AQ);
+    let (rw, rh) = (ip.w as i64, ip.h as i64);
+    let px = |x: usize, y: usize| -> i64 {
+        let xx = (ip.ox + x.min(w - 1)) as i64;
+        let yy = (ip.oy + y.min(h - 1)) as i64;
+        ip.data[yy.clamp(0, rh - 1) as usize * ip.w + xx.clamp(0, rw - 1) as usize] as i64
+    };
+    let k = AQ / 8;
+    let mut act = vec![0i64; sw * sh];
+    for sy in 0..sh {
+        for sx in 0..sw {
+            let mut tot = 0i64;
+            for by in 0..k {
+                for bx in 0..k {
+                    let (x0, y0) = (sx * AQ + bx * 8, sy * AQ + by * 8);
+                    let (mut s1, mut s2) = (0i64, 0i64);
+                    for y in 0..8 {
+                        for x in 0..8 {
+                            let v = px(x0 + x, y0 + y);
+                            s1 += v;
+                            s2 += v * v;
+                        }
+                    }
+                    let v = ((64 * s2 - s1 * s1) / 4096) as u64 + 1;
+                    let n = 63 - v.leading_zeros() as i64;
+                    tot += 16 * n + (((v << 4) >> n) as i64) - 16;
+                }
+            }
+            act[sy * sw + sx] = tot / (k * k) as i64;
+        }
+    }
+    let mean = act.iter().sum::<i64>() / act.len() as i64;
+    act.iter()
+        .map(|&a| {
+            let d = a - mean;
+            ((d + 8 * d.signum()) / 16).clamp(-8, 8) as i32
+        })
+        .collect()
+}
+
 fn pad_plane(src: &[f32], w: usize, h: usize) -> (Vec<f32>, usize, usize) {
     let pw = w.div_ceil(SB) * SB;
     let ph = h.div_ceil(SB) * SB;
@@ -2652,7 +2706,9 @@ fn encode_plane(
         if code_dq {
             for cy in sy * kq..(sy * kq + kq).min(qm_ro.h) {
                 for cx in sx * kq..(sx * kq + kq).min(qm_ro.w) {
-                    ctx.dq.code(enc, qm_ro.dq[cy * qm_ro.w + cx]);
+                    let i = cy * qm_ro.w + cx;
+                    let p = qm_ro.pred.get(i).copied().unwrap_or(0);
+                    ctx.dq.code(enc, qm_ro.dq[i] - p);
                 }
             }
         }
@@ -2882,6 +2938,7 @@ fn unit_qmap(w: usize, h: usize) -> QMap {
         base: 1.0,
         cq: 1.0,
         sub: false,
+        pred: Vec::new(),
     }
 }
 
@@ -2952,6 +3009,7 @@ fn encode_tile_ref(
         base: base_q,
         cq,
         sub,
+        pred: Vec::new(),
     };
     let mut lref: Option<LumaRef> = None;
     let mut srcs = Vec::new();
@@ -2964,7 +3022,11 @@ fn encode_tile_ref(
             qm.dq = compute_aq(&padded, pw, ph, if header.aq { p.aq_strength } else { 0.0 });
             qm.w = pw / AQ;
             qm.h = ph / AQ;
-            if let Some((rc, tx, ty)) = iref {
+            if let Some((rc, tx, ty)) = iref.filter(|_| header.aq) {
+                // Fotograma predicho: el mapa se deduce de la referencia (el
+                // decodificador hace lo mismo) y no cuesta bits.
+                qm.pred = aq_from_ref(&rc.plane(0, tx, ty), *w, *h);
+                qm.dq = qm.pred.clone();
                 if let Some((t, tw)) = rc.tdq.as_ref() {
                     let th = t.len() / tw;
                     for cy in 0..qm.h {
@@ -3497,6 +3559,7 @@ fn decode_tile_ref(
         base: base_q,
         cq,
         sub,
+        pred: Vec::new(),
     };
     let mut lref: Option<LumaRef> = None;
     for (pi, &(pw0, ph0)) in dims.iter().enumerate() {
@@ -3504,6 +3567,9 @@ fn decode_tile_ref(
             qm.w = pw0.div_ceil(SB) * SB / AQ;
             qm.h = ph0.div_ceil(SB) * SB / AQ;
             qm.dq = vec![0; qm.w * qm.h];
+            if let (true, Some(rc)) = (h.aq, st.rc.as_ref()) {
+                qm.pred = aq_from_ref(&rc.plane(0, tx, ty), pw0, ph0);
+            }
         }
         st.cur.0 = pi;
         let plane = decode_plane(

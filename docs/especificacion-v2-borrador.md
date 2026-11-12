@@ -113,6 +113,17 @@ los n − 1 bits bajos de la magnitud (el alto es 1) y un bit de signo (1 = nega
 lienzo es `((a·X + b·Y + c + 2¹³) >> 14, (d·X + e·Y + f + 2¹³) >> 14)` (en 64 bits; cada
 componente se recorta a ±2²²).
 
+**Mapa de cuantización adaptativa.** En un archivo con `INTER` y `AQ`, el dq de cada celda no se
+codifica tal cual sino como diferencia con un dq **deducido** de la referencia: para la tesela de
+w × h, sea R(x, y) la muestra de luma de los planos de referencia del fotograma anterior en
+`(ox + min(x, w − 1), oy + min(y, h − 1))` (recortada al plano), con x, y hasta el tamaño rellenado
+hasta el superbloque. Por cada bloque de 8 × 8 de una celda de 32 × 32, con s1 = ΣR y s2 = ΣR²,
+`v = (64·s2 − s1²) / 4096 + 1` (división entera), `n = ⌊log2 v⌋` y `l = 16n + ((v·16) >> n) − 16`.
+La actividad de la celda es la media entera de sus 16 valores l; con m la media entera de las
+actividades de todas las celdas de la tesela y d = actividad − m, el dq deducido es
+`(d + 8·signo(d)) / 16` (división entera hacia cero) recortado a ±8. El dq de la celda es el
+deducido más el valor leído (recortado a ±64, como en la v1).
+
 **Sintaxis.** Al principio de la cabecera de cada hoja (antes de la clase especial de la v1) va el
 bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
 202 o 203. Si vale 1 y la tesela lleva movimiento global, sigue el bit
