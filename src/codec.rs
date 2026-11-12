@@ -688,6 +688,21 @@ struct QMap {
     /// Fotogramas predichos: dq deducido de la referencia; se codifica la
     /// diferencia con él (vacío = 0).
     pred: Vec<i32>,
+    /// v2 sin referencia: el dq se predice de las celdas vecinas ya codificadas.
+    spatial: bool,
+}
+
+/// Predicción espacial del dq de la celda (cx, cy) a partir de las vecinas
+/// ya codificadas: la media (redondeada hacia abajo) de la izquierda y la de
+/// arriba; si solo hay una, esa; si ninguna, 0.
+fn dq_spatial(dq: &[i32], w: usize, cx: usize, cy: usize) -> i32 {
+    let l = (cx > 0).then(|| dq[cy * w + cx - 1]);
+    let a = (cy > 0).then(|| dq[(cy - 1) * w + cx]);
+    match (l, a) {
+        (Some(l), Some(a)) => (l + a).div_euclid(2),
+        (Some(v), None) | (None, Some(v)) => v,
+        (None, None) => 0,
+    }
 }
 
 impl QMap {
@@ -716,7 +731,11 @@ impl QMap {
         for cy in sy * k..(sy * k + k).min(self.h) {
             for cx in sx * k..(sx * k + k).min(self.w) {
                 let i = cy * self.w + cx;
-                let p = self.pred.get(i).copied().unwrap_or(0);
+                let p = match self.pred.get(i) {
+                    Some(&p) => p,
+                    None if self.spatial => dq_spatial(&self.dq, self.w, cx, cy),
+                    None => 0,
+                };
                 self.dq[i] = (p + ctx.dq.code(c, self.dq[i] - p)).clamp(-64, 64);
             }
         }
@@ -2744,7 +2763,11 @@ fn encode_plane(
             for cy in sy * kq..(sy * kq + kq).min(qm_ro.h) {
                 for cx in sx * kq..(sx * kq + kq).min(qm_ro.w) {
                     let i = cy * qm_ro.w + cx;
-                    let p = qm_ro.pred.get(i).copied().unwrap_or(0);
+                    let p = match qm_ro.pred.get(i) {
+                        Some(&p) => p,
+                        None if qm_ro.spatial => dq_spatial(&qm_ro.dq, qm_ro.w, cx, cy),
+                        None => 0,
+                    };
                     ctx.dq.code(enc, qm_ro.dq[i] - p);
                 }
             }
@@ -2976,6 +2999,7 @@ fn unit_qmap(w: usize, h: usize) -> QMap {
         cq: 1.0,
         sub: false,
         pred: Vec::new(),
+        spatial: false,
     }
 }
 
@@ -3047,6 +3071,7 @@ fn encode_tile_ref(
         cq,
         sub,
         pred: Vec::new(),
+        spatial: header.version >= 2,
     };
     let mut lref: Option<LumaRef> = None;
     let mut srcs = Vec::new();
@@ -3597,6 +3622,7 @@ fn decode_tile_ref(
         cq,
         sub,
         pred: Vec::new(),
+        spatial: h.version >= 2,
     };
     let mut lref: Option<LumaRef> = None;
     for (pi, &(pw0, ph0)) in dims.iter().enumerate() {

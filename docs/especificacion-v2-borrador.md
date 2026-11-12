@@ -254,6 +254,14 @@ En un bloque cuadrado, todo es idéntico bit a bit a la v1.
 - **CCLM.** Los parámetros se deducen con las muestras vecinas de arriba (w) y de la izquierda
   (h) en lugar de N y N.
 
+## 3.4 Mapa de cuantización adaptativa
+
+En la v2, el dq de cada celda AQ (sección de la v1) no se codifica tal cual sino como diferencia
+con una predicción: en los fotogramas predichos, el dq deducido de la referencia (sección 1.3); en
+el resto, la predicción **espacial** a partir de las celdas ya decodificadas: con L la de la
+izquierda y A la de arriba, `⌊(L + A) / 2⌋` si existen las dos, la que exista si solo hay una, y 0
+en la primera celda. El dq de la celda es la predicción más el valor leído, recortado a ±64.
+
 ## 4. Relleno de los planos
 
 Los planos se codifican con su tamaño redondeado a superbloques. En la v2, tras decodificar los
