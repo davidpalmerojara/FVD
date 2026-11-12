@@ -74,7 +74,9 @@ def run_one(job):
             t1 = time.perf_counter()
             Image.open(enc).convert("RGB").save(dec)
         elif codec == "avif":
-            Image.open(img).convert("RGB").save(enc, "AVIF", quality=param, speed=4, subsampling="4:2:0")
+            # 4:4:4: con croma completa AVIF ocupa menos en todos los conjuntos (−2 a −8 % a calidad
+            # 70-80 y más a 90) que con 4:2:0, y Tesela ya elige solo.
+            Image.open(img).convert("RGB").save(enc, "AVIF", quality=param, speed=4, subsampling="4:4:4")
             t1 = time.perf_counter()
             Image.open(enc).convert("RGB").save(dec)
         elif codec == "jxl":

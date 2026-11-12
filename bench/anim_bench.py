@@ -57,7 +57,7 @@ def measure(codec, src, ms, q, td):
     elif codec == "webp-ll":
         src[0].save(out, "WEBP", save_all=True, append_images=src[1:], duration=ms, loop=0, lossless=True, method=6)
     elif codec == "avif":
-        src[0].save(out, "AVIF", save_all=True, append_images=src[1:], duration=ms, loop=0, quality=q, speed=4)
+        src[0].save(out, "AVIF", save_all=True, append_images=src[1:], duration=ms, loop=0, quality=q, speed=4, subsampling="4:4:4")
     elif codec == "tesela":
         apng = Path(td) / "in.png"
         src[0].save(apng, "PNG", save_all=True, append_images=src[1:], duration=ms, loop=0)
