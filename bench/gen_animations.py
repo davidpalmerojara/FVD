@@ -7,6 +7,7 @@
 - interfaz: una tarjeta con barra de progreso y un indicador que se mueve.
 - foto: un paneo lento sobre una foto (todo el fotograma cambia).
 - zoom: un zoom lento sobre una foto (movimiento de subpíxel, como una cámara).
+- zoomlargo: el mismo zoom durante 90 fotogramas (la referencia larga envejece).
 - objetos: tres recortes que se mueven (y uno gira) sobre un fondo quieto,
   como un vídeo con movimiento local.
 """
@@ -110,6 +111,18 @@ def zoom(d: Path):
     return frames, 70
 
 
+def zoomlargo(d: Path):
+    """El zoom de `zoom`, pero tres veces más largo."""
+    src = Image.open(ROOT / "web" / "compare" / "sample.png").convert("RGB")
+    frames = []
+    for t in range(90):
+        s = 1.0 + 0.006 * t
+        w, h = 400 / s, 300 / s
+        cx, cy = 400, 230
+        frames.append(src.resize((400, 300), Image.LANCZOS, box=(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)))
+    return frames, 70
+
+
 def objetos(d: Path):
     """Movimiento local: recortes que se desplazan en direcciones distintas y uno que gira."""
     src = Image.open(ROOT / "web" / "compare" / "sample.png").convert("RGB")
@@ -126,7 +139,7 @@ def objetos(d: Path):
 
 
 def main():
-    for name, gen in [("terminal", terminal), ("interfaz", interfaz), ("foto", foto), ("zoom", zoom), ("objetos", objetos)]:
+    for name, gen in [("terminal", terminal), ("interfaz", interfaz), ("foto", foto), ("zoom", zoom), ("zoomlargo", zoomlargo), ("objetos", objetos)]:
         d = OUT / name
         d.mkdir(parents=True, exist_ok=True)
         frames, ms = gen(d)
