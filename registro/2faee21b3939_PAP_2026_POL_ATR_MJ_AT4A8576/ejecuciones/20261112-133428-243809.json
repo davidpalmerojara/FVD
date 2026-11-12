@@ -1,0 +1,184 @@
+{
+ "fecha": "2026-11-12T12:30:49.952Z",
+ "nombre": "PAP_2026_POL_ATR_MJ_AT4A8576.jpg",
+ "original": {
+  "w": 6000,
+  "h": 4002,
+  "bytes": 3564632,
+  "tipo": "image/jpeg"
+ },
+ "probada": {
+  "w": 1024,
+  "h": 683
+ },
+ "modo": "target",
+ "objetivo": 80,
+ "ajustes": {
+  "maxDim": 1024,
+  "q": {
+   "tesela": 85,
+   "avif": 60,
+   "jxl": 85,
+   "webp": 85,
+   "jpeg": 85
+  },
+  "opts": {
+   "teselaEffort": 4,
+   "teselaTune": "balanced",
+   "webpMethod": 6,
+   "avifSpeed": 6,
+   "jxlEffort": 7
+  }
+ },
+ "resultados": {
+  "tesela": {
+   "status": "ok",
+   "q": 85,
+   "size": 116822,
+   "sizeAtTarget": 116822,
+   "note": "supera el objetivo incluso con la calidad m��nima",
+   "evals": [
+    {
+     "q": 85,
+     "size": 116822,
+     "s2": 80.1874655083445
+    }
+   ],
+   "encMs": 4067.1649999916553,
+   "decMs": 159.94000001251698,
+   "metrics": {
+    "psnr": 34.60007948831093,
+    "psnr_y": 38.864171602962074,
+    "ssim_y": 0.9771309190772542,
+    "ssimulacra2": 80.1874655083445
+   }
+  },
+  "avif": {
+   "status": "ok",
+   "q": 71,
+   "size": 139165,
+   "sizeAtTarget": 136192.424755475,
+   "note": "",
+   "evals": [
+    {
+     "q": 65,
+     "size": 120956,
+     "s2": 77.82047390087526
+    },
+    {
+     "q": 69,
+     "size": 129048,
+     "s2": 79.12755272054315
+    },
+    {
+     "q": 73,
+     "size": 144727,
+     "s2": 81.00566413416591
+    },
+    {
+     "q": 71,
+     "size": 139165,
+     "s2": 80.34959041249567
+    }
+   ],
+   "encMs": 4689.1500000059605,
+   "decMs": 193.86499999463558,
+   "metrics": {
+    "psnr": 35.491721207280676,
+    "psnr_y": 40.88790745864549,
+    "ssim_y": 0.9807060616843742,
+    "ssimulacra2": 80.34959041249567
+   }
+  },
+  "jxl": {
+   "status": "ok",
+   "q": 85,
+   "size": 135779,
+   "sizeAtTarget": 130707.2853261946,
+   "note": "",
+   "evals": [
+    {
+     "q": 85,
+     "size": 135779,
+     "s2": 80.9013014559381
+    },
+    {
+     "q": 81,
+     "size": 115933,
+     "s2": 77.61018731905185
+    },
+    {
+     "q": 84,
+     "size": 130144,
+     "s2": 79.89774752914452
+    }
+   ],
+   "encMs": 2166.045000001788,
+   "decMs": 241.48499999940395,
+   "metrics": {
+    "psnr": 33.47949200164811,
+    "psnr_y": 38.83515015411842,
+    "ssim_y": 0.9776378932425169,
+    "ssimulacra2": 80.9013014559381
+   }
+  },
+  "webp": {
+   "status": "ok",
+   "q": 86,
+   "size": 157734,
+   "sizeAtTarget": 155501.19804089065,
+   "note": "",
+   "evals": [
+    {
+     "q": 85,
+     "size": 148910,
+     "s2": 79.15364005218579
+    },
+    {
+     "q": 89,
+     "size": 183600,
+     "s2": 82.39531489223933
+    },
+    {
+     "q": 86,
+     "size": 157734,
+     "s2": 80.27859318399715
+    }
+   ],
+   "encMs": 485.17000000178814,
+   "decMs": 44.125,
+   "metrics": {
+    "psnr": 35.19102142950284,
+    "psnr_y": 40.21080964443812,
+    "ssim_y": 0.9803108013628646,
+    "ssimulacra2": 80.27859318399715
+   }
+  },
+  "jpeg": {
+   "status": "ok",
+   "q": 85,
+   "size": 179917,
+   "sizeAtTarget": 179917,
+   "note": "supera el objetivo incluso con la calidad m��nima",
+   "evals": [
+    {
+     "q": 85,
+     "size": 179917,
+     "s2": 80.0234806849274
+    }
+   ],
+   "encMs": 21.564999997615814,
+   "decMs": 27.685000002384186,
+   "metrics": {
+    "psnr": 33.596484947209554,
+    "psnr_y": 37.98493153542126,
+    "ssim_y": 0.9739295077958077,
+    "ssimulacra2": 80.0234806849274
+   }
+  }
+ },
+ "navegador": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+ "hilos": 12,
+ "carpeta": "2faee21b3939_PAP_2026_POL_ATR_MJ_AT4A8576",
+ "probada_png": "probada_1024x683.png"
+}
