@@ -89,23 +89,23 @@ imágenes sintéticas propias, nunca con las imágenes de evaluación.
 
 | Conjunto | Tesela | AVIF | JPEG XL | Decodificación Tesela / AVIF |
 |---|---|---|---|---|
-| **CLIC 2020**: 41 fotos profesionales de 2,2 MP (conjunto de referencia en investigación) | **−35,8 %** | −29,6 % | −22,2 % | 0,49 s / 1,46 s |
-| Kodak: 24 fotos de 768×512 | **−30,6 %** | −26,3 % | −12,1 % | 81 ms / 256 ms |
-| **DIV2K**: 50 fotos de validación de 2,7 MP ([informe](bench/results/div2k-50/REPORT.md)) | **−34,9 %** | −34,4 % | −20,3 % | 0,63 s / 1,88 s |
+| **CLIC 2020**: 41 fotos profesionales de 2,2 MP (conjunto de referencia en investigación) | **−35,9 %** | −29,6 % | −22,2 % | 0,49 s / 1,46 s |
+| Kodak: 24 fotos de 768×512 | **−30,7 %** | −26,3 % | −12,1 % | 81 ms / 256 ms |
+| **DIV2K**: 50 fotos de validación de 2,7 MP ([informe](bench/results/div2k-50/REPORT.md)) | **−35,1 %** | −34,4 % | −20,3 % | 0,66 s / 1,88 s |
 | Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−60,1 %** | −54,3 % | −36,0 % | 0,14 s / 0,15 s |
 | Ilustraciones: 6 (emojis, vectorial, gráficos) | **−61,8 %** | −56,0 % | +9,5 % | 0,13 s / 0,10 s |
 
 AVIF con croma completa (4:4:4): en todos los conjuntos ocupa menos que con 4:2:0, de un 2 a un 7 %
 a calidad media y bastante más a calidad alta, así que es la comparación justa. Tesela elige 4:2:0
 o 4:4:4 por imagen. Con AVIF en 4:2:0, la ventaja de Tesela parecía mayor (en DIV2K, −34,0 frente a
-−32,5 %; ahora −34,9 frente a −34,4 %, prácticamente un empate). Los tiempos son los del banco, que
+−32,5 %; ahora −35,1 frente a −34,4 %, prácticamente un empate). Los tiempos son los del banco, que
 codifica y decodifica cuatro imágenes a la vez.
 
 ### Kodak, todas las métricas
 
 | Formato | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Codificación | Decodificación |
 |---|---|---|---|---|---|---|---|
-| **Tesela** (por defecto) | **−30,6 %** | **−26,4 %** | −19,0 % | **−26,0 %** | −27,4 % | 2,41 s | **81 ms** |
+| **Tesela** (por defecto) | **−30,7 %** | **−27,0 %** | −18,2 % | **−25,6 %** | −28,2 % | 2,40 s | **81 ms** |
 | Tesela `--tune psnr` | −15,7 % | −13,2 % | **−28,0 %** | −23,3 % | **−30,3 %** | 3,04 s | 88 ms |
 | AVIF (libavif 1.4 + aom, `speed=4`, 4:4:4) | −26,3 % | −22,4 % | −12,9 % | −19,3 % | −20,5 % | 2,50 s | 256 ms |
 | JPEG XL (libjxl 0.12, `effort=7`) | −12,1 % | −13,4 % | +9,4 % | +4,4 % | +12,2 % | 0,19 s | 146 ms |
@@ -116,7 +116,7 @@ codifica y decodifica cuatro imágenes a la vez.
 **Cómo leer estos resultados:**
 
 - **Fotos.** En SSIMULACRA2, Tesela supera a AVIF por 4 puntos en Kodak y 6 en CLIC; en las fotos
-  grandes de DIV2K empatan (0,5 puntos). En PSNR-Y (solo luma) la ventaja es menor, porque al
+  grandes de DIV2K casi empatan (0,7 puntos). En PSNR-Y (solo luma) la ventaja es menor, porque al
   elegir 4:4:4 Tesela dedica más bits al color; en PSNR RGB, mayor.
 - **Contenido sintético.** Tesela supera a AVIF por 6 puntos en capturas e ilustraciones. Lo
   consigue con la paleta, la copia intra de bloques, el transform skip y la elección automática
@@ -247,7 +247,7 @@ croma entera (sin cambiar el formato: el campo ya existía):
 |---|---|
 | 4:4:4 cuando el error del submuestreo supera 0,25 × el paso | Fotos del usuario: Tesela pasa a ganar a JPEG XL en 20 de 21 (−11 % de media) |
 | En 4:4:4, croma más gruesa (factor 1,2 en vez de 0,8; matriz 4,5 en vez de 3,0), ajustada en DIV2K 851-900 | 29 fotos de ajuste −4,7 %; fotos del usuario −4,3 % (ninguna empeora); Kodak, CLIC y DIV2K-50 −0,2 a −0,3 % |
-| Con la croma ya más barata, umbral 0,15 en vez de 0,25 (más fotos en 4:4:4) | DIV2K 851-900: −0,6 % (baja), −1,0 % (media), −0,3 % (alta). Con 0 (siempre 4:4:4) −1,7 %, pero decodificar cuesta 1,3 veces más: **0,15 adoptado** |
+| Con la croma ya más barata, umbral 0,15 en vez de 0,25 (más fotos en 4:4:4) | DIV2K 851-900: −0,6 % (baja), −1,0 % (media), −0,3 % (alta). Con 0 (siempre 4:4:4) −1,7 %, pero decodificar cuesta 1,3 veces más. Validación: Kodak −30,6 → −30,7 %, CLIC −35,8 → −35,9 %, DIV2K-50 −34,9 → −35,1 %; decodificar DIV2K, +5 % de tiempo. **0,15 adoptado** |
 | Forzar 4:4:4 en animación | de −2 a +12 %. **Descartado** |**Animación.** Tamaño total a igual SSIMULACRA2 medio por fotograma
 ([`bench/results/animacion`](bench/results/animacion/REPORT.md); `python3 bench/anim_bench.py`):
 
@@ -495,7 +495,7 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 - **Soporte nativo.** Ningún navegador ni sistema operativo lo soporta de forma nativa: hace falta
   `tesela.js` y WebAssembly (630 KB; 730 KB más la versión con hilos, solo para codificar). Conviene servir un `fallback` en JPEG.
 - **Fotos grandes.** Frente a AVIF con croma completa (4:4:4), en las 50 fotos de 2,7 MP de DIV2K
-  la diferencia es de solo 0,5 puntos: prácticamente un empate. En CLIC y Kodak Tesela gana por
+  la diferencia es de solo 0,7 puntos: prácticamente un empate. En CLIC y Kodak Tesela gana por
   6 y 4 puntos.
 - **Sin pérdida en fotos.** Ocupa más que WebP y JPEG XL.
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
