@@ -134,7 +134,11 @@ deducido más el valor leído (recortado a ±64, como en la v1).
 bit `inter[(pc·5 + sz)·3 + c]`, donde c es cuántos vecinos (izquierdo y superior) tienen la marca
 202 o 203. Si vale 1 y el fotograma lleva movimiento global, sigue el bit
 `warp[(pc·5 + sz)·3 + c']`, con c' el número de esos vecinos con la marca 203; si vale 1, la hoja
-usa el movimiento global (marca 203) y no lleva vector. Si no, sigue un vector de movimiento con la
+usa el movimiento global (marca 203) y no lleva vector. Si no, en los planos de croma, si la
+luma de la posición de la hoja (la unidad de 4 × 4 de luma que contiene el punto
+`((x0 + w/2)·d, (y0 + h/2)·d)`, recortado al plano) tiene la marca 202 o 203, va el bit
+`inh[sz]`; si vale 1, el vector es el de esa luma (con croma 4:2:0, cada componente v pasa a
+`(v + 1) >> 1`) y no se lee nada más. Si no, sigue un vector de movimiento con la
 misma sintaxis que el vector de la copia intra (sección 6.5 de la v1), con modelos propios (`mv`),
 pero codificado respecto a un **predictor**: la mediana, componente a componente, de los vectores
 de los vecinos izquierdo (x0 − 1, y0), superior (x0, y0 − 1) y superior izquierdo (x0 − 1, y0 − 1)
@@ -185,7 +189,7 @@ Si `fx = fy = 0`, la muestra (x, y) es `R(ox + x0 + x + ix, oy + y0 + y + iy)`. 
 r = 0 … h + 6, y la muestra es `clamp((Σk F[fy][k] · t(x, y + k) + 2048) >> 12, 0, 255)`. El residuo
 y la reconstrucción son los de la v1.
 
-Los modelos `inter`, `mv` y `warp` van al final del orden de visita, detrás de los de la v2, en ese orden.
+Los modelos `inter`, `mv`, `warp` e `inh` van al final del orden de visita, detrás de los de la v2, en ese orden.
 
 ## 2. Bloques rectangulares
 

@@ -454,6 +454,8 @@ struct Ctx {
     mv: BvCtx,
     /// ¿Hoja con el movimiento global? (solo si la tesela lo lleva)
     warp: Vec<Model>,
+    /// Croma: ¿el vector es el de la luma de su posición?
+    inh: Vec<Model>,
 }
 
 impl Visit for Ctx {
@@ -478,6 +480,7 @@ impl Visit for Ctx {
         self.inter.visit(f);
         self.mv.visit(f);
         self.warp.visit(f);
+        self.inh.visit(f);
     }
 }
 
@@ -554,6 +557,7 @@ impl Ctx {
             inter: vec![Model::new(); 2 * 5 * 3],
             mv: BvCtx::default(),
             warp: vec![Model::new(); 2 * 5 * 3],
+            inh: vec![Model::new(); 5],
         }
     }
 }
@@ -888,6 +892,7 @@ fn code_leaf_head<C: Coder>(
     st: &mut ScState,
     inter: bool,
     warp: bool,
+    inherit: Option<(i32, i32)>,
 ) -> (Kind, bool) {
     let n = w.max(h);
     let sz = size_index(n);
@@ -910,8 +915,13 @@ fn code_leaf_head<C: Coder>(
                 Kind::Inter(m) => m,
                 _ => (0, 0),
             };
-            let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
-            let mv = ctx.mv.code(c, pc, mv, &mut pred);
+            let mv = match inherit {
+                Some(im) if c.bit(&mut ctx.inh[sz], mv == im) => im,
+                _ => {
+                    let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
+                    ctx.mv.code(c, pc, mv, &mut pred)
+                }
+            };
             st.last_mv = mv;
             kind = Some(Kind::Inter(mv));
         }
@@ -1000,6 +1010,46 @@ struct LumaRef {
     data: Vec<u8>,
     w: usize,
     h: usize,
+}
+
+/// Fotogramas predichos: marcas y vectores de la luma ya codificada, para que
+/// las hojas de croma puedan heredar el vector de la luma de su posición.
+struct LumaMv {
+    gw: usize,
+    gh: usize,
+    marks: Vec<u8>,
+    mvs: Vec<(i32, i32)>,
+    /// Submuestreo de la croma (1 o 2).
+    d: usize,
+}
+
+impl LumaMv {
+    fn new(luma: &Plane, sub: bool) -> Self {
+        LumaMv {
+            gw: luma.gw,
+            gh: luma.gh,
+            marks: luma.modes.clone(),
+            mvs: luma.mvs.clone(),
+            d: if sub { 2 } else { 1 },
+        }
+    }
+
+    /// Vector (cuartos de píxel de croma) de la luma en el centro de la hoja
+    /// de croma (x0, y0, w, h), si esa luma se predijo del fotograma anterior.
+    fn colocated(&self, x0: usize, y0: usize, w: usize, h: usize) -> Option<(i32, i32)> {
+        let gx = ((x0 + w / 2) * self.d / 4).min(self.gw - 1);
+        let gy = ((y0 + h / 2) * self.d / 4).min(self.gh - 1);
+        let i = gy * self.gw + gx;
+        if self.marks[i] != MARK_INTER && self.marks[i] != MARK_WARP {
+            return None;
+        }
+        let v = self.mvs[i];
+        Some(if self.d == 2 {
+            ((v.0 + 1) >> 1, (v.1 + 1) >> 1)
+        } else {
+            v
+        })
+    }
 }
 
 impl LumaRef {
@@ -1607,6 +1657,8 @@ struct EncState {
     inter: bool,
     /// La tesela lleva movimiento global.
     warp: bool,
+    /// Croma de un fotograma predicho: vectores de la luma.
+    lmv: Option<std::sync::Arc<LumaMv>>,
 }
 
 /// Fuente de un bloque con lo que queda fuera de la parte visible (`vis`)
@@ -1666,6 +1718,7 @@ impl EncState {
             effort: self.effort,
             inter: self.inter,
             warp: self.warp,
+            lmv: self.lmv.clone(),
         }
     }
 
@@ -1703,6 +1756,7 @@ impl EncState {
             &mut st,
             self.inter,
             self.warp,
+            self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
         );
         cc.bits
     }
@@ -1844,6 +1898,9 @@ impl EncState {
             };
             // Vectores en cuartos de píxel.
             let mut start = vec![mvp, (0, 0), pe.sc.last_mv];
+            if let Some(v) = self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)) {
+                start.push(v);
+            }
             if ip.warp.is_some() {
                 start.push(ip.warp_mv(x0 + w / 2 - 2, y0 + h / 2 - 2));
             }
@@ -2203,6 +2260,7 @@ impl EncState {
             st,
             self.inter,
             self.warp,
+            self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
         );
         let mut l = leaf.levels.clone();
         let coef = if leaf.ts {
@@ -3057,6 +3115,7 @@ fn encode_tile_ref(
         effort: p.effort.clamp(1, 9),
         inter: iref.is_some(),
         warp: false,
+        lmv: None,
     };
     let mut enc = Encoder::new();
     if let Some((rc, _, _)) = iref {
@@ -3118,6 +3177,9 @@ fn encode_tile_ref(
         );
         if pi == 0 {
             lref = Some(LumaRef::new(&plane, sub));
+            if st.inter {
+                st.lmv = Some(std::sync::Arc::new(LumaMv::new(&plane, sub)));
+            }
         }
         planes.push(plane);
         srcs.push(src);
@@ -3160,6 +3222,7 @@ fn encode_tile_ref(
             effort: st.effort,
             inter: false,
             warp: false,
+            lmv: None,
         };
         let mut aq = unit_qmap(width, height);
         let (plane, _) = encode_plane_alpha(
@@ -3288,6 +3351,8 @@ struct DecState {
     /// Movimiento global de la tesela.
     warp: bool,
     gw: Option<Warp>,
+    /// Croma de un fotograma predicho: vectores de la luma.
+    lmv: Option<std::sync::Arc<LumaMv>>,
     /// Fotograma anterior y (plano, origen de la tesela) que se decodifica ahora.
     rc: Option<std::sync::Arc<RefCanvas>>,
     cur: (usize, usize, usize),
@@ -3362,6 +3427,7 @@ impl DecState {
             st,
             self.inter,
             self.warp,
+            self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
         );
         let kind = match kind {
             Kind::Intra(m) if m == MODE_CCLM && lref.is_none() => Kind::Intra(MODE_DC),
@@ -3605,6 +3671,7 @@ fn decode_tile_ref(
         inter: h.tools & TOOL_INTER != 0,
         warp: false,
         gw: None,
+        lmv: None,
         rc,
         cur: (0, tx, ty),
     };
@@ -3647,6 +3714,9 @@ fn decode_tile_ref(
         );
         if pi == 0 {
             lref = Some(LumaRef::new(&plane, sub));
+            if st.inter {
+                st.lmv = Some(std::sync::Arc::new(LumaMv::new(&plane, sub)));
+            }
         }
         planes.push(plane);
     }
@@ -3675,6 +3745,7 @@ fn decode_tile_ref(
             inter: false,
             warp: false,
             gw: None,
+            lmv: None,
             rc: None,
             cur: (0, 0, 0),
         };
