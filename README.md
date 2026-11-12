@@ -228,15 +228,17 @@ pasa de 110 KB a 31 KB. La paleta solo aporta ~1,5 %.
 
 | Animación | GIF | WebP animado | Tesela | AVIF animado |
 |---|---|---|---|---|
-| Terminal, 90 fotogramas de 640×400, a calidad 76 | 242 KB | ~140 KB (no llega a 76) | **8,1 KB** | 13,8 KB |
-| Interfaz, 40 de 480×320, a calidad 80 | 68 KB | 57 KB | **3,7 KB** | 4,7 KB |
+| Terminal, 90 fotogramas de 640×400, a calidad 78 | 242 KB | ~140 KB (no llega a 78) | **6,6 KB** | 19,5 KB |
+| Interfaz, 40 de 480×320, a calidad 80 | 68 KB | 57 KB | **4,0 KB** | 4,7 KB |
 | Paneo sobre una foto, 30 de 400×300, a calidad 80 | 1 968 KB | 454 KB | **17,8 KB** | 18,4 KB |
 | Zoom sobre una foto, 30 de 400×300, a calidad 70 | 1 917 KB | 279 KB | **9,4 KB** | 10,2 KB |
+| Objetos que se mueven (y uno gira) sobre un fondo quieto, 40 de 400×300, a calidad 70 | — | 233 KB | 41,5 KB | **32,2 KB** |
 
 Tesela ocupa entre 13 y 100 veces menos que GIF y WebP animado. Frente a AVIF animado gana en la
-terminal (−41 %), en la interfaz (−21 %, y llega a calidad 93 cuando AVIF se queda en 87), en el
-paneo (−3 %) y en el zoom (−8 %). En un zoom más largo (90 fotogramas) AVIF aún ocupa un 30 %
-menos: codifica fotogramas futuros ocultos y predice en las dos direcciones, algo que Tesela no hace.
+terminal (−66 %, y llega a calidad 93 cuando AVIF se queda en 79), en la interfaz (−15 %; 93 frente
+a 87), en el paneo (−3 %) y en el zoom (−8 %). Pierde con movimiento local (objetos que se mueven
+y giran): AVIF ocupa un 22 % menos. Y en un zoom más largo (90 fotogramas) AVIF ocupa un 30 % menos:
+codifica fotogramas futuros ocultos y predice en las dos direcciones, algo que Tesela no hace.
 
 Así se llegó ahí (tamaño a igual calidad; terminal / interfaz / paneo / zoom):
 
@@ -255,7 +257,8 @@ Así se llegó ahí (tamaño a igual calidad; terminal / interfaz / paneo / zoom
 | Mapa de cuantización adaptativa deducido de la referencia (el decodificador lo calcula; antes eran 55 de ~95 bytes de un fotograma que solo copia) | −13 a −22 % |
 | Movimiento global en la tabla de fotogramas, predicho por extrapolación (0-6 bytes en vez de 15) | −1 a −2 % |
 | Media de dos predicciones pasadas (anterior y referencia larga) | +0,1 dB en simulación. **Descartado** |
-| Total frente a la versión anterior, a igual calidad | terminal −34 %, interfaz −38 %, paneo −46 %, zoom −66 % |
+| Rectángulo de cada fotograma con 32 píxeles de margen, alineado a 16 | arregla rayas que se acumulaban donde un objeto descubre el fondo: objetos 48 → 71 de SSIMULACRA2; terminal +7 a +10 de calidad (el texto nuevo caía en el borde de una imagen aparte) |
+| Total frente a la versión anterior, a igual calidad | terminal −46 %, interfaz −33 %, paneo −46 %, zoom −66 % |
 
 Velocidad: codificar un fotograma predicho costaba 2,6 veces una imagen fija del mismo tamaño. La
 interpolación se rehízo sin recortes por píxel ni búferes nuevos por bloque (idéntica bit a bit) y,
@@ -466,9 +469,9 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 - **Formato de los datos.** Solo admite 8 bits por canal, y el canal alfa siempre es sin pérdida
   (un alfa con degradados suaves cuesta bastante). No tiene HDR. En la web, el perfil de color se
   respeta con `tesela-auto.js`, pero `<tesela-img>` pinta en sRGB.
-- **Zooms largos en animación.** Tesela gana a AVIF animado en las cuatro animaciones del banco,
-  pero en un zoom de 90 fotogramas AVIF aún ocupa un 30 % menos (fotogramas futuros ocultos y
-  predicción bidireccional, que Tesela no tiene).
+- **Movimiento local y zooms largos en animación.** Tesela gana a AVIF animado en capturas,
+  interfaces, paneos y zooms cortos, pero con objetos que se mueven y giran AVIF ocupa un 22 % menos,
+  y en un zoom de 90 fotogramas, un 30 % menos.
 - **Velocidad de codificación.** Codificar sigue siendo más lento que AVIF: ~1 s por foto de
   0,4 MP con 4 núcleos y ~10 s por foto de 12 MP. En el navegador va con hilos solo si la página
   está aislada entre orígenes (ver el comparador); la librería `tesela.js` aún codifica con uno.

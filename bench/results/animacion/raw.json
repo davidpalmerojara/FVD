@@ -22,31 +22,31 @@
    {
     "codec": "tesela",
     "q": 40,
-    "bytes": 5306,
+    "bytes": 5295,
     "ssimulacra2": 45.292363333333334
    },
    {
     "codec": "tesela",
     "q": 60,
-    "bytes": 7586,
+    "bytes": 7575,
     "ssimulacra2": 60.88423333333333
    },
    {
     "codec": "tesela",
     "q": 75,
-    "bytes": 10185,
+    "bytes": 10174,
     "ssimulacra2": 70.88851
    },
    {
     "codec": "tesela",
     "q": 85,
-    "bytes": 14198,
+    "bytes": 14187,
     "ssimulacra2": 77.34747666666667
    },
    {
     "codec": "tesela",
     "q": 93,
-    "bytes": 27458,
+    "bytes": 27447,
     "ssimulacra2": 84.364
    },
    {
@@ -112,12 +112,12 @@
   ],
   "size_at": {
    "70": {
-    "tesela": 9921.962197299765,
+    "tesela": 9910.92016692864,
     "webp": 288360.14014381514,
     "avif": null
    },
    "80": {
-    "tesela": 18218.535974399412,
+    "tesela": 18206.997596139034,
     "webp": 464965.41857133724,
     "avif": 18821.776184372466
    },
@@ -151,32 +151,32 @@
    {
     "codec": "tesela",
     "q": 40,
-    "bytes": 3713,
-    "ssimulacra2": 77.8091925
+    "bytes": 4028,
+    "ssimulacra2": 77.59467500000001
    },
    {
     "codec": "tesela",
     "q": 60,
-    "bytes": 4048,
-    "ssimulacra2": 84.2986075
+    "bytes": 4306,
+    "ssimulacra2": 84.0272675
    },
    {
     "codec": "tesela",
     "q": 75,
-    "bytes": 4469,
-    "ssimulacra2": 91.6255725
+    "bytes": 4718,
+    "ssimulacra2": 91.52647999999999
    },
    {
     "codec": "tesela",
     "q": 85,
-    "bytes": 4987,
-    "ssimulacra2": 93.25068250000001
+    "bytes": 5559,
+    "ssimulacra2": 93.2418725
    },
    {
     "codec": "tesela",
     "q": 93,
-    "bytes": 6831,
-    "ssimulacra2": 93.2627325
+    "bytes": 8129,
+    "ssimulacra2": 93.19108000000001
    },
    {
     "codec": "webp",
@@ -246,12 +246,12 @@
     "avif": null
    },
    "80": {
-    "tesela": 3822.874937205436,
+    "tesela": 4129.786452415022,
     "webp": 58767.067508634434,
     "avif": 4810.271352817305
    },
    "90": {
-    "tesela": 4371.968185060605,
+    "tesela": 4631.057736840676,
     "webp": null,
     "avif": null
    }
@@ -280,32 +280,32 @@
    {
     "codec": "tesela",
     "q": 40,
-    "bytes": 6315,
-    "ssimulacra2": 61.52906222222222
+    "bytes": 6631,
+    "ssimulacra2": 78.03341555555556
    },
    {
     "codec": "tesela",
     "q": 60,
-    "bytes": 7305,
-    "ssimulacra2": 71.45254222222222
+    "bytes": 7598,
+    "ssimulacra2": 85.38625555555556
    },
    {
     "codec": "tesela",
     "q": 75,
-    "bytes": 8382,
-    "ssimulacra2": 77.61238333333333
+    "bytes": 8673,
+    "ssimulacra2": 90.17201555555555
    },
    {
     "codec": "tesela",
     "q": 85,
-    "bytes": 9933,
-    "ssimulacra2": 81.02427777777777
+    "bytes": 10228,
+    "ssimulacra2": 92.46582777777778
    },
    {
     "codec": "tesela",
     "q": 93,
-    "bytes": 11911,
-    "ssimulacra2": 83.06515999999999
+    "bytes": 12691,
+    "ssimulacra2": 93.56851777777776
    },
    {
     "codec": "webp",
@@ -370,17 +370,17 @@
   ],
   "size_at": {
    "70": {
-    "tesela": 7150.929657870132,
+    "tesela": null,
     "webp": 131621.76991576972,
     "avif": null
    },
    "80": {
-    "tesela": 9439.419134779093,
+    "tesela": 6876.877427657016,
     "webp": null,
     "avif": null
    },
    "90": {
-    "tesela": null,
+    "tesela": 8631.846094923605,
     "webp": null,
     "avif": null
    }
@@ -409,31 +409,31 @@
    {
     "codec": "tesela",
     "q": 40,
-    "bytes": 4560,
+    "bytes": 4552,
     "ssimulacra2": 43.56144666666667
    },
    {
     "codec": "tesela",
     "q": 60,
-    "bytes": 6637,
+    "bytes": 6630,
     "ssimulacra2": 58.72368000000001
    },
    {
     "codec": "tesela",
     "q": 75,
-    "bytes": 9608,
+    "bytes": 9600,
     "ssimulacra2": 69.90424666666667
    },
    {
     "codec": "tesela",
     "q": 85,
-    "bytes": 14818,
+    "bytes": 14810,
     "ssimulacra2": 77.88407000000001
    },
    {
     "codec": "tesela",
     "q": 93,
-    "bytes": 31233,
+    "bytes": 31225,
     "ssimulacra2": 85.06756666666665
    },
    {
@@ -499,12 +499,12 @@
   ],
   "size_at": {
    "70": {
-    "tesela": 9658.079286265265,
+    "tesela": 9650.071511229067,
     "webp": 286042.691268553,
     "avif": 10400.734454830954
    },
    "80": {
-    "tesela": 18457.521470198542,
+    "tesela": 18449.099042926293,
     "webp": 491843.2827803117,
     "avif": 19116.975174824252
    },
@@ -512,6 +512,135 @@
     "tesela": null,
     "webp": null,
     "avif": 72866.67191274244
+   }
+  }
+ },
+ "objetos": {
+  "frames": 40,
+  "size": [
+   400,
+   300
+  ],
+  "ms": 60,
+  "rows": [
+   {
+    "codec": "gif",
+    "q": null,
+    "bytes": 2680510,
+    "ssimulacra2": 56.58251499999999
+   },
+   {
+    "codec": "webp-ll",
+    "q": null,
+    "bytes": 1331338,
+    "ssimulacra2": 100.0
+   },
+   {
+    "codec": "tesela",
+    "q": 40,
+    "bytes": 16242,
+    "ssimulacra2": 23.577822500000003
+   },
+   {
+    "codec": "tesela",
+    "q": 60,
+    "bytes": 25515,
+    "ssimulacra2": 50.089825000000005
+   },
+   {
+    "codec": "tesela",
+    "q": 75,
+    "bytes": 33973,
+    "ssimulacra2": 62.696937500000004
+   },
+   {
+    "codec": "tesela",
+    "q": 85,
+    "bytes": 44522,
+    "ssimulacra2": 71.52228749999999
+   },
+   {
+    "codec": "tesela",
+    "q": 93,
+    "bytes": 64824,
+    "ssimulacra2": 78.22666749999999
+   },
+   {
+    "codec": "webp",
+    "q": 20,
+    "bytes": 78388,
+    "ssimulacra2": 24.14186
+   },
+   {
+    "codec": "webp",
+    "q": 40,
+    "bytes": 107538,
+    "ssimulacra2": 46.922605
+   },
+   {
+    "codec": "webp",
+    "q": 60,
+    "bytes": 135358,
+    "ssimulacra2": 57.42582500000001
+   },
+   {
+    "codec": "webp",
+    "q": 80,
+    "bytes": 191896,
+    "ssimulacra2": 67.094525
+   },
+   {
+    "codec": "webp",
+    "q": 95,
+    "bytes": 499336,
+    "ssimulacra2": 79.9217625
+   },
+   {
+    "codec": "avif",
+    "q": 20,
+    "bytes": 16651,
+    "ssimulacra2": 47.403305
+   },
+   {
+    "codec": "avif",
+    "q": 40,
+    "bytes": 28668,
+    "ssimulacra2": 68.07706
+   },
+   {
+    "codec": "avif",
+    "q": 60,
+    "bytes": 65981,
+    "ssimulacra2": 79.5259575
+   },
+   {
+    "codec": "avif",
+    "q": 75,
+    "bytes": 91663,
+    "ssimulacra2": 82.93179500000001
+   },
+   {
+    "codec": "avif",
+    "q": 90,
+    "bytes": 135722,
+    "ssimulacra2": 85.6111975
+   }
+  ],
+  "size_at": {
+   "70": {
+    "tesela": 42492.98786161817,
+    "webp": 238309.2502044696,
+    "avif": 32976.30524827451
+   },
+   "80": {
+    "tesela": null,
+    "webp": null,
+    "avif": 69070.26116634758
+   },
+   "90": {
+    "tesela": null,
+    "webp": null,
+    "avif": null
    }
   }
  }
