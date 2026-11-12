@@ -119,6 +119,12 @@ recortan a ±2²⁰ (a, b, d, e) y a ±2³⁰ (c, f). El vector de luma en 1/16 
 del lienzo es `((a·X + b·Y + c + 2¹³) >> 14, (d·X + e·Y + f + 2¹³) >> 14)` (en 64 bits; cada
 componente se recorta a ±2²²).
 
+**Contextos.** Las teselas de un fotograma con `INTER` no empiezan con las probabilidades iniciales
+de la sección 5: todos sus modelos empiezan en el estado (probabilidades y contadores) en que
+quedaron al terminar de decodificar la tesela 0 del fotograma anterior de la tabla (tras su
+restauración; el canal alfa tiene sus propios modelos y no cuenta). Así un fotograma pequeño no
+paga por volver a aprender las estadísticas.
+
 **Mapa de cuantización adaptativa.** En un archivo con `INTER` y `AQ`, el dq de cada celda no se
 codifica tal cual sino como diferencia con un dq **deducido** de la referencia: para la tesela de
 w × h, sea R(x, y) la muestra de luma de los planos de referencia del fotograma anterior en

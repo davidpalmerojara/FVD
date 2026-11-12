@@ -1432,6 +1432,9 @@ pub struct RefCanvas {
     warp: Option<Warp>,
     /// Planos de la referencia larga (mismo espacio de color), si la hay.
     gold: Option<RefPlanes>,
+    /// Contextos con que acabó la tesela 0 del fotograma anterior: las
+    /// teselas de un fotograma predicho empiezan con ellos.
+    ctx0: Option<Ctx>,
     /// Solo en el codificador: dq extra por celda AQ del fotograma (más
     /// grueso donde el fotograma anterior ya lo predice bien) y su ancho.
     tdq: Option<(Vec<i32>, usize)>,
@@ -1518,6 +1521,8 @@ pub struct AnimState {
     last_gold: bool,
     /// Solo en el codificador: movimiento global elegido para el último fotograma.
     last_warp: Option<Warp>,
+    /// Contextos con que acabó la tesela 0 del último fotograma.
+    last_ctx: Option<Ctx>,
 }
 
 impl AnimState {
@@ -1530,6 +1535,7 @@ impl AnimState {
             gold: None,
             last_gold: false,
             last_warp: None,
+            last_ctx: None,
         }
     }
 
@@ -1603,6 +1609,7 @@ impl RefCanvas {
             warp: None,
             tdq: None,
             gold: None,
+            ctx0: None,
         }
     }
 
@@ -2643,6 +2650,7 @@ fn encode_with_alpha_ref(
             let (cw, ch) = (a.st.width, a.st.height);
             let mut r = RefCanvas::new(planes, Some(a.src), cw, ch, &header, a.f.x, a.f.y);
             r.gold = a.st.gold_for(&header);
+            r.ctx0 = a.st.last_ctx.clone();
             let (warp, stale) = choose_warp(&r, rgb, width, height, &header, a.warps);
             r.warp = warp;
             a.st.last_warp = warp;
@@ -2679,7 +2687,7 @@ fn encode_with_alpha_ref(
             rc.as_ref().map(|rc| (rc, t.x, t.y)),
             want,
         );
-        (r.0, r.1, r.2, r.4)
+        (r.0, r.1, r.2, r.4, r.5)
     });
     let mut recon_rgb = vec![0u8; width * height * 3];
     let mut recon_alpha = alpha.map(|_| vec![0u8; width * height]);
@@ -2706,6 +2714,7 @@ fn encode_with_alpha_ref(
             alpha: recon_alpha.clone(),
             meta: Metadata::default(),
         };
+        a.st.last_ctx = res.first().map(|r| r.4.clone());
         a.st.commit(&a.f, &d, &fplanes);
     }
     let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
@@ -3092,16 +3101,17 @@ fn encode_tile_ref(
     Option<Vec<u8>>,
     Vec<(u32, u32)>,
     RefPlanes,
+    Ctx,
 ) {
     let lossless = header.tools & TOOL_LOSSLESS != 0;
     let sub = header.subsample && !lossless;
     let base_q = header.qstep();
     let cq = header.chroma_q as f32 / 32.0;
     let mut st = EncState {
-        ctx: if lossless {
-            Ctx::new()
-        } else {
-            Ctx::trained(base_q, header.tools & TOOL_SCREEN != 0, header.version)
+        ctx: match iref.and_then(|(rc, _, _)| rc.ctx0.as_ref()) {
+            Some(c) => c.clone(),
+            None if lossless => Ctx::new(),
+            None => Ctx::trained(base_q, header.tools & TOOL_SCREEN != 0, header.version),
         },
         qt: std::sync::Arc::new(QuantTables::new(
             header.qm_luma as f32 / 16.0,
@@ -3240,7 +3250,7 @@ fn encode_tile_ref(
         recon_alpha = Some(crop_plane(&plane, width, height));
     }
     let (recon, fp) = finish_planes(header, &planes, width, height, want_planes);
-    (enc.finish(), recon, recon_alpha, stats, fp)
+    (enc.finish(), recon, recon_alpha, stats, fp, st.ctx)
 }
 
 /// v2: tras decodificar un plano, lo que queda fuera de la parte visible
@@ -3647,7 +3657,7 @@ fn decode_tile_ref(
     tx: usize,
     ty: usize,
     want_planes: bool,
-) -> (Vec<u8>, Option<Vec<u8>>, RefPlanes) {
+) -> (Vec<u8>, Option<Vec<u8>>, RefPlanes, Ctx) {
     let lossless = h.tools & TOOL_LOSSLESS != 0;
     let sub = h.subsample && !lossless;
     let base_q = h.qstep();
@@ -3659,10 +3669,10 @@ fn decode_tile_ref(
     };
     let dims = [(w, ht), (cw, ch), (cw, ch)];
     let mut st = DecState {
-        ctx: if lossless {
-            Ctx::new()
-        } else {
-            Ctx::trained(base_q, h.tools & TOOL_SCREEN != 0, h.version)
+        ctx: match rc.as_ref().and_then(|r| r.ctx0.as_ref()) {
+            Some(c) => c.clone(),
+            None if lossless => Ctx::new(),
+            None => Ctx::trained(base_q, h.tools & TOOL_SCREEN != 0, h.version),
         },
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
         screen: h.tools & TOOL_SCREEN != 0,
@@ -3754,7 +3764,7 @@ fn decode_tile_ref(
         crop_plane(&plane, w, ht)
     });
     let (rgb, fp) = finish_planes(h, &planes, w, ht, want_planes);
-    (rgb, alpha, fp)
+    (rgb, alpha, fp, st.ctx)
 }
 
 pub fn decode(data: &[u8]) -> Result<Decoded, String> {
@@ -3772,7 +3782,7 @@ fn decode_with_ref(
     data: &[u8],
     rc: Option<std::sync::Arc<RefCanvas>>,
     want_planes: bool,
-) -> Result<(Decoded, RefPlanes), String> {
+) -> Result<(Decoded, RefPlanes, Option<Ctx>), String> {
     let inf = info(data)?;
     if inf.header.tools & TOOL_INTER != 0 && rc.is_none() {
         return Err("fotograma que depende del anterior: decodifica la animación completa".into());
@@ -3800,7 +3810,7 @@ fn decode_with_ref(
     } else {
         Vec::new()
     };
-    for (t, (prgb, palpha, pp)) in inf.tiles.iter().zip(&parts) {
+    for (t, (prgb, palpha, pp, _)) in inf.tiles.iter().zip(&parts) {
         paste(&mut rgb, 3, w, t, prgb);
         if let (Some(dst), Some(src)) = (alpha.as_mut(), palpha.as_ref()) {
             paste(dst, 1, w, t, src);
@@ -3816,7 +3826,8 @@ fn decode_with_ref(
         alpha,
         meta: inf.meta.clone(),
     };
-    Ok((d, fplanes))
+    let ctx = parts.into_iter().next().map(|p| p.3);
+    Ok((d, fplanes, ctx))
 }
 
 // ------------------------------------------------------------- Animación
@@ -4058,9 +4069,11 @@ pub fn decode_frame(
         let mut r = RefCanvas::new(planes, None, st.width, st.height, &h, f.x, f.y);
         r.gold = st.gold_for(&h);
         r.warp = f.warp;
+        r.ctx0 = st.last_ctx.clone();
         std::sync::Arc::new(r)
     });
-    let (d, planes) = decode_with_ref(inner, rc, true)?;
+    let (d, planes, ctx) = decode_with_ref(inner, rc, true)?;
+    st.last_ctx = ctx;
     st.commit(f, &d, &planes);
     Ok(d)
 }
