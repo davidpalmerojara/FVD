@@ -343,8 +343,8 @@ fn animation_roundtrip() {
             a.frames.iter().map(|f| f.duration_ms).collect::<Vec<_>>(),
             [100, 100, 350]
         );
-        // Solo se guarda el rectángulo que cambia.
-        assert!(a.frames[1].w < w && a.frames[1].h < h);
+        // Solo se guarda el rectángulo que cambia (con su margen de 16).
+        assert!(a.frames[1].w * a.frames[1].h < w * h);
         let (_, dec) = decode_animation(&bytes, 1 << 26).unwrap();
         assert_eq!(dec.len(), 3);
         if lossless {
