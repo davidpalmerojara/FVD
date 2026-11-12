@@ -68,6 +68,10 @@ pub struct Params {
     /// Pendiente de la matriz de cuantización (luma / croma).
     pub qm_luma: f32,
     pub qm_chroma: f32,
+    /// (chroma_q, qm_chroma) para fotos que el codificador decide guardar en
+    /// 4:4:4. Con la croma entera hay cuatro veces más muestras de color, y
+    /// cuantizarlas más grueso apenas se nota (None = los mismos de 4:2:0).
+    pub chroma_444: Option<(f32, f32)>,
     /// λ = lambda_k · q².
     pub lambda_k: f32,
     /// Intensidad del filtro de desbloqueo (None = automático).
@@ -275,6 +279,7 @@ impl Default for Params {
             chroma_q: 0.8,
             qm_luma: 1.5,
             qm_chroma: 3.0,
+            chroma_444: Some((1.2, 4.5)),
             lambda_k: 0.11,
             deblock: Some(0),
             tile: 1024,
@@ -296,6 +301,7 @@ impl Params {
         self.chroma_q = 1.0;
         self.qm_luma = 0.0;
         self.qm_chroma = 0.0;
+        self.chroma_444 = None;
         self.lambda_k = 0.12;
         self
     }
@@ -306,6 +312,7 @@ impl Params {
         self.chroma_q = 0.6;
         self.qm_luma = 3.0;
         self.qm_chroma = 3.0;
+        self.chroma_444 = None;
         self.lambda_k = 0.12;
         self
     }
@@ -2520,17 +2527,24 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
             tools: TOOL_SCREEN | TOOL_LOSSLESS,
         };
     }
+    let subsample = p.subsample.unwrap_or_else(|| {
+        !screen && base_q > 1.04 && chroma_loss_420(rgb, width, height) < 0.25 * base_q
+    });
+    // Parámetros de croma propios solo si la elección de 4:4:4 fue automática
+    // en una foto (las capturas y el 4:4:4 forzado usan los de siempre).
+    let (cq, qmc) = match p.chroma_444 {
+        Some(v) if p.subsample.is_none() && !subsample && !screen => v,
+        _ => (p.chroma_q, p.qm_chroma),
+    };
     Header {
         version: p.version,
         width: width as u32,
         height: height as u32,
-        subsample: p.subsample.unwrap_or_else(|| {
-            !screen && base_q > 1.04 && chroma_loss_420(rgb, width, height) < 0.25 * base_q
-        }),
+        subsample,
         qstep: (base_q * 64.0).round().clamp(1.0, 65535.0) as u16,
-        chroma_q: (p.chroma_q * 32.0).round().clamp(1.0, 255.0) as u8,
+        chroma_q: (cq * 32.0).round().clamp(1.0, 255.0) as u8,
         qm_luma: (p.qm_luma * 16.0).round().clamp(0.0, 255.0) as u8,
-        qm_chroma: (p.qm_chroma * 16.0).round().clamp(0.0, 255.0) as u8,
+        qm_chroma: (qmc * 16.0).round().clamp(0.0, 255.0) as u8,
         aq: p.aq_strength != 0.0,
         // El desbloqueo no forma parte de la v1 (campo reservado, siempre 0).
         deblock: 0,

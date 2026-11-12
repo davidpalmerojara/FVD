@@ -239,6 +239,7 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
             }
             "--cq" => {
                 p.chroma_q = num(i)?;
+                p.chroma_444 = None;
                 i += 1;
             }
             "--qm" => {
@@ -247,6 +248,7 @@ fn parse_params(args: &[String]) -> Result<Params, String> {
             }
             "--qmc" => {
                 p.qm_chroma = num(i)?;
+                p.chroma_444 = None;
                 i += 1;
             }
             "--lambda" => {
