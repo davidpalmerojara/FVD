@@ -178,7 +178,7 @@ async function addFile(file) {
     alert(`No se pudo abrir «${file.name}». Formatos admitidos: los que tu navegador sepa leer (JPEG, PNG, WebP, AVIF…).`);
     return;
   }
-  const photo = { id: nextPhotoId++, name: file.name, origW: bitmap.width, origH: bitmap.height, origBytes: file.size, bitmap, results: {} };
+  const photo = { id: nextPhotoId++, name: file.name, file, origW: bitmap.width, origH: bitmap.height, origBytes: file.size, bitmap, results: {} };
   const tc = new OffscreenCanvas(104, 104);
   const s = Math.max(104 / bitmap.width, 104 / bitmap.height);
   tc.getContext('2d').drawImage(bitmap, (104 - bitmap.width * s) / 2, (104 - bitmap.height * s) / 2, bitmap.width * s, bitmap.height * s);
@@ -233,6 +233,57 @@ async function process(photo) {
       render();
     }),
   );
+  if (photo.run === run) logRun(photo, st);
+}
+
+// ------------------------------------------------------------ Registro
+
+// Con `web/serve.py`, cada foto terminada se guarda en `registro/` (original,
+// imagen probada y resultados) para poder revisar después dónde pierde Tesela.
+// En un servidor estático la petición falla y no pasa nada.
+async function logRun(photo, st) {
+  try {
+    const results = {};
+    for (const [c, r] of Object.entries(photo.results)) {
+      results[c] = {
+        status: r.status,
+        error: r.error,
+        q: r.q,
+        size: r.size,
+        sizeAtTarget: r.sizeAtTarget ?? null,
+        note: r.note || '',
+        evals: r.evals || null,
+        encMs: r.encMs,
+        decMs: r.decMs,
+        metrics: r.metrics,
+      };
+    }
+    const meta = {
+      fecha: new Date().toISOString(),
+      nombre: photo.name,
+      original: { w: photo.origW, h: photo.origH, bytes: photo.origBytes, tipo: photo.file?.type || '' },
+      probada: { w: photo.w, h: photo.h },
+      modo: st.mode,
+      objetivo: st.target,
+      ajustes: { maxDim: st.maxDim, q: st.q, opts: st.opts },
+      resultados: results,
+      navegador: navigator.userAgent,
+      hilos: navigator.hardwareConcurrency || null,
+    };
+    const c = new OffscreenCanvas(photo.w, photo.h);
+    c.getContext('2d').putImageData(photo.original, 0, 0);
+    const fd = new FormData();
+    fd.append('meta', JSON.stringify(meta));
+    if (photo.file) fd.append('original', photo.file, photo.name);
+    fd.append('probada', await c.convertToBlob({ type: 'image/png' }), 'probada.png');
+    const r = await fetch('/api/registro', { method: 'POST', body: fd });
+    if (r.ok) {
+      photo.logged = true;
+      render();
+    }
+  } catch {
+    // Sin servidor de registro: no se guarda.
+  }
 }
 
 // ------------------------------------------------------------ Render
@@ -287,7 +338,7 @@ function renderDetail() {
   if (!p) return;
   $('d-name').textContent = p.name;
   const scaled = p.w !== p.origW ? ` (reducida desde ${p.origW}×${p.origH})` : '';
-  $('d-meta').textContent = `${p.w}×${p.h} px${scaled} · ${p.mode === 'target' ? `misma calidad: SSIMULACRA2 = ${p.target}` : 'calidad fija'}`;
+  $('d-meta').textContent = `${p.w}×${p.h} px${scaled} · ${p.mode === 'target' ? `misma calidad: SSIMULACRA2 = ${p.target}` : 'calidad fija'}${p.logged ? ' · guardada en el registro' : ''}`;
   $('th-size').textContent = p.mode === 'target' ? 'Tamaño a igual calidad' : 'Tamaño';
 
   const rows = ORDER.filter((c) => p.results[c]).map((c) => ({ c, r: p.results[c] }));

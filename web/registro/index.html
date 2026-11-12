@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registro del comparador · Tesela</title>
+  <link rel="stylesheet" href="../style.css">
+  <style>
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0 24px; }
+    .stat { padding: 14px 16px; }
+    .stat b { display: block; font-size: 26px; }
+    .stat span { color: var(--muted); font-size: 13px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0 12px; font-size: 14px; }
+    table.data td, table.data th { white-space: nowrap; }
+    td.foto { min-width: 200px; } td.foto > div.f { display: flex; gap: 10px; align-items: center; white-space: normal; min-width: 220px; }
+    td.foto .f { gap: 10px; align-items: center; }
+    td.foto img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+    td.foto small { color: var(--muted); display: block; }
+    .neg { color: var(--good); font-weight: 600; }
+    .pos { color: var(--bad); font-weight: 600; }
+    .vacio { padding: 32px; text-align: center; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+      <nav class="links">
+        <a href="../index.html">Visión general</a>
+        <a href="../docs/index.html">Documentación</a>
+        <a href="../compare/index.html">Comparador</a>
+        <a href="../registro/index.html" aria-current="page">Registro</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap" style="padding-top:32px;padding-bottom:48px">
+    <p class="eyebrow">Registro</p>
+    <h2>Lo que has probado en el comparador</h2>
+    <p class="lead">Cada foto que termina el comparador se guarda en <code>registro/</code> (original, imagen probada y
+      resultados). Tamaños a igual calidad cuando el comparador está en «misma calidad». Para reproducirlo con los códecs
+      nativos y todas las métricas: <code>python bench/registro.py</code>.</p>
+    <div class="stats" id="stats"></div>
+    <div class="bar">
+      <label><input type="checkbox" id="solo-pierde"> Solo donde Tesela no gana</label>
+      <label>Contra <select id="rival">
+        <option value="mejor">el mejor de los demás</option>
+        <option value="jxl">JPEG XL</option>
+        <option value="avif">AVIF</option>
+        <option value="webp">WebP</option>
+        <option value="jpeg">JPEG</option>
+      </select></label>
+      <label>Ordenar por <select id="orden">
+        <option value="fecha">fecha</option>
+        <option value="dif">diferencia (peor primero)</option>
+      </select></label>
+    </div>
+    <div class="card tw">
+      <table class="data">
+        <thead><tr><th>Foto</th><th>Prueba</th><th>Tesela</th><th>JPEG XL</th><th>AVIF</th><th>WebP</th><th>JPEG</th><th>Tesela frente al rival</th></tr></thead>
+        <tbody id="filas"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const NOMBRES = { tesela: 'Tesela', jxl: 'JPEG XL', avif: 'AVIF', webp: 'WebP', jpeg: 'JPEG' };
+    const kb = (n) => (n == null ? '—' : n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB' : (n / 1024).toFixed(1) + ' KB');
+    const tam = (e, c) => {
+      const r = e.resultados[c];
+      if (!r || r.status !== 'ok') return null;
+      return e.modo === 'target' ? r.sizeAtTarget ?? null : r.size;
+    };
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    let datos = [];
+
+    function rival(e, quien) {
+      if (quien !== 'mejor') return { c: quien, s: tam(e, quien) };
+      let mejor = { c: null, s: null };
+      for (const c of ['jxl', 'avif', 'webp', 'jpeg']) {
+        const s = tam(e, c);
+        if (s != null && (mejor.s == null || s < mejor.s)) mejor = { c, s };
+      }
+      return mejor;
+    }
+
+    function pinta() {
+      const quien = document.getElementById('rival').value;
+      const solo = document.getElementById('solo-pierde').checked;
+      const filas = datos
+        .map((e) => {
+          const t = tam(e, 'tesela');
+          const r = rival(e, quien);
+          const dif = t != null && r.s != null ? t / r.s - 1 : null;
+          return { e, t, r, dif };
+        })
+        .filter((f) => !solo || (f.dif != null && f.dif > 0));
+      if (document.getElementById('orden').value === 'dif') filas.sort((a, b) => (b.dif ?? -9) - (a.dif ?? -9));
+      else filas.sort((a, b) => b.e.fecha.localeCompare(a.e.fecha));
+
+      const conDif = datos.map((e) => {
+        const t = tam(e, 'tesela'), r = rival(e, quien);
+        return t != null && r.s != null ? Math.log(t / r.s) : null;
+      }).filter((v) => v != null);
+      const gana = conDif.filter((v) => v < 0).length;
+      const media = conDif.length ? (Math.exp(conDif.reduce((a, b) => a + b, 0) / conDif.length) - 1) * 100 : null;
+      const fotos = new Set(datos.map((e) => e.carpeta)).size;
+      document.getElementById('stats').innerHTML = `
+        <div class="card stat"><b>${fotos}</b><span>fotos (${datos.length} pruebas)</span></div>
+        <div class="card stat"><b>${gana} / ${conDif.length}</b><span>pruebas en que Tesela gana a ${quien === 'mejor' ? 'todos los demás' : NOMBRES[quien]}</span></div>
+        <div class="card stat"><b>${media == null ? '—' : (media > 0 ? '+' : '−') + Math.abs(media).toFixed(1) + ' %'}</b><span>tamaño medio de Tesela frente ${quien === 'mejor' ? 'al mejor de los demás' : 'a ' + NOMBRES[quien]}</span></div>`;
+
+      const tb = document.getElementById('filas');
+      if (!filas.length) {
+        tb.innerHTML = `<tr><td colspan="8" class="vacio">${datos.length ? 'Nada que mostrar con este filtro.' : 'Aún no hay pruebas. Arrastra fotos al <a href="../compare/index.html">comparador</a> con el servidor <code>web/serve.py</code>.'}</td></tr>`;
+        return;
+      }
+      tb.innerHTML = filas.map(({ e, t, r, dif }) => {
+        const celdas = ['tesela', 'jxl', 'avif', 'webp', 'jpeg'].map((c) => {
+          const s = tam(e, c);
+          const err = e.resultados[c]?.status === 'error' ? ` title="${esc(e.resultados[c].error || '')}"` : '';
+          return `<td class="r"${err}>${s == null ? (e.resultados[c] ? '—' : '') : kb(s)}</td>`;
+        }).join('');
+        const d = dif == null ? '—' : `<span class="${dif > 0.005 ? 'pos' : dif < -0.005 ? 'neg' : ''}">${dif > 0 ? '+' : '−'}${Math.abs(dif * 100).toFixed(1)} %</span>${r.c ? ` <small>(${NOMBRES[r.c]})</small>` : ''}`;
+        const img = `/registro-archivos/${encodeURIComponent(e.carpeta)}/${encodeURIComponent(e.probada_png)}`;
+        return `<tr>
+          <td class="foto"><div class="f"><a href="${img}" target="_blank"><img src="${img}" alt="" loading="lazy"></a><div>${esc(e.nombre)}<small>${esc(e.carpeta)}</small></div></div></td>
+          <td style="white-space:normal;font-size:13px">${new Date(e.fecha).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}<br>
+            ${e.probada.w}×${e.probada.h}${e.probada.w !== e.original.w ? ` <small class="muted">(de ${e.original.w}×${e.original.h})</small>` : ''} · ${e.modo === 'target' ? 'SSIMULACRA2 ' + e.objetivo : 'calidad fija'}</td>
+          ${celdas}
+          <td class="r">${d}</td></tr>`;
+      }).join('');
+    }
+
+    fetch('/api/registro', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => { datos = d; pinta(); })
+      .catch(() => {
+        document.getElementById('filas').innerHTML = '<tr><td colspan="8" class="vacio">El registro solo funciona con el servidor local: <code>python web/serve.py</code>.</td></tr>';
+      });
+    for (const id of ['rival', 'solo-pierde', 'orden']) document.getElementById(id).onchange = pinta;
+  </script>
+</body>
+</html>

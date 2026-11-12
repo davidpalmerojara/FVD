@@ -44,6 +44,19 @@ Abre <http://localhost:8000/compare/> y arrastra tus fotos. Se procesan en tu na
 de tu ordenador. Tiene que ser a través de `http://`: abriendo el archivo directamente
 (`file://`), el navegador bloquea WebAssembly y los workers.
 
+**Registro.** Con `web/serve.py`, cada foto que termina el comparador se guarda en `registro/`
+(el original, la imagen probada tras reducirla y los resultados de cada formato). Se consulta en
+<http://localhost:8000/registro/>, con un filtro para ver solo dónde Tesela no gana, y se resume o
+se repite con los códecs nativos (todas las métricas, foto a foto):
+
+```sh
+python bench/registro.py                   # resumen de lo probado en el navegador
+python bench/registro.py --banco           # repite las imágenes con los códecs nativos
+```
+
+`registro/` no se sube a Git (son tus fotos). Para compartirlo: `git add -f registro` y un commit,
+sabiendo que si el repositorio es público, las fotos también lo serán; o comprímelo y envíalo.
+
 - **Windows (PowerShell).** Se instala con `winget install Git.Git Python.Python.3.12`.
   Si `python` abre la Microsoft Store, usa `py web/serve.py`. Usa `web/serve.py` y no
   `python -m http.server`: en algunos Windows este último sirve los `.js` con un tipo incorrecto
