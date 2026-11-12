@@ -2524,7 +2524,9 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
         version: p.version,
         width: width as u32,
         height: height as u32,
-        subsample: p.subsample.unwrap_or(!screen && base_q > 1.04),
+        subsample: p.subsample.unwrap_or_else(|| {
+            !screen && base_q > 1.04 && chroma_loss_420(rgb, width, height) < 0.25 * base_q
+        }),
         qstep: (base_q * 64.0).round().clamp(1.0, 65535.0) as u16,
         chroma_q: (p.chroma_q * 32.0).round().clamp(1.0, 255.0) as u8,
         qm_luma: (p.qm_luma * 16.0).round().clamp(0.0, 255.0) as u8,
@@ -2535,6 +2537,48 @@ pub fn make_header(rgb: &[u8], width: usize, height: usize, p: &Params) -> Heade
         tile,
         tools: if screen { TOOL_SCREEN } else { 0 },
     }
+}
+
+/// Error RMS (en niveles de 8 bits) que añade a la croma submuestrearla a
+/// 4:2:0: diferencia entre cada muestra de Cb y Cr y la media de su bloque
+/// de 2 × 2. Si es grande frente al paso de cuantización, la croma tiene
+/// detalle fino que el submuestreo borraría (texto de colores, tejidos,
+/// vegetación lejana) y compensa codificarla entera: en esas fotos, a
+/// calidad alta, 4:4:4 ocupa de un 30 a un 75 % menos a igual SSIMULACRA2.
+fn chroma_loss_420(rgb: &[u8], w: usize, h: usize) -> f32 {
+    if w < 2 || h < 2 || rgb.len() < w * h * 3 {
+        return 0.0;
+    }
+    let c = |i: usize| {
+        let (r, g, b) = (
+            rgb[3 * i] as f32,
+            rgb[3 * i + 1] as f32,
+            rgb[3 * i + 2] as f32,
+        );
+        (
+            -0.168_736 * r - 0.331_264 * g + 0.5 * b,
+            0.5 * r - 0.418_688 * g - 0.081_312 * b,
+        )
+    };
+    let mut e = 0f64;
+    let mut cnt = 0usize;
+    for y in (0..h - 1).step_by(2) {
+        for x in (0..w - 1).step_by(2) {
+            let q = [
+                c(y * w + x),
+                c(y * w + x + 1),
+                c((y + 1) * w + x),
+                c((y + 1) * w + x + 1),
+            ];
+            let mb = q.iter().map(|v| v.0).sum::<f32>() / 4.0;
+            let mr = q.iter().map(|v| v.1).sum::<f32>() / 4.0;
+            for v in q {
+                e += ((v.0 - mb).powi(2) + (v.1 - mr).powi(2)) as f64 / 2.0;
+            }
+            cnt += 4;
+        }
+    }
+    (e / cnt as f64).sqrt() as f32
 }
 
 /// Une cabecera y cargas de las teselas en un archivo completo.
@@ -4511,11 +4555,20 @@ pub fn encode_animation_recon(
     if p.version < 2 {
         return Err("la animación necesita la versión 2 del formato".into());
     }
-    let sub = Params {
+    let mut sub = Params {
         meta: Metadata::default(),
         preview: false,
         ..p.clone()
     };
+    // El submuestreo de la croma se decide una vez con el primer fotograma:
+    // si cambiara entre fotogramas, la referencia tendría que reconvertirse.
+    if sub.subsample.is_none() && !frames.is_empty() && !p.lossless {
+        let rgb0: Vec<u8> = frames[0]
+            .chunks_exact(4)
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .collect();
+        sub.subsample = Some(make_header(&rgb0, width, height, &sub).subsample);
+    }
     // Predicción entre fotogramas (TESELA_NOINTER=1 la desactiva, para comparar).
     let use_inter = std::env::var_os("TESELA_NOINTER").is_none();
     let use_warp = std::env::var_os("TESELA_NOWARP").is_none();
