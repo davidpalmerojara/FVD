@@ -1238,41 +1238,81 @@ impl InterPlane<'_> {
         let bx = (self.ox + x0) as i64 + (mv.0 >> shift) as i64;
         let by = (self.oy + y0) as i64 + (mv.1 >> shift) as i64;
         let (fx, fy) = ((mv.0 & mask) as usize, (mv.1 & mask) as usize);
-        let (mw, mh) = (self.w as i64 - 1, self.h as i64 - 1);
-        let px = |x: i64, y: i64| {
-            self.data[y.clamp(0, mh) as usize * self.w + x.clamp(0, mw) as usize] as i32
-        };
-        if fx == 0 && fy == 0 {
+        let (pw, ph) = (self.w as i64, self.h as i64);
+        debug_assert!(w <= 64 && h <= 64);
+        // Ventana de la referencia (h + 7) × (w + 7) desde (bx − 3, by − 3),
+        // repitiendo el borde fuera del plano. Si cae dentro, se lee directa.
+        let sw = w + 7;
+        PRED_BUF.with_borrow_mut(|(win, tmp)| {
+            let (wx0, wy0) = (bx - 3, by - 3);
+            if wx0 >= 0 && wy0 >= 0 && wx0 + sw as i64 <= pw && wy0 + (h + 7) as i64 <= ph {
+                for r in 0..h + 7 {
+                    let o = (wy0 as usize + r) * self.w + wx0 as usize;
+                    win[r * sw..r * sw + sw].copy_from_slice(&self.data[o..o + sw]);
+                }
+            } else {
+                for r in 0..h + 7 {
+                    let yy = (wy0 + r as i64).clamp(0, ph - 1) as usize * self.w;
+                    for c in 0..sw {
+                        win[r * sw + c] =
+                            self.data[yy + (wx0 + c as i64).clamp(0, pw - 1) as usize];
+                    }
+                }
+            }
+            if fx == 0 && fy == 0 {
+                for y in 0..h {
+                    for x in 0..w {
+                        out[y * w + x] = win[(y + 3) * sw + x + 3] as i32;
+                    }
+                }
+                return;
+            }
+            // Pasada horizontal sobre h + 7 filas (3 por encima y 4 por debajo),
+            // luego vertical; con fracción 0 el filtro es 64 · muestra.
+            let (cx, cy) = (&table[fx], &table[fy]);
+            for r in 0..h + 7 {
+                let row = &win[r * sw..r * sw + sw];
+                let t = &mut tmp[r * w..r * w + w];
+                if fx == 0 {
+                    for x in 0..w {
+                        t[x] = 64 * row[x + 3] as i32;
+                    }
+                } else {
+                    for x in 0..w {
+                        let p = &row[x..x + 8];
+                        let mut s = 0;
+                        for k in 0..8 {
+                            s += cx[k] * p[k] as i32;
+                        }
+                        t[x] = s;
+                    }
+                }
+            }
             for y in 0..h {
-                for x in 0..w {
-                    out[y * w + x] = px(bx + x as i64, by + y as i64);
+                let o = &mut out[y * w..y * w + w];
+                if fy == 0 {
+                    for x in 0..w {
+                        o[x] = ((64 * tmp[(y + 3) * w + x] + 2048) >> 12).clamp(0, 255);
+                    }
+                } else {
+                    for x in 0..w {
+                        let mut s = 0;
+                        for k in 0..8 {
+                            s += cy[k] * tmp[(y + k) * w + x];
+                        }
+                        o[x] = ((s + 2048) >> 12).clamp(0, 255);
+                    }
                 }
             }
-            return;
-        }
-        // Pasada horizontal sobre h + 7 filas (3 por encima y 4 por debajo).
-        let (cx, cy) = (&table[fx], &table[fy]);
-        let mut tmp = vec![0i32; (h + 7) * w];
-        for r in 0..h + 7 {
-            let yy = by + r as i64 - 3;
-            for x in 0..w {
-                let mut s = 0;
-                for (k, c) in cx.iter().enumerate() {
-                    s += c * px(bx + x as i64 + k as i64 - 3, yy);
-                }
-                tmp[r * w + x] = s;
-            }
-        }
-        for y in 0..h {
-            for x in 0..w {
-                let mut s = 0;
-                for (k, c) in cy.iter().enumerate() {
-                    s += c * tmp[(y + k) * w + x];
-                }
-                out[y * w + x] = ((s + 2048) >> 12).clamp(0, 255);
-            }
-        }
+        });
     }
+}
+
+thread_local! {
+    /// Búferes de la interpolación (ventana de la referencia y pasada
+    /// horizontal), reutilizados para no ponerlos a cero en cada bloque.
+    static PRED_BUF: std::cell::RefCell<(Vec<u8>, Vec<i32>)> =
+        std::cell::RefCell::new((vec![0; 71 * 71], vec![0; 71 * 64]));
 }
 
 /// Fotograma anterior (lienzo completo) en el espacio de color del fotograma
@@ -1361,6 +1401,7 @@ fn paste_planes(dst: &mut RefPlanes, src: &RefPlanes, x: usize, y: usize, sub: b
 /// Estado de una animación mientras se decodifica (o se codifica): el lienzo
 /// RGBA que se muestra y los planos de referencia para predecir el siguiente
 /// fotograma (sección 1.3 de la especificación v2).
+#[derive(Clone)]
 pub struct AnimState {
     pub canvas: Vec<u8>,
     pub width: usize,
@@ -1712,55 +1753,6 @@ impl EncState {
         let try_ts = self.screen && n <= 16;
         let mut pred = vec![0i32; nn];
         let mut res = vec![0f32; nn];
-        let mut cands: Vec<(f32, u8, f32)> = Vec::with_capacity(nmodes as usize);
-        // Búsqueda intra en dos fases: barrido grueso y refinado angular.
-        let mut done = [false; 64];
-        let mut todo: Vec<u8> = vec![MODE_PLANAR, MODE_DC];
-        todo.extend((2..predict::NUM_ANGULAR_MODES).step_by(4));
-        todo.extend_from_slice(&mpm);
-        if nmodes > predict::NUM_ANGULAR_MODES {
-            todo.push(MODE_CCLM);
-        }
-        let passes = if self.effort >= 3 { 2 } else { 1 };
-        for pass in 0..passes {
-            if pass == 1 {
-                let mut ang: Vec<(f32, u8)> = cands
-                    .iter()
-                    .filter(|c| c.1 >= 2 && c.1 < MODE_CCLM)
-                    .map(|c| (c.0, c.1))
-                    .collect();
-                ang.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                todo.clear();
-                let width = if self.topk > 4 { 3 } else { 2 };
-                for &(_, m) in ang.iter().take(2) {
-                    for d in -width..=width {
-                        let mm = m as i32 + d;
-                        if (2..predict::NUM_ANGULAR_MODES as i32).contains(&mm) {
-                            todo.push(mm as u8);
-                        }
-                    }
-                }
-            }
-            for &mode in &todo {
-                if done[mode as usize] {
-                    continue;
-                }
-                done[mode as usize] = true;
-                predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
-                for i in 0..nn {
-                    res[i] = src[i] - pred[i] as f32;
-                }
-                if vis != (w, h) {
-                    zero_outside(&mut res, w, h, vis);
-                }
-                let mut cc = CostCounter::default();
-                code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
-                let s = dct::satd_rect(&res, w, h);
-                cands.push((s + slam * cc.bits, mode, cc.bits));
-            }
-        }
-        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
         let mut best: Option<(f32, Kind, Vec<i32>, bool)> = None;
         let consider = |best: &mut Option<(f32, Kind, Vec<i32>, bool)>,
                         j: f32,
@@ -1771,59 +1763,6 @@ impl EncState {
                 *best = Some((j, kind, lv, ts));
             }
         };
-        // Solo pasan a RDO completo los modos cuyo coste SATD está cerca del mejor.
-        let satd_limit = cands[0].0 * 1.3 + slam * 4.0;
-        for &(sc, mode, _) in cands.iter().take(self.topk) {
-            if sc > satd_limit {
-                break;
-            }
-            predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
-            let (jr, lv, ts) =
-                self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
-            let kind = Kind::Intra(mode);
-            let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
-            consider(&mut best, jr + lambda * hb, kind, lv, ts);
-        }
-        if self.screen && n <= 32 {
-            // Paleta
-            for pal in tools::palette_candidates(&src, w, h) {
-                tools::predict_palette(&pal, &mut pred);
-                let (jr, lv, ts) =
-                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
-                let kind = Kind::Palette(pal);
-                let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
-                consider(&mut best, jr + lambda * hb, kind, lv, ts);
-            }
-            // Copia intra de bloques
-            if w.min(h) >= 8 {
-                let mut bvs: Vec<(i32, i32)> =
-                    vec![pe.sc.last_bv, (-(w as i32), 0), (0, -(h as i32))];
-                if let Some(hi) = &pe.hash {
-                    bvs.extend(hi.candidates(pe.src, pe.plane.w, x0, y0));
-                }
-                let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
-                for bv in bvs {
-                    if scored.iter().any(|s| s.1 == bv)
-                        || !tools::bv_valid(&pe.plane, x0, y0, w, h, bv)
-                    {
-                        continue;
-                    }
-                    tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
-                    let sad = sad_vis(&src, &pred, w, h, vis);
-                    let bits = self.ctx.bv.cost(pc, bv, pe.sc.last_bv);
-                    scored.push((sad + slam * bits, bv));
-                }
-                scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                for &(_, bv) in scored.iter().take(2) {
-                    tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
-                    let (jr, lv, ts) =
-                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
-                    let kind = Kind::Ibc(bv);
-                    let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
-                    consider(&mut best, jr + lambda * hb, kind, lv, ts);
-                }
-            }
-        }
         if let Some(ip) = pe.inter {
             // Predicción desde el fotograma anterior: vectores candidatos (el
             // nulo, el último, coincidencias exactas del hash y una búsqueda
@@ -1915,6 +1854,114 @@ impl EncState {
                 let kind = Kind::Warp;
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
+            }
+        }
+        // Si copiar del fotograma anterior ya es exacto (sin residuo), no se
+        // prueban la predicción intra ni las herramientas sintéticas.
+        let skip_intra =
+            self.effort < 9 && best.as_ref().is_some_and(|b| b.2.iter().all(|&l| l == 0));
+        if !skip_intra {
+            let mut cands: Vec<(f32, u8, f32)> = Vec::with_capacity(nmodes as usize);
+            // Búsqueda intra en dos fases: barrido grueso y refinado angular.
+            let mut done = [false; 64];
+            let mut todo: Vec<u8> = vec![MODE_PLANAR, MODE_DC];
+            todo.extend((2..predict::NUM_ANGULAR_MODES).step_by(4));
+            todo.extend_from_slice(&mpm);
+            if nmodes > predict::NUM_ANGULAR_MODES {
+                todo.push(MODE_CCLM);
+            }
+            let passes = if self.effort >= 3 { 2 } else { 1 };
+            for pass in 0..passes {
+                if pass == 1 {
+                    let mut ang: Vec<(f32, u8)> = cands
+                        .iter()
+                        .filter(|c| c.1 >= 2 && c.1 < MODE_CCLM)
+                        .map(|c| (c.0, c.1))
+                        .collect();
+                    ang.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    todo.clear();
+                    let width = if self.topk > 4 { 3 } else { 2 };
+                    for &(_, m) in ang.iter().take(2) {
+                        for d in -width..=width {
+                            let mm = m as i32 + d;
+                            if (2..predict::NUM_ANGULAR_MODES as i32).contains(&mm) {
+                                todo.push(mm as u8);
+                            }
+                        }
+                    }
+                }
+                for &mode in &todo {
+                    if done[mode as usize] {
+                        continue;
+                    }
+                    done[mode as usize] = true;
+                    predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
+                    for i in 0..nn {
+                        res[i] = src[i] - pred[i] as f32;
+                    }
+                    if vis != (w, h) {
+                        zero_outside(&mut res, w, h, vis);
+                    }
+                    let mut cc = CostCounter::default();
+                    code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
+                    let s = dct::satd_rect(&res, w, h);
+                    cands.push((s + slam * cc.bits, mode, cc.bits));
+                }
+            }
+            cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+            // Solo pasan a RDO completo los modos cuyo coste SATD está cerca del mejor.
+            let satd_limit = cands[0].0 * 1.3 + slam * 4.0;
+            for &(sc, mode, _) in cands.iter().take(self.topk) {
+                if sc > satd_limit {
+                    break;
+                }
+                predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
+                let (jr, lv, ts) =
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                let kind = Kind::Intra(mode);
+                let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
+                consider(&mut best, jr + lambda * hb, kind, lv, ts);
+            }
+            if self.screen && n <= 32 {
+                // Paleta
+                for pal in tools::palette_candidates(&src, w, h) {
+                    tools::predict_palette(&pal, &mut pred);
+                    let (jr, lv, ts) =
+                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                    let kind = Kind::Palette(pal);
+                    let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
+                    consider(&mut best, jr + lambda * hb, kind, lv, ts);
+                }
+                // Copia intra de bloques
+                if w.min(h) >= 8 {
+                    let mut bvs: Vec<(i32, i32)> =
+                        vec![pe.sc.last_bv, (-(w as i32), 0), (0, -(h as i32))];
+                    if let Some(hi) = &pe.hash {
+                        bvs.extend(hi.candidates(pe.src, pe.plane.w, x0, y0));
+                    }
+                    let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
+                    for bv in bvs {
+                        if scored.iter().any(|s| s.1 == bv)
+                            || !tools::bv_valid(&pe.plane, x0, y0, w, h, bv)
+                        {
+                            continue;
+                        }
+                        tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
+                        let sad = sad_vis(&src, &pred, w, h, vis);
+                        let bits = self.ctx.bv.cost(pc, bv, pe.sc.last_bv);
+                        scored.push((sad + slam * bits, bv));
+                    }
+                    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    for &(_, bv) in scored.iter().take(2) {
+                        tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
+                        let (jr, lv, ts) = self
+                            .rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                        let kind = Kind::Ibc(bv);
+                        let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
+                        consider(&mut best, jr + lambda * hb, kind, lv, ts);
+                    }
+                }
             }
         }
         let (j, kind, levels, ts) = best.expect("al menos un candidato");
@@ -4208,6 +4255,7 @@ pub fn encode_animation_recon(
     // Predicción entre fotogramas (TESELA_NOINTER=1 la desactiva, para comparar).
     let use_inter = std::env::var_os("TESELA_NOINTER").is_none();
     let use_warp = std::env::var_os("TESELA_NOWARP").is_none();
+    let boost_gold = std::env::var_os("TESELA_NOGOLDBOOST").is_none();
     // dq extra (unidades de 1/6 de octava del paso) en las celdas bien predichas.
     let taq: i32 = std::env::var("TESELA_TAQ")
         .ok()
@@ -4300,22 +4348,35 @@ pub fn encode_animation_recon(
                 let tdq = (inter && taq > 0).then(|| {
                     temporal_dq(&frames[i - 1], f, width, height, (x, y, w, h), warp, taq)
                 });
-                let af = AnimFrame {
-                    st: &mut st,
-                    src: &prev_src,
-                    f: fi,
-                    inter,
-                    warps: [warp, wgold],
-                    tdq,
+                // Si el fotograma acaba siendo la nueva referencia larga, se
+                // vuelve a codificar con la calidad pedida (sin el −dq de los
+                // predichos): los siguientes predicen de él.
+                let snapshot = (pf.quality != sub.quality).then(|| st.clone());
+                let enc = |st: &mut AnimState, pf: &Params, tdq| {
+                    let af = AnimFrame {
+                        st,
+                        src: &prev_src,
+                        f: fi.clone(),
+                        inter,
+                        warps: [warp, wgold],
+                        tdq,
+                    };
+                    encode_with_alpha_ref(
+                        &crgb,
+                        has_alpha.then_some(&alpha[..]),
+                        w,
+                        h,
+                        pf,
+                        Some(af),
+                    )
                 };
-                let e = encode_with_alpha_ref(
-                    &crgb,
-                    has_alpha.then_some(&alpha[..]),
-                    w,
-                    h,
-                    &pf,
-                    Some(af),
-                );
+                let mut e = enc(&mut st, &pf, tdq.clone());
+                if st.last_gold && i > 0 && boost_gold {
+                    if let Some(snap) = snapshot {
+                        st = snap;
+                        e = enc(&mut st, &sub, tdq);
+                    }
+                }
                 recons.push(st.canvas.clone());
                 if st.last_gold {
                     gold_idx = i;
