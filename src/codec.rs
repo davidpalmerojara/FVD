@@ -4425,7 +4425,7 @@ pub fn encode_animation_recon(
     let rect_margin: usize = std::env::var("TESELA_MARGIN")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(16);
+        .unwrap_or(32);
     // dq extra (unidades de 1/6 de octava del paso) en las celdas bien predichas.
     let taq: i32 = std::env::var("TESELA_TAQ")
         .ok()
