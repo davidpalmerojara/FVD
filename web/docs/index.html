@@ -255,7 +255,7 @@ tesela roundtrip &lt;entrada&gt; [opciones de encode]         # codifica, decodi
         <dd>Es exacto bit a bit y mejora a PNG con claridad, pero en fotos ocupa más que WebP sin pérdida y que JPEG XL.</dd>
         <dt>¿Qué limitaciones tiene?</dt>
         <dd>8 bits por canal, sin HDR, y el alfa siempre es sin pérdida. En animación, Tesela gana a AVIF animado en
-          capturas e interfaces, pero con movimiento de cámara (paneos, zooms) AVIF ocupa un 5-7 % menos, y más en zooms largos. El perfil de color se respeta con
+          capturas, interfaces, paneos y zooms cortos, pero en zooms largos AVIF ocupa un 30 % menos. El perfil de color se respeta con
           <code>tesela-auto.js</code>; el elemento <code>&lt;tesela-img&gt;</code> pinta en sRGB. Es un
           proyecto experimental, sin una auditoría de patentes.</dd>
         <dt>¿Cómo se ha medido?</dt>
