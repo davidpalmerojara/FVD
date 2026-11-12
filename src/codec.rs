@@ -4348,9 +4348,12 @@ pub fn encode_animation_recon(
                 let tdq = (inter && taq > 0).then(|| {
                     temporal_dq(&frames[i - 1], f, width, height, (x, y, w, h), warp, taq)
                 });
-                // Si el fotograma acaba siendo la nueva referencia larga, se
-                // vuelve a codificar con la calidad pedida (sin el −dq de los
-                // predichos): los siguientes predicen de él.
+                // Si el fotograma acaba siendo la nueva referencia larga y la
+                // anterior duró (el movimiento es lento respecto al encuadre),
+                // se vuelve a codificar con la calidad pedida (sin el −dq de
+                // los predichos): muchos de los siguientes predicen de él. En
+                // un paneo la referencia se renueva cada pocos fotogramas y no
+                // compensa.
                 let snapshot = (pf.quality != sub.quality).then(|| st.clone());
                 let enc = |st: &mut AnimState, pf: &Params, tdq| {
                     let af = AnimFrame {
@@ -4371,7 +4374,7 @@ pub fn encode_animation_recon(
                     )
                 };
                 let mut e = enc(&mut st, &pf, tdq.clone());
-                if st.last_gold && i > 0 && boost_gold {
+                if st.last_gold && i > 0 && boost_gold && i - gold_idx >= 8 {
                     if let Some(snap) = snapshot {
                         st = snap;
                         e = enc(&mut st, &sub, tdq);
