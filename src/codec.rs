@@ -4245,8 +4245,17 @@ fn choose_warp(
     let luma = color_planes(rgb, w, h, header).swap_remove(0).0;
     let mut errs = [f64::INFINITY; 2];
     let mut all: Vec<(f64, Warp, bool)> = Vec::new();
-    for (ci, c) in cands.into_iter().enumerate() {
+    // Referencia: copiar el fotograma anterior sin moverlo (lo que hacen las
+    // hojas con vector nulo). Un modelo que no lo mejora claramente sobra: en
+    // escenas con objetos que se mueven sobre un fondo quieto, el ajuste sigue
+    // a los objetos y, aplicado al fondo, lo emborrona.
+    let mut e_still = f64::INFINITY;
+    for (ci, c) in std::iter::once(Some(Warp::default()))
+        .chain(cands)
+        .enumerate()
+    {
         let Some(c) = c else { continue };
+        let ci = ci as isize - 1;
         if c.gold && rc.gold.is_none() {
             continue;
         }
@@ -4267,6 +4276,10 @@ fn choose_warp(
                 }
             }
         }
+        if ci < 0 {
+            e_still = e;
+            continue;
+        }
         errs[c.gold as usize] = errs[c.gold as usize].min(e);
         // Ante la duda, la referencia larga (no acumula interpolaciones) y
         // los parámetros predichos (no cuestan bytes).
@@ -4274,10 +4287,11 @@ fn choose_warp(
         let e = if ci >= 2 { e * 0.985 } else { e };
         all.push((e, c, ci >= 2));
     }
-    let stale = !(errs[1] <= errs[0] * 1.25);
+    let stale = !(errs[1] <= errs[0].min(e_still) * 1.25);
     let best = all
         .into_iter()
-        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+        .filter(|b| b.0 < e_still * 0.9);
     (best.map(|b| b.1), stale)
 }
 
@@ -4408,6 +4422,10 @@ pub fn encode_animation_recon(
     let use_inter = std::env::var_os("TESELA_NOINTER").is_none();
     let use_warp = std::env::var_os("TESELA_NOWARP").is_none();
     let boost_gold = std::env::var_os("TESELA_NOGOLDBOOST").is_none();
+    let rect_margin: usize = std::env::var("TESELA_MARGIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
     // dq extra (unidades de 1/6 de octava del paso) en las celdas bien predichas.
     let taq: i32 = std::env::var("TESELA_TAQ")
         .ok()
@@ -4440,6 +4458,23 @@ pub fn encode_animation_recon(
         match rect {
             None => list.last_mut().unwrap().0 += durations_ms[i],
             Some((x, y, w, h)) => {
+                // Con predicción entre fotogramas, el rectángulo se amplía con
+                // un margen y se alinea a una rejilla de 16: lo que se descubre
+                // al mover un objeto queda dentro, con sus vecinos para
+                // predecir, y los bloques coinciden de un fotograma a otro (si
+                // no, cada franja descubierta se codifica en el borde de una
+                // imagen distinta y aparecen rayas). El margen se copia del
+                // anterior casi gratis.
+                let (x, y, w, h) = if i > 0 && use_inter && rect_margin > 0 {
+                    let g = 16;
+                    let x0 = x.saturating_sub(rect_margin) / g * g;
+                    let y0 = y.saturating_sub(rect_margin) / g * g;
+                    let x1 = ((x + w + rect_margin).div_ceil(g) * g).min(width);
+                    let y1 = ((y + h + rect_margin).div_ceil(g) * g).min(height);
+                    (x0, y0, x1 - x0, y1 - y0)
+                } else {
+                    (x, y, w, h)
+                };
                 // Origen par: la croma 4:2:0 del fotograma y la de la referencia coinciden.
                 let (x, y, w, h) = (x & !1, y & !1, w + (x & 1), h + (y & 1));
                 let mut crop = Vec::with_capacity(w * h * 4);

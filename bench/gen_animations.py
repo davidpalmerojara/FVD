@@ -7,7 +7,10 @@
 - interfaz: una tarjeta con barra de progreso y un indicador que se mueve.
 - foto: un paneo lento sobre una foto (todo el fotograma cambia).
 - zoom: un zoom lento sobre una foto (movimiento de subpíxel, como una cámara).
+- objetos: tres recortes que se mueven (y uno gira) sobre un fondo quieto,
+  como un vídeo con movimiento local.
 """
+import math
 import sys
 from pathlib import Path
 
@@ -107,8 +110,23 @@ def zoom(d: Path):
     return frames, 70
 
 
+def objetos(d: Path):
+    """Movimiento local: recortes que se desplazan en direcciones distintas y uno que gira."""
+    src = Image.open(ROOT / "web" / "compare" / "sample.png").convert("RGB")
+    bg = src.crop((300, 150, 700, 450))
+    p1, p2, p3 = src.crop((0, 0, 90, 90)), src.crop((600, 350, 700, 430)), src.crop((100, 380, 180, 460))
+    frames = []
+    for t in range(40):
+        f = bg.copy()
+        f.paste(p1, (int(10 + 6 * t), int(20 + 2 * t)))
+        f.paste(p2, (int(290 - 5 * t), int(200 - 1.5 * t)))
+        f.paste(p3.rotate(4 * t, resample=Image.BICUBIC), (int(160 + 40 * math.sin(t / 6)), int(120 + 30 * math.cos(t / 6))))
+        frames.append(f)
+    return frames, 60
+
+
 def main():
-    for name, gen in [("terminal", terminal), ("interfaz", interfaz), ("foto", foto), ("zoom", zoom)]:
+    for name, gen in [("terminal", terminal), ("interfaz", interfaz), ("foto", foto), ("zoom", zoom), ("objetos", objetos)]:
         d = OUT / name
         d.mkdir(parents=True, exist_ok=True)
         frames, ms = gen(d)
