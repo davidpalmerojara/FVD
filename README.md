@@ -8,6 +8,9 @@ WebAssembly.
 
 Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
 
+**Web y comparador en línea: [tesela.davidpalmero.dev](https://tesela.davidpalmero.dev/)**
+([comparador](https://tesela.davidpalmero.dev/compare/)).
+
 - **Comparador**: sube tus fotos y compáralas con WebP, AVIF, JPEG XL y JPEG, todo dentro del
   navegador (`web/compare/`).
 - **Librería web**: `<tesela-img src="foto.tsl">`, con decodificación en paralelo en Web Workers
@@ -442,8 +445,11 @@ python3 web/serve.py
 # http://localhost:8000/demo/       demo de <tesela-img>
 ```
 
-El workflow `.github/workflows/pages.yml` publica `web/` en GitHub Pages. Hay que activarlo una
-vez en *Settings → Pages → Source: GitHub Actions*.
+La web publicada ([tesela.davidpalmero.dev](https://tesela.davidpalmero.dev/)) es la carpeta
+`web/` tal cual en Cloudflare Pages: sin comando de compilación (los módulos WASM están en el
+repositorio) y con las cabeceras de aislamiento de `web/_headers`. Cada cambio en la rama se
+publica solo. Como alternativa, el workflow `.github/workflows/pages.yml` la publica en GitHub
+Pages (hay que activarlo en *Settings → Pages → Source: GitHub Actions*).
 
 ### Comparador
 
