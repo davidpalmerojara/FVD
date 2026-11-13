@@ -328,6 +328,26 @@ imagen en el mismo banco (4 trabajos a la vez):
 Con `-e 3` Tesela comprime más que AVIF y codifica 2,5 veces más rápido; con `-e 1`, empata con
 AVIF en SSIMULACRA2 y es 5 veces más rápido.
 
+**Menos candidatos con el esfuerzo por defecto.** Las herramientas intra de la v2 hicieron la
+codificación un ~30 % más lenta; dos recortes de la búsqueda lo recuperan (callgrind, tres recortes
+de DIV2K: −26 % de instrucciones a calidad 75, −24 % a 92 y −12 % a 40), sin cambiar el tamaño a
+igual SSIMULACRA2 (DIV2K 851-900: +0,04 % en total, entre −0,1 y +0,1 % por tramo):
+
+- Hasta el esfuerzo 6, un bloque de 64×64 o 32×32 no se prueba como hoja (ni en mitades
+  rectangulares) si incluso su mejor modo intra deja un coste SATD por píxel mayor que 2√λ: con
+  tanta textura, dividirlo ganaba siempre. En 16×16 sí ganaba alguna vez, y podarlo costaba un
+  0,2 % en calidad alta.
+- Con esfuerzo 4 a 6, la elección del modo intra tiene una fase intermedia: los 8 mejores por SATD
+  se ordenan con una estimación barata de J (DCT, redondeo con zona muerta y bits del bloque, sin
+  RDOQ) y solo los 2 mejores (3 con esfuerzo 5 y 6) pasan por la RDO completa. La SATD ordena mal:
+  el modo ganador era el quinto de la lista en un 6 % de las hojas.
+
+Con `-e 7` o más la búsqueda sigue siendo completa. Las capturas no cambian (con contenido
+sintético no se aplica ninguno de los dos recortes). Probado y descartado: no probar las mitades
+rectangulares de 32×32 (−20 % de instrucciones, +0,4 %), ni las de una hoja sin residuo, ni dividir
+una hoja sin residuo o muy barata (+0,3 a +1 %), y cortar antes el refinado angular o la segunda
+mitad de un rectángulo (+0,25 % en calidad alta).
+
 **Codificador multihilo.** Dentro de cada tesela, los superbloques de 64×64 se deciden en
 *frente de onda*: el (x, y) puede empezar en cuanto están el (x−1, y) y el (x+1, y−1). Para que
 el resultado no dependa del número de hilos, cada superbloque solo ve lo que es seguro que ya está

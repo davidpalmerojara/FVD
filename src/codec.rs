@@ -1829,6 +1829,17 @@ struct LeafEval {
 }
 
 impl EncState {
+    /// Podas aproximadas de la partición (esfuerzos 1 a 6; del 7 en adelante,
+    /// búsqueda completa).
+    fn prune(&self) -> bool {
+        self.effort <= 6
+    }
+
+    /// Preselección intra en dos fases (esfuerzos 4 a 6).
+    fn two_stage(&self) -> bool {
+        (4..=6).contains(&self.effort)
+    }
+
     /// Copia de la configuración (sin contextos).
     fn shallow(&self) -> EncState {
         EncState {
@@ -1959,7 +1970,8 @@ impl EncState {
         w: usize,
         h: usize,
         q: f32,
-    ) -> LeafEval {
+        skip_px: f32,
+    ) -> Option<LeafEval> {
         let lambda = self.lambda_k * q * q;
         let slam = lambda.sqrt();
         let pc = pe.pc;
@@ -2102,6 +2114,11 @@ impl EncState {
             let mut cands: Vec<(f32, u8, f32)> = Vec::with_capacity(nmodes as usize);
             // Búsqueda intra en dos fases: barrido grueso y refinado angular.
             let mut done = [false; 64];
+            // Con la preselección en dos fases se guardan los residuos de la
+            // pasada gruesa para no repetir la predicción después.
+            let two_stage = self.two_stage() && !try_ts && !self.lossless && !self.screen;
+            let mut slot = [0u8; 64];
+            let mut pool: Vec<f32> = Vec::new();
             let mut todo: Vec<u8> = vec![MODE_PLANAR, MODE_DC];
             todo.extend((2..predict::NUM_ANGULAR_MODES).step_by(4));
             todo.extend_from_slice(&mpm);
@@ -2145,13 +2162,68 @@ impl EncState {
                     code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode, self.v2);
                     let s = dct::satd_rect(&res, w, h);
                     cands.push((s + slam * cc.bits, mode, cc.bits));
+                    if two_stage {
+                        slot[mode as usize] = (pool.len() / nn) as u8;
+                        pool.extend_from_slice(&res[..nn]);
+                    }
                 }
             }
             cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            // Bloque grande con mucha textura: si incluso el mejor modo deja un
+            // coste SATD por píxel alto frente a √λ, como hoja no gana a
+            // dividirlo y no se evalúa (no aplica con contenido sintético, donde
+            // la copia de bloques puede acertar igual, ni con predicción inter).
+            if best.is_none() && !self.screen && cands[0].0 > skip_px * slam * nn as f32 {
+                return None;
+            }
 
             // Solo pasan a RDO completo los modos cuyo coste SATD está cerca del mejor.
             let satd_limit = cands[0].0 * 1.3 + slam * 4.0;
-            for &(sc, mode, _) in cands.iter().take(self.topk) {
+            if two_stage {
+                // Segunda fase: estimación barata de J (DCT, redondeo con zona
+                // muerta y bits del bloque, sin RDOQ) de los mejores por SATD,
+                // que ordena mucho mejor que la SATD; RDO completo solo para
+                // los dos mejores según esa estimación (tres con esfuerzo 5 y
+                // 6), reutilizando su DCT.
+                let qs: Vec<f32> = self.qt.get(pc, w, h).iter().map(|&wi| wi * q).collect();
+                let mut levels = vec![0i32; nn];
+                let mut ests: Vec<(f32, u8, Vec<f32>)> = Vec::with_capacity(self.topk + 3);
+                for &(sc, mode, mb) in cands.iter().take(self.topk + 3) {
+                    if sc > satd_limit {
+                        break;
+                    }
+                    let k = slot[mode as usize] as usize;
+                    let mut co = pool[k * nn..(k + 1) * nn].to_vec();
+                    dct::transform_rect(&mut co, w, h, false);
+                    let mut d = 0f32;
+                    for i in 0..nn {
+                        let a = co[i].abs();
+                        let l = (a / qs[i] + 0.42) as i32;
+                        d += (a - l as f32 * qs[i]).powi(2);
+                        levels[i] = if co[i] < 0.0 { -l } else { l };
+                    }
+                    let bits = self.ctx.coef.block_cost(pc, w, h, cctx, &levels);
+                    ests.push((d + lambda * (bits + mb), mode, co));
+                }
+                ests.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                let kfull = if self.effort >= 5 { 3 } else { 2 };
+                for (_, mode, co) in ests.iter().take(kfull) {
+                    let (d, bits) =
+                        self.ctx
+                            .coef
+                            .quantize_rdo(pc, w, h, cctx, co, &qs, lambda, &mut levels);
+                    let kind = Kind::Intra(*mode);
+                    let hb = self.head_bits(pe, x0, y0, w, h, &kind, false);
+                    consider(
+                        &mut best,
+                        d + lambda * (bits + hb),
+                        kind,
+                        levels.clone(),
+                        false,
+                    );
+                }
+            }
+            for &(sc, mode, _) in cands.iter().take(if two_stage { 0 } else { self.topk }) {
                 if sc > satd_limit {
                     break;
                 }
@@ -2228,12 +2300,12 @@ impl EncState {
             &mut recon,
         );
         let nz = levels.iter().any(|&l| l != 0);
-        LeafEval {
+        Some(LeafEval {
             j,
             leaf: Leaf { kind, ts, levels },
             recon,
             nz,
-        }
+        })
     }
 
     /// Aplica una hoja elegida al plano y al estado sintético aproximado.
@@ -2268,12 +2340,21 @@ impl EncState {
         let q = qm.q(pc, x0, y0, n, n);
         let lambda = self.lambda_k * q * q;
         let sc_before = pe.sc.clone();
-        let mut ev = self.eval_leaf(pe, lref, x0, y0, n, n, q);
+        // Umbral de coste SATD por píxel (en unidades de √λ) por encima del
+        // cual el bloque no se prueba como hoja: en 64×64 y 32×32 esas hojas
+        // no ganaban nunca a dividir. (En 16×16 sí alguna vez, y podarlas
+        // costaba un 0,2 % en calidad alta.)
+        let skip_px = match n {
+            64 | 32 if self.prune() => 2.0,
+            _ => f32::INFINITY,
+        };
+        let mut ev = self.eval_leaf(pe, lref, x0, y0, n, n, q, skip_px);
         // Modos rápidos: sin bloques de 4×4 (esfuerzo 1) y sin probar a
         // dividir un bloque pequeño que ya se predice bien sin residuo.
         let min_n = if self.effort <= 1 { 8 } else { 4 };
-        let early = self.effort <= 2 && !ev.nz && n <= 16;
+        let early = self.effort <= 2 && ev.as_ref().is_some_and(|e| !e.nz) && n <= 16;
         if n <= min_n || early {
+            let mut ev = ev.expect("hoja evaluada");
             if n > 4 {
                 let sctx = split_ctx(&pe.plane, x0, y0, n, pc);
                 ev.j += lambda * self.ctx.split[sctx].cost(false);
@@ -2289,16 +2370,20 @@ impl EncState {
         let split0 = lambda * self.ctx.split[sctx].cost(false);
         let split1 = lambda * self.ctx.split[sctx].cost(true);
         let ri = pc * 4 + size_index(n) - 1;
-        ev.j += split0;
-        if self.v2 {
-            ev.j += lambda * self.ctx.rect[ri].cost(false);
+        if let Some(ev) = ev.as_mut() {
+            ev.j += split0;
+            if self.v2 {
+                ev.j += lambda * self.ctx.rect[ri].cost(false);
+            }
         }
         // 0 = hoja, 1 = mitades horizontales, 2 = mitades verticales.
-        let mut best_j = ev.j;
+        let mut best_j = ev.as_ref().map_or(f32::INFINITY, |e| e.j);
         let mut best = 0;
         let mut rect_best: Option<[LeafEval; 2]> = None;
         // Las mitades de 64×64 casi nunca ganan y son las más caras de evaluar.
-        if self.v2 && n < 64 && self.effort >= 4 {
+        // Si el bloque tiene tanta textura que ni se ha probado como hoja,
+        // tampoco se prueban sus mitades.
+        if self.v2 && n < 64 && self.effort >= 4 && ev.is_some() {
             for (opt, horz) in [(1, true), (2, false)] {
                 pe.plane.clear_avail(x0, y0, n, n);
                 pe.sc = sc_before.clone();
@@ -2309,7 +2394,18 @@ impl EncState {
                     if j >= best_j {
                         break; // poda exacta
                     }
-                    let e = self.eval_leaf(pe, lref, hx, hy, hw, hh, qm.q(pc, hx, hy, hw, hh));
+                    let e = self
+                        .eval_leaf(
+                            pe,
+                            lref,
+                            hx,
+                            hy,
+                            hw,
+                            hh,
+                            qm.q(pc, hx, hy, hw, hh),
+                            f32::INFINITY,
+                        )
+                        .expect("hoja evaluada");
                     j += e.j;
                     Self::commit_leaf(pe, hx, hy, hw, hh, &e);
                     evs.push(e);
@@ -2344,6 +2440,7 @@ impl EncState {
         }
         pe.sc = sc_before;
         if best == 0 {
+            let ev = ev.expect("hoja evaluada");
             Self::commit_leaf(pe, x0, y0, n, n, &ev);
             let j = ev.j;
             return (j, Node::Leaf(Box::new(ev.leaf)));
