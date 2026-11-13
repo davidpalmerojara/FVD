@@ -497,9 +497,16 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
             };
             // buffer con índice desplazado: refb[off + k] = ref[k], k en [-len_side, len_main+len_side+1]
             let off = len_side + 1;
-            let mut refb = [0i32; 64 * 3 + 5];
-            refb[off..=off + len_main + len_side + 1].copy_from_slice(&main[..=len_main + len_side + 1]);
-            refb[off + len_main + len_side + 2] = main[len_main + len_side + 1];
+            // Las muestras son píxeles (0..255): con 16 bits el compilador
+            // vectoriza las filas y las sumas ponderadas no desbordan.
+            let mut refb = [0i16; 64 * 3 + 5];
+            for (d, &m) in refb[off..=off + len_main + len_side + 1]
+                .iter_mut()
+                .zip(&main[..=len_main + len_side + 1])
+            {
+                *d = m as i16;
+            }
+            refb[off + len_main + len_side + 2] = main[len_main + len_side + 1] as i16;
             if angle < 0 {
                 let inv = inv_angle(angle);
                 let last = (len_side as i32 * angle) >> 5;
@@ -508,48 +515,45 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
                     let end = if cubic { last - 1 } else { last };
                     while k >= end {
                         let idx = ((k * inv + 128) >> 8).max(0) as usize;
-                        refb[(off as i32 + k) as usize] = side[idx.min(len_side + len_main)];
+                        refb[(off as i32 + k) as usize] = side[idx.min(len_side + len_main)] as i16;
                         k -= 1;
                     }
                 }
             }
-            if cubic && angle.abs() != 32 && angle != 0 {
-                for j in 0..len_side {
-                    let pos = (j as i32 + 1) * angle;
-                    let idx = pos >> 5;
-                    let c = FC[(pos & 31) as usize];
-                    let b0 = (off as i32 + idx + 1) as usize;
-                    let f = |p: &[i32]| {
-                        ((c[0] * p[0] + c[1] * p[1] + c[2] * p[2] + c[3] * p[3] + 32) >> 6)
-                            .clamp(0, 255)
-                    };
-                    let src = refb[b0 - 1..b0 + len_main + 2].windows(4);
-                    if vertical {
-                        for (o, p) in out[j * w..j * w + len_main].iter_mut().zip(src) {
-                            *o = f(p);
-                        }
-                    } else {
-                        for (o, p) in out[j..].iter_mut().step_by(w).zip(src) {
-                            *o = f(p);
-                        }
-                    }
-                }
-                return;
-            }
+            let mut row = [0i16; 64];
+            let row = &mut row[..len_main];
+            let cub = cubic && angle.abs() != 32 && angle != 0;
             for j in 0..len_side {
                 let pos = (j as i32 + 1) * angle;
                 let idx = pos >> 5;
                 let f = pos & 31;
                 let b0 = (off as i32 + idx + 1) as usize;
-                let v = |p: &[i32]| ((32 - f) * p[0] + f * p[1] + 16) >> 5;
-                let src = refb[b0..b0 + len_main + 1].windows(2);
-                if vertical {
-                    for (o, p) in out[j * w..j * w + len_main].iter_mut().zip(src) {
-                        *o = v(p);
+                // Fila de salida (columna en los modos horizontales) con las
+                // referencias desplazadas como rebanadas, para vectorizar.
+                if cub {
+                    let c = FC[f as usize].map(|v| v as i16);
+                    let n = len_main;
+                    let (r0, r1) = (&refb[b0 - 1..b0 - 1 + n], &refb[b0..b0 + n]);
+                    let (r2, r3) = (&refb[b0 + 1..b0 + 1 + n], &refb[b0 + 2..b0 + 2 + n]);
+                    let it = row.iter_mut().zip(r0).zip(r1).zip(r2).zip(r3);
+                    for ((((o, &a), &b), &cc), &d) in it {
+                        *o = ((c[0] * a + c[1] * b + c[2] * cc + c[3] * d + 32) >> 6).clamp(0, 255);
                     }
                 } else {
-                    for (o, p) in out[j..].iter_mut().step_by(w).zip(src) {
-                        *o = v(p);
+                    let n = len_main;
+                    let f = f as i16;
+                    let (r0, r1) = (&refb[b0..b0 + n], &refb[b0 + 1..b0 + 1 + n]);
+                    for ((o, &a), &b) in row.iter_mut().zip(r0).zip(r1) {
+                        *o = ((32 - f) * a + f * b + 16) >> 5;
+                    }
+                }
+                if vertical {
+                    for (o, &v) in out[j * w..j * w + len_main].iter_mut().zip(row.iter()) {
+                        *o = v as i32;
+                    }
+                } else {
+                    for (o, &v) in out[j..].iter_mut().step_by(w).zip(row.iter()) {
+                        *o = v as i32;
                     }
                 }
             }

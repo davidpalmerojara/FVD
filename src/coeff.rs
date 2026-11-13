@@ -104,12 +104,19 @@ fn freq_class(x: usize, y: usize) -> usize {
 }
 
 /// Clase de magnitud de la plantilla de vecinos de mayor frecuencia ya
-/// codificados: (x+1,y), (x,y+1), (x+1,y+1), (x+2,y), (x,y+2).
+/// codificados: (x+1,y), (x,y+1), (x+1,y+1), (x+2,y), (x,y+2). `c` da la
+/// magnitud topada a 3 de un nivel.
 #[inline(always)]
-fn mag_class(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
+fn mag_class_by(
+    levels: &[i32],
+    w: usize,
+    h: usize,
+    x: usize,
+    y: usize,
+    c: impl Fn(i32) -> usize,
+) -> usize {
     const LUT: [u8; 16] = [0, 1, 2, 3, 3, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5];
     let i = y * w + x;
-    let c = |v: i32| v.unsigned_abs().min(3) as usize;
     if x + 2 < w && y + 2 < h {
         // Interior: los cinco vecinos existen.
         let (r0, r1, r2) = (&levels[i..i + 3], &levels[i + w..i + w + 2], levels[i + 2 * w]);
@@ -133,6 +140,18 @@ fn mag_class(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
         s += c(levels[i + 2 * w]);
     }
     LUT[s] as usize
+}
+
+#[inline(always)]
+fn mag_class(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
+    mag_class_by(levels, w, h, x, y, |v| v.unsigned_abs().min(3) as usize)
+}
+
+/// Como `mag_class` cuando todos los niveles son no negativos (RDOQ antes de
+/// poner los signos).
+#[inline(always)]
+fn mag_class_pos(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
+    mag_class_by(levels, w, h, x, y, |v| (v as u32).min(3) as usize)
 }
 
 #[derive(Clone)]
@@ -750,7 +769,7 @@ impl CoefCtx {
             let ca = coefs[p].abs();
             let q = qs[p];
             let l0 = levels[p] as u32;
-            let mc = mag_class(levels, w, h, x, y);
+            let mc = mag_class_pos(levels, w, h, x, y);
             if l0 == 0 {
                 // Único candidato: el cero (distorsión ca², sin resto ni signo).
                 dist += ca * ca;
@@ -817,11 +836,13 @@ impl CoefCtx {
             }
             terms[i] = best_r;
             dist += best_d;
-            levels[p] = if coefs[p] < 0.0 {
-                -(best_l as i32)
-            } else {
-                best_l as i32
-            };
+            levels[p] = best_l as i32;
+        }
+        // Los signos, de una vez al final (así el bucle trabaja con niveles >= 0).
+        for (l, &c) in levels[..nn].iter_mut().zip(coefs) {
+            if c < 0.0 {
+                *l = -*l;
+            }
         }
         for &(x, y) in &sc[last + 1..] {
             let p = y as usize * n + x as usize;

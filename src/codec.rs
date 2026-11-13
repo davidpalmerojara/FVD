@@ -1778,6 +1778,15 @@ struct EncState {
 
 /// Fuente de un bloque con lo que queda fuera de la parte visible (`vis`)
 /// sustituido por la predicción.
+/// `res = src - pred` (el residuo de una predicción), vectorizable.
+#[inline]
+fn sub_pred(res: &mut [f32], src: &[f32], pred: &[i32]) {
+    let n = res.len();
+    for ((r, &s), &p) in res.iter_mut().zip(&src[..n]).zip(&pred[..n]) {
+        *r = s - p as f32;
+    }
+}
+
 fn mask_src(src: &[f32], pred: &[i32], w: usize, h: usize, vis: (usize, usize)) -> Vec<f32> {
     let mut out = src.to_vec();
     for y in 0..h {
@@ -1916,9 +1925,7 @@ impl EncState {
             return (lambda * bits, levels, true);
         }
         if allow_dct {
-            for i in 0..nn {
-                res[i] = src[i] - pred[i] as f32;
-            }
+            sub_pred(&mut res[..nn], src, pred);
             dct::transform_rect(&mut res, w, h, false);
             let qs: Vec<f32> = self.qt.get(pc, w, h).iter().map(|&wi| wi * q).collect();
             let (d, bits) =
@@ -1928,9 +1935,7 @@ impl EncState {
             best = (d + lambda * bits, levels.clone(), false);
         }
         if try_ts {
-            for i in 0..nn {
-                res[i] = src[i] - pred[i] as f32;
-            }
+            sub_pred(&mut res[..nn], src, pred);
             let qs = vec![q; nn];
             let (d, bits) =
                 self.ctx
@@ -2132,9 +2137,7 @@ impl EncState {
                     }
                     done[mode as usize] = true;
                     predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
-                    for i in 0..nn {
-                        res[i] = src[i] - pred[i] as f32;
-                    }
+                    sub_pred(&mut res[..nn], &src, &pred);
                     if vis != (w, h) {
                         zero_outside(&mut res, w, h, vis);
                     }
