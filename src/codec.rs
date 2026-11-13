@@ -834,6 +834,13 @@ struct ScState {
     last_mv: (i32, i32),
 }
 
+/// Diagnóstico: con TESELA_LEAFLOG, el decodificador escribe en stderr cada
+/// hoja (plano, clase, tamaño, residuo) y cada vector frente a su predictor.
+fn leaf_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TESELA_LEAFLOG").is_some())
+}
+
 /// Predictor del vector de movimiento: mediana de los vectores de los vecinos
 /// izquierdo, superior y superior izquierdo que sean hojas predichas del
 /// fotograma anterior; los que falten valen el último vector del plano. Sin
@@ -926,7 +933,12 @@ fn code_leaf_head<C: Coder>(
                 Some(im) if c.bit(&mut ctx.inh[sz], mv == im) => im,
                 _ => {
                     let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
-                    ctx.mv.code(c, pc, mv, &mut pred)
+                    let p0 = pred;
+                    let r = ctx.mv.code(c, pc, mv, &mut pred);
+                    if leaf_log() {
+                        eprintln!("MV {pc} {} {:?} {:?}", (r == p0) as u8, r, p0);
+                    }
+                    r
                 }
             };
             st.last_mv = mv;
@@ -3531,6 +3543,16 @@ impl DecState {
         );
         p.write_block(x0, y0, w, h, &recon);
         p.set_block(x0, y0, w, h, kind.mark(), nz);
+        if leaf_log() {
+            let k = match &kind {
+                Kind::Intra(_) => "intra".to_string(),
+                Kind::Palette(_) => "pal".to_string(),
+                Kind::Ibc(_) => "ibc".to_string(),
+                Kind::Inter(mv) => format!("inter{}", if *mv == (0, 0) { "0" } else { "" }),
+                Kind::Warp => "warp".to_string(),
+            };
+            eprintln!("LEAF {pc} {k} {w}x{h} {}", nz as u8);
+        }
         match (&kind, ip.as_ref()) {
             (Kind::Inter(mv), _) => p.set_mv(x0, y0, w, h, *mv),
             (Kind::Warp, Some(ip)) => ip.set_warp_mvs(p, x0, y0, w, h),
@@ -4159,6 +4181,9 @@ pub fn decode_animation(
     let mut st = AnimState::new(a.width, a.height);
     let mut out = Vec::with_capacity(a.frames.len());
     for f in &a.frames {
+        if leaf_log() {
+            eprintln!("FRAME {}", f.range.len());
+        }
         decode_frame(data, f, Some(&mut st))?;
         out.push((st.canvas.clone(), f.duration_ms));
     }
@@ -4751,6 +4776,18 @@ pub fn encode_animation_recon(
                     gold_idx = i;
                 }
                 let fw = if inter { st.last_warp } else { None };
+                if std::env::var_os("TESELA_ANIMLOG").is_some() {
+                    eprintln!(
+                        "f{i} {}x{}+{}+{} {} B gold={} warp={:?}",
+                        w,
+                        h,
+                        x,
+                        y,
+                        e.bytes.len(),
+                        st.last_gold,
+                        fw.map(|w| (w.gold, w.p))
+                    );
+                }
                 whist.push(fw, st.last_gold);
                 list.push((
                     durations_ms[i],
