@@ -1,0 +1,14 @@
+# Cabeceras para Cloudflare Pages o Netlify (publicando la carpeta web/).
+# Aislamiento entre orígenes: permite SharedArrayBuffer, y así codificar con
+# varios hilos en el comparador sin el service worker coi-sw.js. Todo lo que
+# carga la web es del mismo origen.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/*.wasm
+  Content-Type: application/wasm
+  Cache-Control: public, max-age=86400
