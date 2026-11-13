@@ -201,7 +201,7 @@ Si `fx = fy = 0`, la muestra (x, y) es `R(ox + x0 + x + ix, oy + y0 + y + iy)`. 
 r = 0 … h + 6, y la muestra es `clamp((Σk F[fy][k] · t(x, y + k) + 2048) >> 12, 0, 255)`. El residuo
 y la reconstrucción son los de la v1.
 
-Los modelos `inter`, `mv`, `warp` e `inh` van al final del orden de visita, detrás de los de la v2, en ese orden.
+Los modelos `inter`, `mv`, `warp` e `inh` van al final del orden de visita, detrás de los de la v2, en ese orden (luego `mv_alt`, y después `smooth[2·5]` y `smooth_k[2][2]` de la sección 3.5).
 
 ## 2. Bloques rectangulares
 
@@ -306,6 +306,78 @@ En un bloque cuadrado, todo es idéntico bit a bit a la v1.
 - **CCLM.** Los parámetros se deducen con las muestras vecinas de arriba (w) y de la izquierda
   (h) en lugar de N y N.
 
+Las fórmulas de arriba son las de la v1 extendidas a rectángulos. La v2 cambia además la predicción
+intra de todos los bloques, cuadrados o no, como se describe en 3.5.
+
+### 3.5 Herramientas intra de la v2
+
+En esta sección, T[i] (i = 0 … w + h − 1) y L[j] (j = 0 … h + w − 1) son las referencias de
+arriba y de la izquierda, C la esquina, lw = log2 w y lh = log2 h. «Referencias de la
+predicción» son las filtradas con [1, 2, 1] si el modo filtra (3.3) y las originales si no.
+
+**Variantes SMOOTH (modos 36, 37 y 38).** Tras decodificar el modo intra (sección 6.2 de la v1),
+si es planar (0) se decodifica el bit `smooth[pc·5 + sz]`. Si vale 1, `smooth_k[pc][0]` elige
+SMOOTH (0) o pasa a `smooth_k[pc][1]`, que elige SMOOTH_V (0) o SMOOTH_H (1). En el mapa de modos
+la hoja guarda 36, 37 o 38, y la lista MPM de sus vecinos cuenta esas marcas como planar (0). Con
+los pesos de AV1 `s_n` para un lado n (n = 4, 8, 16, 32 o 64):
+
+```
+s_4  = 255 149 85 64
+s_8  = 255 197 146 105 73 50 37 32
+s_16 = 255 225 196 170 145 123 102 84 68 54 43 33 26 20 17 16
+s_32 = 255 240 225 210 196 182 169 157 145 133 122 111 101 92 83 74
+       66 59 52 45 39 34 29 25 21 17 14 12 10 9 8 8
+s_64 = 255 248 240 233 225 218 210 203 196 189 182 176 169 163 156 150
+       144 138 133 127 121 116 111 106 101 96 91 86 82 77 73 69
+       65 61 57 54 50 47 44 41 38 35 32 29 27 25 22 20
+       18 16 15 13 12 10 9 8 7 6 6 5 5 4 4 4
+```
+
+y sobre las referencias **sin filtrar**, sean `v = s_h[y]·T[x] + (256 − s_h[y])·L[h−1]` y
+`hz = s_w[x]·L[y] + (256 − s_w[x])·T[w−1]`. La predicción es `(v + hz + 256) >> 9` (SMOOTH),
+`(v + 128) >> 8` (SMOOTH_V) o `(hz + 128) >> 8` (SMOOTH_H). No llevan PDPC.
+
+**Interpolación cúbica.** En los modos angulares con fracción (ángulo distinto de 0 y de ±32)
+cuyas referencias no se filtran, la interpolación de 2 coeficientes de la v1 se sustituye por
+`clamp((c0·r[i−1] + c1·r[i] + c2·r[i+1] + c3·r[i+2] + 32) >> 6, 0, 255)`, con
+(c0, c1, c2, c3) = `FC[f]` (la tabla de VVC):
+
+```
+f:  0 [ 0,64, 0, 0]   8 [-4,54,16,-2]  16 [-4,36,36,-4]  24 [-2,16,54,-4]
+    1 [-1,63, 2, 0]   9 [-5,53,18,-2]  17 [-4,33,39,-4]  25 [-2,15,55,-4]
+    2 [-2,62, 4, 0]  10 [-6,52,20,-2]  18 [-4,30,42,-4]  26 [-2,14,56,-4]
+    3 [-2,60, 7,-1]  11 [-6,49,24,-3]  19 [-4,29,44,-5]  27 [-2,12,57,-3]
+    4 [-2,58,10,-2]  12 [-6,46,28,-4]  20 [-4,28,46,-6]  28 [-2,10,58,-2]
+    5 [-3,57,12,-2]  13 [-5,44,29,-4]  21 [-3,24,49,-6]  29 [-1, 7,60,-2]
+    6 [-4,56,14,-2]  14 [-4,42,30,-4]  22 [-2,20,52,-6]  30 [ 0, 4,62,-2]
+    7 [-4,55,15,-2]  15 [-4,39,33,-4]  23 [-2,18,53,-5]  31 [ 0, 2,63,-1]
+```
+
+Aquí r es la referencia principal de la v1 (r[0] = esquina, r[1 + i] = T[i] en los verticales o
+L[i] en los horizontales) e i, f la posición y la fracción con que la v1 interpola
+`(32 − f)·r[i] + f·r[i+1]`. Las posiciones que faltan: r[k] = r[w + h] para k > w + h; y, con
+ángulo negativo, la extensión por el ángulo inverso de la v1 se calcula siempre, para
+k = −1 … ⌊n·ángulo / 32⌋ − 1, con n la longitud del eje secundario (una muestra más que en la
+v1), y con el índice de la otra referencia recortado a [0, w + h].
+
+**PDPC.** Tras la predicción, en los modos 0 a 34 (no en SMOOTH ni CCLM), luma y croma, con las
+referencias de la predicción (T, L y C) y P la muestra predicha:
+
+- **Planar, DC, horizontal (10) y vertical (26).** Con `s = (lw + lh − 2) >> 2`,
+  `wT = 32 >> min(31, (2y) >> s)` y `wL = 32 >> min(31, (2x) >> s)`:
+  - planar y DC: `(wL·L[y] + wT·T[x] + (64 − wL − wT)·P + 32) >> 6`;
+  - horizontal: `clamp(P + ((wT·(T[x] − C) + 32) >> 6), 0, 255)`;
+  - vertical: `clamp(P + ((wL·(L[y] − C) + 32) >> 6), 0, 255)`.
+- **Angulares 27 a 34** (verticales hacia arriba a la derecha) **y 2 a 9** (horizontales hacia
+  abajo a la izquierda). Con a el ángulo del modo (positivo), `inv = (16384 + a/2) / a`
+  (división entera), n = h en los verticales y w en los horizontales, y
+  `s = min(2, log2 n − ⌊log2(3·inv − 2)⌋ + 8)`; si s < 0, no se hace nada. En los verticales,
+  para cada muestra (x, y): `k = y + (((x + 1)·inv + 256) >> 9)`; si k < w + h,
+  `wL = 32 >> min(31, (2x) >> s)` y la muestra pasa a ser `(wL·L[k] + (64 − wL)·P + 32) >> 6`.
+  En los horizontales, lo mismo intercambiando x con y y L con T.
+
+Todo en enteros con desplazamiento aritmético.
+
 ## 3.4 Mapa de cuantización adaptativa
 
 En la v2, el dq de cada celda AQ (sección de la v1) no se codifica tal cual sino como diferencia
@@ -327,8 +399,9 @@ color.
 ## 5. Probabilidades iniciales
 
 Los modelos se inicializan con `init_probs_v2::TABLES[sintético][banda]`, en el mismo orden de
-visita que en la v1. Los modelos nuevos (`rect` y `rect_dir`) van **al final** de ese orden, así
-que el prefijo coincide con la lista de modelos de la v1.
+visita que en la v1. Los modelos nuevos (`rect` y `rect_dir`, y detrás los de las secciones 1.3 y
+3.5) van **al final** de ese orden, así que el prefijo coincide con la lista de modelos de la v1.
+Los que la tabla no cubre (entre ellos `smooth` y `smooth_k`) empiezan en p = 1/2.
 
 Tras los demás modelos de la v2 van los de los coeficientes (sección 2.4): `last: [2·5·11]` y
 `rem_n: Uint[2·5·7]` del conjunto DCT y después los mismos del de transform skip. Si la tabla no

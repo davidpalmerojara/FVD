@@ -9,7 +9,10 @@
 use crate::coeff::CoefCtx;
 use crate::color;
 use crate::dct::{self, size_index};
-use crate::predict::{self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_VER, Plane};
+use crate::predict::{
+    self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_SMOOTH, MODE_SMOOTH_H, MODE_SMOOTH_V, MODE_VER,
+    Plane,
+};
 use crate::rc::{Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx, Visit};
 use crate::restore;
 use crate::tools::{self, BvCtx, MARK_IBC, MARK_PALETTE, PalCtx, Palette};
@@ -465,6 +468,9 @@ struct Ctx {
     inh: Vec<Model>,
     /// Si el vector no es el predicho: ¿es el segundo candidato?
     mv_alt: [Model; 2],
+    /// v2: si el modo es planar, ¿es una variante SMOOTH? y cuál.
+    smooth: Vec<Model>,
+    smooth_k: [[Model; 2]; 2],
 }
 
 impl Visit for Ctx {
@@ -491,7 +497,10 @@ impl Visit for Ctx {
         self.warp.visit(f);
         self.inh.visit(f);
         self.mv_alt.visit(f);
-        // Coeficientes de la v2.
+        // Variantes SMOOTH de la predicción intra (v2, sección 3.5).
+        self.smooth.visit(f);
+        self.smooth_k.visit(f);
+        // Coeficientes de la v2 (sección 2.4), los últimos.
         self.coef.visit_v2(f);
         self.coef_ts.visit_v2(f);
     }
@@ -584,6 +593,8 @@ impl Ctx {
             warp: vec![Model::new(); 2 * 5 * 3],
             inh: vec![Model::new(); 5],
             mv_alt: [Model::new(); 2],
+            smooth: vec![Model::new(); 2 * 5],
+            smooth_k: [[Model::new(); 2]; 2],
         }
     }
 }
@@ -591,6 +602,7 @@ impl Ctx {
 fn mpm_list(p: &Plane, x0: usize, y0: usize) -> [u8; 3] {
     let norm = |m: Option<(u8, u8, bool)>| match m {
         Some((m, _, _)) if m < MODE_CCLM => m,
+        Some((m, _, _)) if (MODE_SMOOTH..=MODE_SMOOTH_H).contains(&m) => MODE_PLANAR,
         _ => MODE_DC,
     };
     let l = norm(p.neighbor(x0, y0, true));
@@ -620,11 +632,42 @@ fn code_mode<C: Coder>(
     n: usize,
     mpm: [u8; 3],
     mode: u8,
+    v2: bool,
 ) -> u8 {
     let sz = size_index(n);
     if pc == 1 && c.bit(&mut ctx.cclm[sz], mode == MODE_CCLM) {
         return MODE_CCLM;
     }
+    let m = code_mode_base(
+        ctx,
+        c,
+        pc,
+        sz,
+        mpm,
+        if mode >= MODE_SMOOTH {
+            MODE_PLANAR
+        } else {
+            mode
+        },
+    );
+    if v2 && m == MODE_PLANAR && c.bit(&mut ctx.smooth[pc * 5 + sz], mode >= MODE_SMOOTH) {
+        if !c.bit(&mut ctx.smooth_k[pc][0], mode != MODE_SMOOTH) {
+            return MODE_SMOOTH;
+        }
+        let hz = c.bit(&mut ctx.smooth_k[pc][1], mode == MODE_SMOOTH_H);
+        return if hz { MODE_SMOOTH_H } else { MODE_SMOOTH_V };
+    }
+    m
+}
+
+fn code_mode_base<C: Coder>(
+    ctx: &mut Ctx,
+    c: &mut C,
+    pc: usize,
+    sz: usize,
+    mpm: [u8; 3],
+    mode: u8,
+) -> u8 {
     let mi = mpm.iter().position(|&m| m == mode).unwrap_or(0);
     let is_mpm = mpm.contains(&mode);
     if c.bit(&mut ctx.mpm_flag[pc * 5 + sz], is_mpm) {
@@ -949,6 +992,7 @@ fn code_leaf_head<C: Coder>(
     inter: bool,
     warp: bool,
     inherit: Option<(i32, i32)>,
+    v2: bool,
 ) -> (Kind, bool) {
     let n = w.max(h);
     let sz = size_index(n);
@@ -1024,7 +1068,7 @@ fn code_leaf_head<C: Coder>(
             Kind::Intra(m) => m,
             _ => MODE_DC,
         };
-        Kind::Intra(code_mode(ctx, c, pc, n, mpm_list(p, x0, y0), m))
+        Kind::Intra(code_mode(ctx, c, pc, n, mpm_list(p, x0, y0), m, v2))
     });
     let ts = lossless || (screen && n <= 16 && c.bit(&mut ctx.ts[pc * 3 + sz.min(2)], leaf.ts));
     (kind, ts)
@@ -1828,6 +1872,7 @@ impl EncState {
             self.inter,
             self.warp,
             self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
+            self.v2,
         );
         cc.bits
     }
@@ -1925,7 +1970,7 @@ impl EncState {
             pe.vw.saturating_sub(x0).min(w),
             pe.vh.saturating_sub(y0).min(h),
         );
-        let refs = predict::build_refs(&pe.plane, x0, y0, w, h);
+        let refs = predict::build_refs(&pe.plane, x0, y0, w, h, self.v2);
         let mpm = mpm_list(&pe.plane, x0, y0);
         let cctx = cbf_ctx(&pe.plane, x0, y0);
         let nmodes = if pc == 1 && lref.is_some() {
@@ -2058,6 +2103,9 @@ impl EncState {
             if nmodes > predict::NUM_ANGULAR_MODES {
                 todo.push(MODE_CCLM);
             }
+            if self.v2 {
+                todo.extend_from_slice(&[MODE_SMOOTH, MODE_SMOOTH_V, MODE_SMOOTH_H]);
+            }
             let passes = if self.effort >= 3 { 2 } else { 1 };
             for pass in 0..passes {
                 if pass == 1 {
@@ -2091,7 +2139,7 @@ impl EncState {
                         zero_outside(&mut res, w, h, vis);
                     }
                     let mut cc = CostCounter::default();
-                    code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode);
+                    code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode, self.v2);
                     let s = dct::satd_rect(&res, w, h);
                     cands.push((s + slam * cc.bits, mode, cc.bits));
                 }
@@ -2334,6 +2382,7 @@ impl EncState {
             self.inter,
             self.warp,
             self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
+            self.v2,
         );
         let mut l = leaf.levels.clone();
         let coef = if leaf.ts {
@@ -3555,10 +3604,11 @@ impl DecState {
             self.inter,
             self.warp,
             self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
+            self.v2,
         );
         let kind = match kind {
             Kind::Intra(m) if m == MODE_CCLM && lref.is_none() => Kind::Intra(MODE_DC),
-            Kind::Intra(m) if m > MODE_CCLM => Kind::Intra(MODE_DC),
+            Kind::Intra(m) if m > MODE_SMOOTH_H => Kind::Intra(MODE_DC),
             k => k,
         };
         let mut levels = vec![0i32; w * h];
@@ -3568,7 +3618,7 @@ impl DecState {
             &mut self.ctx.coef
         };
         let nz = coef.code_block(dec, pc, w, h, cbf_ctx(p, x0, y0), &mut levels);
-        let refs = predict::build_refs(p, x0, y0, w, h);
+        let refs = predict::build_refs(p, x0, y0, w, h, self.v2);
         let mut pred = vec![0i32; w * h];
         let (pi, tx, ty) = self.cur;
         let ip = self.rc.as_ref().map(|rc| InterPlane {
