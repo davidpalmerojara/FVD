@@ -150,7 +150,13 @@ pero codificado respecto a un **predictor**: la mediana, componente a componente
 de los vecinos izquierdo (x0 − 1, y0), superior (x0, y0 − 1) y superior izquierdo (x0 − 1, y0 − 1)
 que sean hojas con la marca 202 o 203. Los que no lo sean toman el valor del último vector del plano
 (que empieza en (0, 0) en cada plano de cada tesela); si solo uno lo es, el predictor es ese; si
-ninguno, el último vector. Tras decodificar la hoja, el último vector pasa a ser el suyo (las hojas
+ninguno, el último vector. El **segundo candidato** es el primero, en este orden, de los vectores
+de esos tres vecinos (solo los que tengan la marca 202 o 203) y el último vector del plano que sea
+distinto del predictor; puede no haberlo. Si el bit «igual al predictor» vale 0 y hay segundo
+candidato, sigue el bit `mv_alt[pc]`: si vale 1, el vector es el segundo candidato y no se lee la
+diferencia; si vale 0 (o no hay segundo candidato), siguen las dos diferencias respecto al
+predictor. (`mv_alt` va tras `inh` en el orden de los modelos y empieza en p = 1/2.) Tras
+decodificar la hoja, el último vector pasa a ser el suyo (las hojas
 con movimiento global no lo cambian). La marca de la hoja en el mapa es 202, y la cabecera sigue
 con `ts` como cualquier otra hoja.
 
