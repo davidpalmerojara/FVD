@@ -399,15 +399,26 @@ fn pdpc(r: &Refs, mode: u8, w: usize, h: usize, out: &mut [i32]) {
     let reach = 3usize << scale;
     for y in 0..h {
         let wt = 32 >> ((y << 1) >> scale).min(31);
-        for x in 0..w.min(if wt == 0 { reach } else { w }) {
-            let wl = 32 >> ((x << 1) >> scale).min(31);
-            let i = y * w + x;
-            let p = out[i];
-            out[i] = match mode {
-                MODE_VER => (p + ((wl * (r.left[y + 1] - tl) + 32) >> 6)).clamp(0, 255),
-                MODE_HOR => (p + ((wt * (r.top[x + 1] - tl) + 32) >> 6)).clamp(0, 255),
-                _ => (wl * r.left[y + 1] + wt * r.top[x + 1] + (64 - wl - wt) * p + 32) >> 6,
-            };
+        let row = &mut out[y * w..y * w + w.min(if wt == 0 { reach } else { w })];
+        let ly = r.left[y + 1];
+        match mode {
+            MODE_VER => {
+                for (x, o) in row.iter_mut().enumerate() {
+                    let wl = 32 >> ((x << 1) >> scale).min(31);
+                    *o = (*o + ((wl * (ly - tl) + 32) >> 6)).clamp(0, 255);
+                }
+            }
+            MODE_HOR => {
+                for (x, o) in row.iter_mut().enumerate() {
+                    *o = (*o + ((wt * (r.top[x + 1] - tl) + 32) >> 6)).clamp(0, 255);
+                }
+            }
+            _ => {
+                for (x, o) in row.iter_mut().enumerate() {
+                    let wl = 32 >> ((x << 1) >> scale).min(31);
+                    *o = (wl * ly + wt * r.top[x + 1] + (64 - wl - wt) * *o + 32) >> 6;
+                }
+            }
         }
     }
 }
@@ -507,19 +518,24 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
                     let pos = (j as i32 + 1) * angle;
                     let idx = pos >> 5;
                     let c = FC[(pos & 31) as usize];
-                    for i in 0..len_main {
-                        let b = (off as i32 + i as i32 + idx + 1) as usize;
-                        let v = (c[0] * refb[b - 1]
+                    let b0 = (off as i32 + idx + 1) as usize;
+                    let f = |i: usize| {
+                        let b = b0 + i;
+                        ((c[0] * refb[b - 1]
                             + c[1] * refb[b]
                             + c[2] * refb[b + 1]
                             + c[3] * refb[b + 2]
                             + 32)
-                            >> 6;
-                        let v = v.clamp(0, 255);
-                        if vertical {
-                            out[j * w + i] = v;
-                        } else {
-                            out[i * w + j] = v;
+                            >> 6)
+                            .clamp(0, 255)
+                    };
+                    if vertical {
+                        for (i, o) in out[j * w..j * w + len_main].iter_mut().enumerate() {
+                            *o = f(i);
+                        }
+                    } else {
+                        for i in 0..len_main {
+                            out[i * w + j] = f(i);
                         }
                     }
                 }
@@ -529,13 +545,15 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
                 let pos = (j as i32 + 1) * angle;
                 let idx = pos >> 5;
                 let f = pos & 31;
-                for i in 0..len_main {
-                    let base = (off as i32 + i as i32 + idx + 1) as usize;
-                    let v = ((32 - f) * refb[base] + f * refb[base + 1] + 16) >> 5;
-                    if vertical {
-                        out[j * w + i] = v;
-                    } else {
-                        out[i * w + j] = v;
+                let b0 = (off as i32 + idx + 1) as usize;
+                let v = |i: usize| ((32 - f) * refb[b0 + i] + f * refb[b0 + i + 1] + 16) >> 5;
+                if vertical {
+                    for (i, o) in out[j * w..j * w + len_main].iter_mut().enumerate() {
+                        *o = v(i);
+                    }
+                } else {
+                    for i in 0..len_main {
+                        out[i * w + j] = v(i);
                     }
                 }
             }

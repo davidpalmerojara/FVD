@@ -460,6 +460,7 @@ impl CoefCtx {
 
     /// Coste aproximado de un nivel (magnitud) en la posición dada.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn level_cost(
         &self,
         pc: usize,
@@ -532,13 +533,30 @@ impl CoefCtx {
             self.eob[pc * NSZ + sz].cost(eob as u32 - 1)
         };
         let mut bits = cbf.cost(true) + eob_bits;
+        // Signos ocultos contados en la misma pasada (igual que
+        // `hidden_signs`): por grupo, distancia entre el primer y el último no nulo.
+        let (mut hidden, mut g_cur, mut g_hi, mut g_lo) = (0u32, usize::MAX, 0usize, 0usize);
         for i in (0..eob).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let a = levels[y * n + x].unsigned_abs();
+            if self.sdh && a != 0 {
+                let g = i / SDH_GROUP;
+                if g != g_cur {
+                    if g_cur != usize::MAX && g_hi - g_lo >= SDH_SPAN {
+                        hidden += 1;
+                    }
+                    (g_cur, g_hi) = (g, i);
+                }
+                g_lo = i;
+            }
             let mc = mag_class(levels, w, h, x, y);
             bits += self.level_cost(pc, sz, levels, w, h, x, y, mc, a, i == eob - 1);
         }
-        bits - self.hidden_signs(w, h, levels, eob)
+        if g_cur != usize::MAX && g_hi - g_lo >= SDH_SPAN {
+            hidden += 1;
+        }
+        debug_assert_eq!(hidden as f32, self.hidden_signs(w, h, levels, eob));
+        bits - hidden as f32
     }
 
     /// Cuantización RDO. `coefs` son los coeficientes transformados, `qs` el
@@ -595,7 +613,9 @@ impl CoefCtx {
             let fc = freq_class(x, y);
             let idx = cidx(pc, sz, fc, mc);
             let (sig, gt1, gt2) = (&self.sig[idx], &self.gt1[idx], &self.gt2[idx]);
-            let rem = self.rem_model(pc, fc, levels, w, h, x, y);
+            // El modelo del resto (plantilla de vecinos) solo hace falta si algún
+            // candidato pasa de 2.
+            let rem = (l0 > 2).then(|| self.rem_model(pc, fc, levels, w, h, x, y));
             let lcost = |a: u32, is_last: bool| -> f32 {
                 let mut bits = 0.0;
                 if !is_last {
@@ -609,7 +629,7 @@ impl CoefCtx {
                 if a > 1 {
                     bits += gt2.cost(a > 2);
                     if a > 2 {
-                        bits += rem.cost(a - 3);
+                        bits += rem.unwrap().cost(a - 3);
                     }
                 }
                 bits
