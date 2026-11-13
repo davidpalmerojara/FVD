@@ -292,6 +292,9 @@ Así se llegó ahí (tamaño a igual calidad; terminal / interfaz / paneo / zoom
 | Los fotogramas predichos empiezan con los contextos del anterior (como los CDF de AV1), no con las probabilidades iniciales | −7 a −14 %; el zoom largo pasa de un 30 % a un 9 % (frente a AVIF 4:2:0) por detrás de AVIF |
 | Fotogramas que predicen con movimiento global de la referencia larga, 30 puntos de calidad por debajo (los demás predichos, 15): su error no se encadena | zoom −3 a −6 %, zoom largo −7 a −8 %; paneo y objetos, igual |
 | Vector de movimiento: si no es el predicho (la mediana), un bit para el segundo candidato, el primer vecino con otro vector. En los bordes de un objeto que se mueve, la mediana da el del fondo | objetos −2 a −2,6 %, interfaz −1,7 a −2,5 %, terminal −1,2 %; paneo y zoom, ±1 % |
+| Afín local por hoja deducido de los vectores vecinos (como el *warped motion* local de AV1), para objetos que giran | objetos −1 a −2 %, zoom hasta −3 %, pero paneo hasta +2,4 %. **Descartado** |
+| Predicción compuesta (media del anterior y la referencia larga, cada uno con su movimiento global) | el error de predicción solo baja un 0,5-2 % en los zooms y sube un 5 % en el paneo. **Descartado** sin tocar el formato |
+| Restauración también en los fotogramas predichos | +1 a +30 %: sus parámetros cuestan más de lo que mejora. **Descartado** |
 | Referencia oculta del futuro (como el *altref* de AV1): cada 8, 12 o 16 fotogramas, el último del grupo se codifica sin mostrarse y pasa a ser la referencia larga | +7 a +38 %: la oculta cuesta más de lo que ahorran los del grupo. **Descartado** |
 | Total frente a la versión anterior, a igual calidad | terminal ≥ −55 %, interfaz −48 %, paneo −51 %, zoom −68 % |
 
