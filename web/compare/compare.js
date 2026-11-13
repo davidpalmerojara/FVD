@@ -241,7 +241,13 @@ async function process(photo) {
 // Con `web/serve.py`, cada foto terminada se guarda en `registro/` (original,
 // imagen probada y resultados) para poder revisar después dónde pierde Tesela.
 // En un servidor estático la petición falla y no pasa nada.
+// El registro solo existe con el servidor local (web/serve.py): en la web
+// publicada no se envía nada, y las fotos no salen del navegador.
+const LOCAL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+if (!LOCAL) document.querySelector('a[href="../registro/index.html"]')?.remove();
+
 async function logRun(photo, st) {
+  if (!LOCAL) return;
   try {
     const results = {};
     for (const [c, r] of Object.entries(photo.results)) {
