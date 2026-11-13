@@ -44,13 +44,15 @@ fn factors(n: usize) -> &'static [f32] {
 
 /// DCT-II 1-D sin normalizar (algoritmo recursivo de Byeong Gi Lee, O(n log n)).
 /// Matriz DCT-II sin normalizar de 8 puntos: cos(π(2i+1)k/16).
-fn cos8() -> &'static [f32; 64] {
+/// Devuelve la matriz transpuesta (`t[i * 8 + k] = cos(π(2i+1)k/16)`), de modo
+/// que para un `i` fijo los 8 valores de `k` son contiguos.
+fn cos8_t() -> &'static [f32; 64] {
     static M: OnceLock<[f32; 64]> = OnceLock::new();
     M.get_or_init(|| {
         let mut m = [0f32; 64];
         for k in 0..8 {
             for i in 0..8 {
-                m[k * 8 + i] =
+                m[i * 8 + k] =
                     (std::f64::consts::PI * (2 * i + 1) as f64 * k as f64 / 16.0).cos() as f32;
             }
         }
@@ -63,18 +65,17 @@ fn dct_1d(x: &mut [f32], tmp: &mut [f32]) {
     if n == 8 {
         // Caso base directo: evita tres niveles de recursión (solo lo usa el
         // codificador; la inversa del decodificador no cambia).
-        let m = cos8();
+        // Vectorizado sobre k; cada salida suma en el orden i = 0..7.
+        let m = cos8_t();
         let mut out = [0f32; 8];
-        for k in 0..8 {
-            let row = &m[k * 8..k * 8 + 8];
-            out[k] = row[0] * x[0]
-                + row[1] * x[1]
-                + row[2] * x[2]
-                + row[3] * x[3]
-                + row[4] * x[4]
-                + row[5] * x[5]
-                + row[6] * x[6]
-                + row[7] * x[7];
+        for (o, &c) in out.iter_mut().zip(&m[..8]) {
+            *o = c * x[0];
+        }
+        for i in 1..8 {
+            let xi = x[i];
+            for (o, &c) in out.iter_mut().zip(&m[i * 8..i * 8 + 8]) {
+                *o += c * xi;
+            }
         }
         x.copy_from_slice(&out);
         return;
@@ -137,9 +138,9 @@ fn norm(n: usize) -> (f32, f32) {
     ((1.0 / n as f32).sqrt(), (2.0 / n as f32).sqrt())
 }
 
-/// Matriz DCT ortonormal N×N (fila = frecuencia) para N = 4 u 8.
-fn small_matrix(n: usize) -> &'static [f32; 64] {
-    static M: OnceLock<[[f32; 64]; 2]> = OnceLock::new();
+/// Matriz DCT ortonormal y su transpuesta (`t[i * n + k] = m[k * n + i]`).
+fn small_matrices(n: usize) -> &'static ([f32; 64], [f32; 64]) {
+    static M: OnceLock<[([f32; 64], [f32; 64]); 2]> = OnceLock::new();
     let all = M.get_or_init(|| {
         [4usize, 8].map(|n| {
             let mut m = [0f32; 64];
@@ -154,35 +155,56 @@ fn small_matrix(n: usize) -> &'static [f32; 64] {
                     m[k * n + i] = (s * a.cos()) as f32;
                 }
             }
-            m
+            let mut t = [0f32; 64];
+            for k in 0..n {
+                for i in 0..n {
+                    t[i * n + k] = m[k * n + i];
+                }
+            }
+            (m, t)
         })
     });
     &all[(n == 8) as usize]
 }
 
 /// DCT 2-D por producto de matrices (más rápida que la recursión en 4 y 8).
+/// Cada coeficiente suma sus productos en orden creciente; el bucle interior
+/// recorre `N` coeficientes independientes a la vez (vectorizable).
 fn small_transform(blk: &mut [f32], n: usize, inverse: bool) {
-    let m = small_matrix(n);
+    let (m, t) = small_matrices(n);
     // a(k, i): coeficiente de la base; directa usa M, inversa usa Mᵀ.
-    let a = |k: usize, i: usize| if inverse { m[i * n + k] } else { m[k * n + i] };
-    let mut tmp = [0f32; 64];
-    for y in 0..n {
-        for k in 0..n {
-            let mut s = 0f32;
-            for x in 0..n {
-                s += a(k, x) * blk[y * n + x];
-            }
-            tmp[y * n + k] = s;
-        }
+    // `at[i * n + k]` = a(k, i).
+    let at = if inverse { m } else { t };
+    match n {
+        4 => small_transform_n::<4>(blk, at),
+        _ => small_transform_n::<8>(blk, at),
     }
-    for k in 0..n {
-        for x in 0..n {
-            let mut s = 0f32;
-            for y in 0..n {
-                s += a(k, y) * tmp[y * n + x];
+}
+
+#[inline(always)]
+fn small_transform_n<const N: usize>(blk: &mut [f32], at: &[f32; 64]) {
+    let mut tmp = [0f32; 64];
+    // tmp[y][k] = Σ_x a(k, x) · blk[y][x]
+    for y in 0..N {
+        let mut s = [0f32; N];
+        for x in 0..N {
+            let b = blk[y * N + x];
+            for (sk, &c) in s.iter_mut().zip(&at[x * N..x * N + N]) {
+                *sk += c * b;
             }
-            blk[k * n + x] = s;
         }
+        tmp[y * N..y * N + N].copy_from_slice(&s);
+    }
+    // blk[k][x] = Σ_y a(k, y) · tmp[y][x]
+    for k in 0..N {
+        let mut s = [0f32; N];
+        for y in 0..N {
+            let c = at[y * N + k];
+            for (sx, &v) in s.iter_mut().zip(&tmp[y * N..y * N + N]) {
+                *sx += c * v;
+            }
+        }
+        blk[k * N..k * N + N].copy_from_slice(&s);
     }
 }
 
@@ -253,14 +275,14 @@ pub fn inverse(blk: &mut [f32], n: usize) {
 fn dct1_ortho(v: &mut [f32], inverse: bool) {
     let n = v.len();
     if n <= 8 {
-        let m = small_matrix(n);
+        let (m, t) = small_matrices(n);
+        let at = if inverse { m } else { t };
         let mut out = [0f32; 8];
-        for k in 0..n {
-            let mut s = 0f32;
-            for i in 0..n {
-                s += if inverse { m[i * n + k] } else { m[k * n + i] } * v[i];
+        for i in 0..n {
+            let vi = v[i];
+            for (o, &c) in out[..n].iter_mut().zip(&at[i * n..i * n + n]) {
+                *o += c * vi;
             }
-            out[k] = s;
         }
         v.copy_from_slice(&out[..n]);
         return;

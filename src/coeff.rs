@@ -658,6 +658,21 @@ impl CoefCtx {
     /// Suma de `base` y los términos de `eob - 1` a 0 menos los signos
     /// ocultos: el mismo resultado, bit a bit, que `block_cost`.
     fn sum_terms(&self, base: f32, w: usize, h: usize, levels: &[i32], terms: &[f32], eob: usize) -> f32 {
+        let (bits, hidden) = self.sum_terms_hidden(base, w, h, levels, terms, eob);
+        bits - hidden as f32
+    }
+
+    /// Como `sum_terms`, pero devuelve por separado la suma y el número de
+    /// signos ocultos.
+    fn sum_terms_hidden(
+        &self,
+        base: f32,
+        w: usize,
+        h: usize,
+        levels: &[i32],
+        terms: &[f32],
+        eob: usize,
+    ) -> (f32, u32) {
         let sc = scan(w, h);
         let mut bits = base;
         let (mut hidden, mut g_cur, mut g_hi, mut g_lo) = (0u32, usize::MAX, 0usize, 0usize);
@@ -680,7 +695,17 @@ impl CoefCtx {
         if g_cur != usize::MAX && g_hi - g_lo >= SDH_SPAN {
             hidden += 1;
         }
-        bits - hidden as f32
+        (bits, hidden)
+    }
+
+    /// Suma de `base` y los términos de `eob - 1` a 0 (sin signos ocultos).
+    #[inline]
+    fn sum_plain(base: f32, terms: &[f32], eob: usize) -> f32 {
+        let mut bits = base;
+        for &t in terms[..eob].iter().rev() {
+            bits += t;
+        }
+        bits
     }
 
     pub fn block_cost(&self, pc: usize, w: usize, h: usize, cbf_ctx: usize, levels: &[i32]) -> f32 {
@@ -852,7 +877,8 @@ impl CoefCtx {
             return (zero_dist, zero_bits);
         }
         let head = self.block_head(pc, w, h, cbf_ctx, eob);
-        let mut bits = self.sum_terms(head, w, h, levels, &terms, eob);
+        let (raw, mut hidden) = self.sum_terms_hidden(head, w, h, levels, &terms, eob);
+        let mut bits = raw - hidden as f32;
         debug_assert_eq!(bits, self.block_cost(pc, w, h, cbf_ctx, levels));
         // Optimización del final del barrido (EOB): prueba a truncar el bloque
         // en cada uno de los últimos coeficientes no nulos.
@@ -886,13 +912,24 @@ impl CoefCtx {
                 d_trial += c * c - (c - l * qs[p]).powi(2);
                 saved[nrem] = (i, levels[p]);
                 nrem += 1;
-                levels[p] = 0;
                 let ne = tail[j + 1] + 1;
+                if self.sdh {
+                    // Solo cambia el grupo de ocultación del coeficiente quitado:
+                    // su último no nulo pasa a ser el siguiente de la lista.
+                    let g = i / SDH_GROUP;
+                    let first = (g * SDH_GROUP..=i)
+                        .find(|&k| levels[sc[k].1 as usize * n + sc[k].0 as usize] != 0)
+                        .unwrap_or(i);
+                    hidden -= (i - first >= SDH_SPAN) as u32;
+                    hidden += (ne - 1 >= g * SDH_GROUP && ne - 1 - first >= SDH_SPAN) as u32;
+                }
+                levels[p] = 0;
                 self.refresh_terms(pc, w, h, levels, &mut terms, i, ne, false);
                 // El nuevo último coeficiente pierde el coste de significancia.
                 terms[ne - 1] = self.term(pc, w, h, levels, ne - 1, ne);
                 let head = self.block_head(pc, w, h, cbf_ctx, ne);
-                let b = self.sum_terms(head, w, h, levels, &terms, ne);
+                let b = Self::sum_plain(head, &terms, ne) - hidden as f32;
+                debug_assert_eq!(b, self.block_cost(pc, w, h, cbf_ctx, levels));
                 let jv = d_trial + lambda * b;
                 if jv < best.0 {
                     best = (jv, nrem, b);
