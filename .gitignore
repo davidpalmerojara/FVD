@@ -8,3 +8,6 @@ bench/__pycache__/
 
 # Registro del comparador (tus fotos)
 /registro/
+
+# Copias de trabajo locales de agentes
+/.claude/
