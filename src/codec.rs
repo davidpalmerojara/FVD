@@ -903,7 +903,7 @@ fn local_mv16(
 /// anterior, descartando las que se alejan del vector de la hoja más de lo
 /// que permite el afín. Coeficientes en cuartos de píxel por medio píxel
 /// · 2^16, acotados a ±2^15 (un 12,5 %: giros de hasta ~7°). None si hay
-/// menos de 3 muestras o están alineadas.
+/// menos de 3 muestras, están alineadas o el afín apenas mueve la hoja.
 fn local_affine(
     p: &Plane,
     x0: usize,
@@ -962,7 +962,11 @@ fn local_affine(
         q(sxv as i128 * syy as i128 - syv as i128 * sxy as i128),
         q(syv as i128 * sxx as i128 - sxv as i128 * sxy as i128),
     ];
-    (a != [0; 4]).then_some(a)
+    // Un afín que apenas mueve nada dentro de la hoja (menos de medio cuarto
+    // de píxel en el borde) no compensa el bit: en paneos y traslaciones, los
+    // vecinos dan afines minúsculos que son ruido.
+    let m = a.iter().map(|v| v.unsigned_abs() as i64).max().unwrap_or(0);
+    (m * w.max(h) as i64 >= 1 << 15).then_some(a)
 }
 
 /// Guarda en el mapa los vectores (cuartos de píxel) de una hoja con afín local.
