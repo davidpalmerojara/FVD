@@ -4688,6 +4688,9 @@ pub fn encode_animation_recon(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0);
     let mut keep_until = 0usize;
+    let gold_dq: Option<f32> = std::env::var("TESELA_GOLD_DQ")
+        .ok()
+        .and_then(|v| v.parse().ok());
     for (i, f) in frames.iter().enumerate() {
         if altref > 1 && i > 0 && i % altref == 0 && use_inter && photo && !p.lossless {
             let t = (i + altref - 1).min(frames.len() - 1);
@@ -4882,6 +4885,19 @@ pub fn encode_animation_recon(
                     if let Some(snap) = snapshot {
                         st = snap;
                         e = enc(&mut st, &sub, tdq);
+                    }
+                } else if let Some(gdq) = gold_dq.filter(|_| {
+                    !st.last_gold && st.last_warp.is_some_and(|w| w.gold && w.p != [0; 6])
+                }) {
+                    // Predice con movimiento global de la referencia larga: su
+                    // error no se encadena al siguiente fotograma.
+                    if let Some(snap) = snapshot {
+                        st = snap;
+                        let pg = Params {
+                            quality: (sub.quality - gdq).max(1.0),
+                            ..pf.clone()
+                        };
+                        e = enc(&mut st, &pg, tdq);
                     }
                 }
                 recons.push(st.canvas.clone());
