@@ -290,6 +290,45 @@ impl BvCtx {
         out
     }
 
+    /// Como `code`, con un segundo candidato `alt` (distinto de `last`): si
+    /// el vector no es el predicho, un bit dice si es `alt`.
+    pub fn code_alt<C: Coder>(
+        &mut self,
+        c: &mut C,
+        pc: usize,
+        v: (i32, i32),
+        last: &mut (i32, i32),
+        alt: Option<(i32, i32)>,
+        alt_model: &mut Model,
+    ) -> (i32, i32) {
+        let out = if c.bit(&mut self.same[pc], v == *last) {
+            *last
+        } else if alt.is_some_and(|a| c.bit(alt_model, v == a)) {
+            alt.unwrap()
+        } else {
+            let dx = self.dx[pc].code(c, v.0 - last.0);
+            let dy = self.dy[pc].code(c, v.1 - last.1);
+            (last.0 + dx, last.1 + dy)
+        };
+        *last = out;
+        out
+    }
+
+    pub fn cost_alt(
+        &mut self,
+        pc: usize,
+        v: (i32, i32),
+        last: (i32, i32),
+        alt: Option<(i32, i32)>,
+        alt_model: &Model,
+    ) -> f32 {
+        let mut cc = CostCounter::default();
+        let mut l = last;
+        let mut m = *alt_model;
+        self.code_alt(&mut cc, pc, v, &mut l, alt, &mut m);
+        cc.bits
+    }
+
     pub fn cost(&mut self, pc: usize, bv: (i32, i32), last: (i32, i32)) -> f32 {
         let mut cc = CostCounter::default();
         let mut l = last;

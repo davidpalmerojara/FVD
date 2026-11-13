@@ -463,6 +463,8 @@ struct Ctx {
     warp: Vec<Model>,
     /// Croma: ¿el vector es el de la luma de su posición?
     inh: Vec<Model>,
+    /// Si el vector no es el predicho: ¿es el segundo candidato?
+    mv_alt: [Model; 2],
 }
 
 impl Visit for Ctx {
@@ -488,6 +490,7 @@ impl Visit for Ctx {
         self.mv.visit(f);
         self.warp.visit(f);
         self.inh.visit(f);
+        self.mv_alt.visit(f);
     }
 }
 
@@ -565,6 +568,7 @@ impl Ctx {
             mv: BvCtx::default(),
             warp: vec![Model::new(); 2 * 5 * 3],
             inh: vec![Model::new(); 5],
+            mv_alt: [Model::new(); 2],
         }
     }
 }
@@ -863,6 +867,29 @@ fn mv_pred(p: &Plane, x0: usize, y0: usize, w: usize, last: (i32, i32)) -> (i32,
     }
 }
 
+/// Segundo candidato del vector: el primero de los vecinos izquierdo,
+/// superior y superior izquierdo (y el último del plano) que no sea el
+/// predicho. En los bordes de un objeto que se mueve sobre un fondo quieto,
+/// la mediana suele dar el del fondo y el vector es el del vecino.
+fn mv_alt(
+    p: &Plane,
+    x0: usize,
+    y0: usize,
+    last: (i32, i32),
+    pred: (i32, i32),
+) -> Option<(i32, i32)> {
+    let (x, y) = (x0 as isize, y0 as isize);
+    [
+        inter_mv_at(p, x - 1, y),
+        inter_mv_at(p, x, y - 1),
+        inter_mv_at(p, x - 1, y - 1),
+        Some(last),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|&v| v != pred)
+}
+
 /// Vector del bloque que contiene (x, y) si es una hoja predicha del
 /// fotograma anterior (con vector propio o con el movimiento global).
 fn inter_mv_at(p: &Plane, x: isize, y: isize) -> Option<(i32, i32)> {
@@ -934,7 +961,10 @@ fn code_leaf_head<C: Coder>(
                 _ => {
                     let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
                     let p0 = pred;
-                    let r = ctx.mv.code(c, pc, mv, &mut pred);
+                    let alt = mv_alt(p, x0, y0, st.last_mv, pred);
+                    let r = ctx
+                        .mv
+                        .code_alt(c, pc, mv, &mut pred, alt, &mut ctx.mv_alt[pc]);
                     if leaf_log() {
                         eprintln!("MV {pc} {} {:?} {:?}", (r == p0) as u8, r, p0);
                     }
@@ -1906,6 +1936,7 @@ impl EncState {
             // nulo, el último, coincidencias exactas del hash y una búsqueda
             // por pasos alrededor del mejor), ordenados por SAD + bits.
             let mvp = mv_pred(&pe.plane, x0, y0, w, pe.sc.last_mv);
+            let malt = mv_alt(&pe.plane, x0, y0, pe.sc.last_mv, mvp);
             let mut seen: Vec<(i32, i32)> = Vec::new();
             let mut scored: Vec<(f32, (i32, i32))> = Vec::new();
             let mut score = |mv: (i32, i32),
@@ -1918,7 +1949,8 @@ impl EncState {
                 seen.push(mv);
                 ip.predict(x0, y0, w, h, mv, pred);
                 let sad = sad_vis(&src, pred, w, h, vis);
-                let s = sad + slam * this.ctx.mv.cost(pc, mv, mvp);
+                let am = this.ctx.mv_alt[pc];
+                let s = sad + slam * this.ctx.mv.cost_alt(pc, mv, mvp, malt, &am);
                 scored.push((s, mv));
                 s
             };
