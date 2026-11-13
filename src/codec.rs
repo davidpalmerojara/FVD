@@ -1584,14 +1584,6 @@ impl AnimState {
     /// referencia; si `f.gold`, los de referencia pasan a ser también la
     /// referencia larga.
     fn commit(&mut self, f: &FrameInfo, d: &Decoded, planes: &RefPlanes) {
-        if f.hidden {
-            // Ocupa todo el lienzo (lo exige la tabla): sus planos son ya los
-            // de una referencia completa.
-            let kind = self.refp.as_ref().map(|r| r.0).unwrap_or_default();
-            self.gold = Some((kind, planes.clone()));
-            self.last_gold = true;
-            return;
-        }
         compose(&mut self.canvas, self.width, d, f);
         if let Some((kind, rp)) = self.refp.as_mut() {
             if kind.1 && (f.x | f.y) & 1 != 0 {
@@ -2705,9 +2697,6 @@ struct AnimFrame<'a> {
     /// larga, estimados, y los dos predichos por la tabla de fotogramas.
     warps: [Option<Warp>; 4],
     tdq: Option<(Vec<i32>, usize)>,
-    /// No renovar la referencia larga aunque se haya quedado vieja (hay una
-    /// oculta del futuro).
-    keep_gold: bool,
 }
 
 fn encode_with_alpha_ref(
@@ -2738,7 +2727,7 @@ fn encode_with_alpha_ref(
             // Si la referencia larga ya predice claramente peor que el
             // fotograma anterior (o no hay movimiento común con ella), este
             // fotograma la sustituye.
-            a.f.gold = a.f.hidden || (stale && !a.keep_gold);
+            a.f.gold = stale;
             r.tdq = a.tdq.take();
             if r.tdq.is_some() {
                 header.aq = true;
@@ -2795,9 +2784,7 @@ fn encode_with_alpha_ref(
             alpha: recon_alpha.clone(),
             meta: Metadata::default(),
         };
-        if !a.f.hidden {
-            a.st.last_ctx = res.first().map(|r| r.4.clone());
-        }
+        a.st.last_ctx = res.first().map(|r| r.4.clone());
         a.st.commit(&a.f, &d, &fplanes);
     }
     let payloads: Vec<Vec<u8>> = res.into_iter().map(|r| r.0).collect();
@@ -3942,9 +3929,6 @@ pub struct FrameInfo {
     pub gold: bool,
     /// Movimiento global del fotograma, si lo lleva.
     pub warp: Option<Warp>,
-    /// Fotograma oculto (forma, bit 5): no se muestra ni cambia el lienzo ni
-    /// la referencia del anterior; solo pasa a ser la referencia larga.
-    pub hidden: bool,
 }
 
 impl FrameInfo {
@@ -4051,12 +4035,8 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
         }
         let form = *data.get(pos).ok_or("archivo truncado")?;
         pos += 1;
-        if form & !63 != 0 || (form & 4 == 0 && form & 24 != 0) {
+        if form & !31 != 0 || (form & 4 == 0 && form & 24 != 0) {
             return Err("forma de fotograma desconocida".into());
-        }
-        let hidden = form & 32 != 0;
-        if hidden && (i == 0 || !full || dur != 0 || form & 2 == 0) {
-            return Err("fotograma oculto no válido".into());
         }
         let gold = i == 0 || form & 2 != 0;
         let warp = if form & 4 != 0 {
@@ -4072,9 +4052,7 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
         } else {
             None
         };
-        if !hidden {
-            hist.push(warp, gold);
-        }
+        hist.push(warp, gold);
         let (range, prefix, hdr) = match form & 1 {
             0 => {
                 let len = read_varint(data, &mut pos)?;
@@ -4129,7 +4107,6 @@ pub fn anim_info(data: &[u8]) -> Result<Option<AnimInfo>, String> {
             prefix,
             gold,
             warp,
-            hidden,
         });
     }
     Ok(Some(AnimInfo {
@@ -4176,9 +4153,7 @@ pub fn decode_frame(
         std::sync::Arc::new(r)
     });
     let (d, planes, ctx) = decode_with_ref(inner, rc, true)?;
-    if !f.hidden {
-        st.last_ctx = ctx;
-    }
+    st.last_ctx = ctx;
     st.commit(f, &d, &planes);
     Ok(d)
 }
@@ -4210,9 +4185,7 @@ pub fn decode_animation(
             eprintln!("FRAME {}", f.range.len());
         }
         decode_frame(data, f, Some(&mut st))?;
-        if !f.hidden {
-            out.push((st.canvas.clone(), f.duration_ms));
-        }
+        out.push((st.canvas.clone(), f.duration_ms));
     }
     Ok((a, out))
 }
@@ -4658,6 +4631,9 @@ pub fn encode_animation_recon(
     // Fotograma original de la referencia larga.
     let mut gold_idx = 0;
     let mut whist = WarpHist::default();
+    let gold_dq: Option<f32> = std::env::var("TESELA_GOLD_DQ")
+        .ok()
+        .and_then(|v| v.parse().ok());
     // ¿Contenido fotográfico? Se decide una vez con el primer fotograma
     // completo (los rectángulos que cambian pueden ser muy pequeños).
     let photo = !p
@@ -4665,102 +4641,15 @@ pub fn encode_animation_recon(
         .unwrap_or_else(|| tools::looks_synthetic(&rgb_of(&frames[0]), width, height));
     // (duración, x, y, w, h, datos, nueva referencia larga, movimiento global)
     #[allow(clippy::type_complexity)]
-    let mut list: Vec<(
-        u32,
-        usize,
-        usize,
-        usize,
-        usize,
-        Vec<u8>,
-        bool,
-        Option<Warp>,
-        bool,
-    )> = Vec::new();
-    // Referencia oculta del futuro (experimental): cada `altref` fotogramas se
-    // codifica, sin mostrarlo, el último del grupo como referencia larga; los
-    // del grupo predicen de él y del anterior.
-    let altref: usize = std::env::var("TESELA_ALTREF")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let altref_dq: f32 = std::env::var("TESELA_ALTREF_DQ")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0);
-    let mut keep_until = 0usize;
-    let gold_dq: Option<f32> = std::env::var("TESELA_GOLD_DQ")
-        .ok()
-        .and_then(|v| v.parse().ok());
+    let mut list: Vec<(u32, usize, usize, usize, usize, Vec<u8>, bool, Option<Warp>)> = Vec::new();
     for (i, f) in frames.iter().enumerate() {
-        if altref > 1 && i > 0 && i % altref == 0 && use_inter && photo && !p.lossless {
-            let t = (i + altref - 1).min(frames.len() - 1);
-            let ft = &frames[t];
-            if t > i && ft.chunks_exact(4).all(|px| px[3] == 255) {
-                let full = (0, 0, width, height);
-                let prev_src = rgb_of(&frames[i - 1]);
-                let warp = if use_warp {
-                    estimate_warp(&frames[i - 1], ft, width, height, full)
-                        .filter(|w| *w != Warp::default())
-                } else {
-                    None
-                };
-                let wgold = if use_warp {
-                    estimate_warp(&frames[gold_idx], ft, width, height, full)
-                        .map(|w| Warp { gold: true, ..w })
-                } else {
-                    None
-                };
-                let af = AnimFrame {
-                    st: &mut st,
-                    src: &prev_src,
-                    f: FrameInfo {
-                        duration_ms: 0,
-                        x: 0,
-                        y: 0,
-                        w: width,
-                        h: height,
-                        range: 0..0,
-                        prefix: Vec::new(),
-                        gold: true,
-                        warp: None,
-                        hidden: true,
-                    },
-                    inter: true,
-                    warps: [
-                        warp,
-                        wgold,
-                        use_warp.then(|| Warp {
-                            p: whist.pred(false),
-                            gold: false,
-                        }),
-                        use_warp.then(|| Warp {
-                            p: whist.pred(true),
-                            gold: true,
-                        }),
-                    ],
-                    tdq: None,
-                    keep_gold: false,
-                };
-                let hq = Params {
-                    quality: (sub.quality + altref_dq).min(100.0),
-                    ..sub.clone()
-                };
-                let e = encode_with_alpha_ref(&rgb_of(ft), None, width, height, &hq, Some(af));
-                if std::env::var_os("TESELA_ANIMLOG").is_some() {
-                    eprintln!("oculto f{t} antes de f{i}: {} B", e.bytes.len());
-                }
-                gold_idx = t;
-                keep_until = t;
-                list.push((0, 0, 0, width, height, e.bytes, true, st.last_warp, true));
-            }
-        }
         let rect = if i == 0 {
             Some((0, 0, width, height))
         } else {
             changed_rect(&frames[i - 1], f, width, height)
         };
         match rect {
-            None => list.iter_mut().rev().find(|e| !e.8).unwrap().0 += durations_ms[i],
+            None => list.last_mut().unwrap().0 += durations_ms[i],
             Some((x, y, w, h)) => {
                 // Con predicción entre fotogramas, el rectángulo se amplía con
                 // un margen y se alinea a una rejilla de 16: lo que se descubre
@@ -4825,7 +4714,6 @@ pub fn encode_animation_recon(
                     prefix: Vec::new(),
                     gold: i == 0,
                     warp: None,
-                    hidden: false,
                 };
                 let rect = (x, y, w, h);
                 let warp = if inter && use_warp {
@@ -4869,7 +4757,6 @@ pub fn encode_animation_recon(
                             }),
                         ],
                         tdq,
-                        keep_gold: i <= keep_until,
                     };
                     encode_with_alpha_ref(
                         &crgb,
@@ -4927,7 +4814,6 @@ pub fn encode_animation_recon(
                     e.bytes,
                     st.last_gold && i > 0,
                     fw,
-                    false,
                 ));
             }
         }
@@ -4952,10 +4838,10 @@ pub fn encode_animation_recon(
     out.extend_from_slice(&(list.len() as u32).to_le_bytes());
     let mut prev: Option<Header> = None;
     let mut whist = WarpHist::default();
-    for (i, (d, x, y, w, h, bytes, gold, warp, hidden)) in list.iter().enumerate() {
+    for (i, (d, x, y, w, h, bytes, gold, warp)) in list.iter().enumerate() {
         // Bits de la forma: 2 = renueva la referencia larga; 4 = movimiento
         // global, 8 = respecto a la referencia larga, 16 = igual a la predicción.
-        let mut gbit = if *gold { 2 } else { 0 } | if *hidden { 32 } else { 0 };
+        let mut gbit = if *gold { 2 } else { 0 };
         let mut wbytes = Vec::new();
         if let Some(wp) = warp {
             gbit |= 4 | if wp.gold { 8 } else { 0 };
@@ -4968,9 +4854,7 @@ pub fn encode_animation_recon(
                 }
             }
         }
-        if !*hidden {
-            whist.push(*warp, *gold || i == 0);
-        }
+        whist.push(*warp, *gold || i == 0);
         for v in [*d, *x as u32, *y as u32, *w as u32, *h as u32] {
             write_varint(&mut out, v);
         }
