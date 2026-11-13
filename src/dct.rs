@@ -85,11 +85,16 @@ fn dct_1d(x: &mut [f32], tmp: &mut [f32]) {
     }
     let h = n / 2;
     let f = factors(n);
-    for i in 0..h {
-        let a = x[i];
-        let b = x[n - 1 - i];
-        tmp[i] = a + b;
-        tmp[i + h] = (a - b) * f[i];
+    {
+        // Rebanadas de longitud h conocida: sin comprobaciones de límites.
+        let (xa, xb) = x.split_at(h);
+        let (t0, t1) = tmp.split_at_mut(h);
+        let (t1, f) = (&mut t1[..h], &f[..h]);
+        for i in 0..h {
+            let (a, b) = (xa[i], xb[h - 1 - i]);
+            t0[i] = a + b;
+            t1[i] = (a - b) * f[i];
+        }
     }
     {
         let (t0, t1) = tmp.split_at_mut(h);
@@ -97,12 +102,14 @@ fn dct_1d(x: &mut [f32], tmp: &mut [f32]) {
         dct_1d(t0, x0);
         dct_1d(&mut t1[..h], x1);
     }
+    let (t0, t1) = tmp.split_at(h);
+    let t1 = &t1[..h];
     for i in 0..h - 1 {
-        x[2 * i] = tmp[i];
-        x[2 * i + 1] = tmp[i + h] + tmp[i + h + 1];
+        x[2 * i] = t0[i];
+        x[2 * i + 1] = t1[i] + t1[i + 1];
     }
-    x[n - 2] = tmp[h - 1];
-    x[n - 1] = tmp[n - 1];
+    x[n - 2] = t0[h - 1];
+    x[n - 1] = t1[h - 1];
 }
 
 /// DCT-III 1-D: x_n = X_0 + Σ_{k≥1} X_k cos(π(2n+1)k/2N).
@@ -112,11 +119,15 @@ fn idct_1d(x: &mut [f32], tmp: &mut [f32]) {
         return;
     }
     let h = n / 2;
-    tmp[0] = x[0];
-    tmp[h] = x[1];
-    for i in 1..h {
-        tmp[i] = x[2 * i];
-        tmp[i + h] = x[2 * i - 1] + x[2 * i + 1];
+    {
+        let (t0, t1) = tmp.split_at_mut(h);
+        let t1 = &mut t1[..h];
+        t0[0] = x[0];
+        t1[0] = x[1];
+        for i in 1..h {
+            t0[i] = x[2 * i];
+            t1[i] = x[2 * i - 1] + x[2 * i + 1];
+        }
     }
     {
         let (t0, t1) = tmp.split_at_mut(h);
@@ -124,12 +135,15 @@ fn idct_1d(x: &mut [f32], tmp: &mut [f32]) {
         idct_1d(t0, x0);
         idct_1d(&mut t1[..h], x1);
     }
-    let f = factors(n);
+    let f = &factors(n)[..h];
+    let (t0, t1) = tmp.split_at(h);
+    let t1 = &t1[..h];
+    let (xl, xr) = x.split_at_mut(h);
     for i in 0..h {
-        let a = tmp[i];
-        let b = tmp[i + h] * f[i];
-        x[i] = a + b;
-        x[n - 1 - i] = a - b;
+        let a = t0[i];
+        let b = t1[i] * f[i];
+        xl[i] = a + b;
+        xr[h - 1 - i] = a - b;
     }
 }
 

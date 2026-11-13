@@ -764,24 +764,19 @@ impl CoefCtx {
         let sz = size_index(w.max(h));
         let sc = scan(w, h);
 
-        let mut last = None;
-        for (i, &(x, y)) in sc.iter().enumerate() {
-            let p = y as usize * n + x as usize;
-            let l = (coefs[p].abs() / qs[p] + 0.5) as i32;
-            levels[p] = l;
-            if l != 0 {
-                last = Some(i);
-            }
+        // Niveles de partida en orden fila (vectorizable); el tope solo evita la
+        // saturación de la conversión, que no ocurre con valores reales.
+        for ((l, &c), &q) in levels[..nn].iter_mut().zip(&coefs[..nn]).zip(&qs[..nn]) {
+            *l = (c.abs() / q + 0.5).min(1.0e9) as i32;
         }
+        let last = sc
+            .iter()
+            .rposition(|&(x, y)| levels[y as usize * n + x as usize] != 0);
         let zero_dist: f32 = coefs[..nn].iter().map(|c| c * c).sum();
         let zero_bits = self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx].cost(false);
         let Some(last) = last else {
-            levels[..nn].fill(0);
             return (zero_dist, zero_bits);
         };
-        for &(x, y) in &sc[last + 1..] {
-            levels[y as usize * n + x as usize] = 0;
-        }
         let mut seen_nz = false;
         let mut eob = 0;
         let mut dist = 0f32;
