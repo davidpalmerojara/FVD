@@ -465,6 +465,8 @@ struct Ctx {
     inh: Vec<Model>,
     /// Si el vector no es el predicho: ¿es el segundo candidato?
     mv_alt: [Model; 2],
+    /// ¿Hoja con afín local? (por tamaño)
+    lw: [Model; 5],
 }
 
 impl Visit for Ctx {
@@ -491,6 +493,7 @@ impl Visit for Ctx {
         self.warp.visit(f);
         self.inh.visit(f);
         self.mv_alt.visit(f);
+        self.lw.visit(f);
     }
 }
 
@@ -569,6 +572,7 @@ impl Ctx {
             warp: vec![Model::new(); 2 * 5 * 3],
             inh: vec![Model::new(); 5],
             mv_alt: [Model::new(); 2],
+            lw: [Model::new(); 5],
         }
     }
 }
@@ -770,6 +774,9 @@ enum Kind {
     /// Copia del fotograma anterior con el movimiento global de la tesela
     /// (un vector por bloque de 4 × 4 deducido del modelo afín).
     Warp,
+    /// Como `Inter`, más un afín local deducido de los vectores de los
+    /// vecinos (giros, zooms de un objeto): un vector por bloque de 4 × 4.
+    Local((i32, i32), [i32; 4]),
 }
 
 impl Kind {
@@ -779,7 +786,7 @@ impl Kind {
             Kind::Intra(m) => *m,
             Kind::Palette(_) => MARK_PALETTE,
             Kind::Ibc(_) => MARK_IBC,
-            Kind::Inter(_) => MARK_INTER,
+            Kind::Inter(_) | Kind::Local(..) => MARK_INTER,
             Kind::Warp => MARK_WARP,
         }
     }
@@ -867,6 +874,115 @@ fn mv_pred(p: &Plane, x0: usize, y0: usize, w: usize, last: (i32, i32)) -> (i32,
     }
 }
 
+/// Vector en 1/16 de píxel del bloque de 4 × 4 en (bx, by) de una hoja con
+/// afín local: el de la hoja más el afín aplicado a la distancia entre los
+/// centros (en medios píxeles).
+fn local_mv16(
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    mv: (i32, i32),
+    a: &[i32; 4],
+    bx: usize,
+    by: usize,
+) -> (i32, i32) {
+    let dx = (2 * (x0 + bx) + 4) as i64 - (2 * x0 + w) as i64;
+    let dy = (2 * (y0 + by) + 4) as i64 - (2 * y0 + h) as i64;
+    let r = |v: i64| ((v + (1 << 13)) >> 14) as i32;
+    (
+        4 * mv.0 + r(a[0] as i64 * dx + a[1] as i64 * dy),
+        4 * mv.1 + r(a[2] as i64 * dx + a[3] as i64 * dy),
+    )
+}
+
+/// Afín local de una hoja `w × h` (≥ 8 × 8) con vector `mv`: se ajusta por
+/// mínimos cuadrados (en enteros, igual en el codificador y el
+/// decodificador) a los vectores de las unidades de 4 × 4 vecinas a la
+/// izquierda, arriba y arriba a la izquierda que predicen del fotograma
+/// anterior, descartando las que se alejan del vector de la hoja más de lo
+/// que permite el afín. Coeficientes en cuartos de píxel por medio píxel
+/// · 2^16, acotados a ±2^15 (un 12,5 %: giros de hasta ~7°). None si hay
+/// menos de 3 muestras o están alineadas.
+fn local_affine(
+    p: &Plane,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    mv: (i32, i32),
+) -> Option<[i32; 4]> {
+    if w.min(h) < 8 {
+        return None;
+    }
+    let (xc, yc) = ((2 * x0 + w) as i64, (2 * y0 + h) as i64);
+    let mut pts: Vec<(i64, i64)> = Vec::new();
+    if x0 > 0 {
+        pts.extend((y0..y0 + h).step_by(4).map(|y| (x0 as i64 - 1, y as i64)));
+    }
+    if y0 > 0 {
+        pts.extend((x0..x0 + w).step_by(4).map(|x| (x as i64, y0 as i64 - 1)));
+        if x0 > 0 {
+            pts.push((x0 as i64 - 1, y0 as i64 - 1));
+        }
+    }
+    let (mut sxx, mut sxy, mut syy) = (0i64, 0i64, 0i64);
+    let (mut sxu, mut syu, mut sxv, mut syv) = (0i64, 0i64, 0i64, 0i64);
+    let mut n = 0;
+    for (x, y) in pts {
+        let Some(v) = inter_mv_at(p, x as isize, y as isize) else {
+            continue;
+        };
+        // Centro de la unidad de 4 × 4, en medios píxeles.
+        let dx = (x / 4 * 8 + 4) - xc;
+        let dy = (y / 4 * 8 + 4) - yc;
+        let (du, dv) = ((v.0 - mv.0) as i64, (v.1 - mv.1) as i64);
+        let lim = (dx.abs() + dy.abs()) / 4 + 2;
+        if du.abs() > lim || dv.abs() > lim {
+            continue;
+        }
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+        sxu += dx * du;
+        syu += dy * du;
+        sxv += dx * dv;
+        syv += dy * dv;
+        n += 1;
+    }
+    let det = sxx as i128 * syy as i128 - sxy as i128 * sxy as i128;
+    if n < 3 || det <= 0 {
+        return None;
+    }
+    let lim = 1i128 << 15;
+    let q = |num: i128| ((num << 16) / det).clamp(-lim, lim) as i32;
+    let a = [
+        q(sxu as i128 * syy as i128 - syu as i128 * sxy as i128),
+        q(syu as i128 * sxx as i128 - sxu as i128 * sxy as i128),
+        q(sxv as i128 * syy as i128 - syv as i128 * sxy as i128),
+        q(syv as i128 * sxx as i128 - sxv as i128 * sxy as i128),
+    ];
+    (a != [0; 4]).then_some(a)
+}
+
+/// Guarda en el mapa los vectores (cuartos de píxel) de una hoja con afín local.
+fn set_local_mvs(
+    p: &mut Plane,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    mv: (i32, i32),
+    a: &[i32; 4],
+) {
+    for by in (0..h).step_by(4) {
+        for bx in (0..w).step_by(4) {
+            let v = local_mv16(x0, y0, w, h, mv, a, bx, by);
+            p.set_mv(x0 + bx, y0 + by, 4, 4, ((v.0 + 2) >> 2, (v.1 + 2) >> 2));
+        }
+    }
+}
+
 /// Segundo candidato del vector: el primero de los vecinos izquierdo,
 /// superior y superior izquierdo (y el último del plano) que no sea el
 /// predicho. En los bordes de un objeto que se mueve sobre un fondo quieto,
@@ -941,7 +1057,7 @@ fn code_leaf_head<C: Coder>(
     if inter
         && c.bit(
             &mut ctx.inter[(pc * 5 + sz) * 3 + inter_ctx(p, x0, y0)],
-            matches!(leaf.kind, Kind::Inter(_) | Kind::Warp),
+            matches!(leaf.kind, Kind::Inter(_) | Kind::Local(..) | Kind::Warp),
         )
     {
         if warp
@@ -953,11 +1069,15 @@ fn code_leaf_head<C: Coder>(
             kind = Some(Kind::Warp);
         } else {
             let mv = match leaf.kind {
-                Kind::Inter(m) => m,
+                Kind::Inter(m) | Kind::Local(m, _) => m,
                 _ => (0, 0),
             };
+            let mut inherited = false;
             let mv = match inherit {
-                Some(im) if c.bit(&mut ctx.inh[sz], mv == im) => im,
+                Some(im) if c.bit(&mut ctx.inh[sz], mv == im) => {
+                    inherited = true;
+                    im
+                }
                 _ => {
                     let mut pred = mv_pred(p, x0, y0, w, st.last_mv);
                     let p0 = pred;
@@ -972,7 +1092,17 @@ fn code_leaf_head<C: Coder>(
                 }
             };
             st.last_mv = mv;
-            kind = Some(Kind::Inter(mv));
+            let local = if inherited {
+                None
+            } else {
+                local_affine(p, x0, y0, w, h, mv)
+            };
+            kind = Some(match local {
+                Some(a) if c.bit(&mut ctx.lw[sz], matches!(leaf.kind, Kind::Local(..))) => {
+                    Kind::Local(mv, a)
+                }
+                _ => Kind::Inter(mv),
+            });
         }
     }
     if screen && kind.is_none() {
@@ -1163,6 +1293,10 @@ fn predict_leaf(
             Some(ip) => ip.predict(x0, y0, w, h, *mv, out),
             None => out[..w * h].fill(128),
         },
+        Kind::Local(mv, a) => match ip {
+            Some(ip) => ip.predict_local(x0, y0, w, h, *mv, a, out),
+            None => out[..w * h].fill(128),
+        },
         Kind::Warp => match ip {
             Some(ip) if ip.warp.is_some() => ip.predict_warp(x0, y0, w, h, out),
             _ => out[..w * h].fill(128),
@@ -1351,6 +1485,31 @@ impl InterPlane<'_> {
             for bx in (0..w).step_by(4) {
                 let mv = ip.warp_mv16(x0 + bx, y0 + by);
                 ip.predict_with(x0 + bx, y0 + by, 4, 4, mv, 4, &WARP16, &mut sub);
+                for y in 0..4 {
+                    out[(by + y) * w + bx..(by + y) * w + bx + 4]
+                        .copy_from_slice(&sub[y * 4..y * 4 + 4]);
+                }
+            }
+        }
+    }
+
+    /// Predicción de una hoja con afín local: un vector por bloque de 4 × 4.
+    #[allow(clippy::too_many_arguments)]
+    fn predict_local(
+        &self,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+        mv: (i32, i32),
+        a: &[i32; 4],
+        out: &mut [i32],
+    ) {
+        let mut sub = [0i32; 16];
+        for by in (0..h).step_by(4) {
+            for bx in (0..w).step_by(4) {
+                let v = local_mv16(x0, y0, w, h, mv, a, bx, by);
+                self.predict_with(x0 + bx, y0 + by, 4, 4, v, 4, &WARP16, &mut sub);
                 for y in 0..4 {
                     out[(by + y) * w + bx..(by + y) * w + bx + 4]
                         .copy_from_slice(&sub[y * 4..y * 4 + 4]);
@@ -2019,6 +2178,19 @@ impl EncState {
                 let kind = Kind::Inter(mv);
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
+                // Con afín local (no si la croma heredaría el vector de la luma:
+                // entonces no se codifica el bit).
+                let inh = self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h));
+                if let Some(a) =
+                    local_affine(&pe.plane, x0, y0, w, h, mv).filter(|_| inh != Some(mv))
+                {
+                    ip.predict_local(x0, y0, w, h, mv, &a, &mut pred);
+                    let (jr, lv, ts) =
+                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                    let kind = Kind::Local(mv, a);
+                    let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
+                    consider(&mut best, jr + lambda * hb, kind, lv, ts);
+                }
             }
             if self.warp {
                 ip.predict_warp(x0, y0, w, h, &mut pred);
@@ -2176,13 +2348,14 @@ impl EncState {
         pe.plane.set_block(x0, y0, w, h, ev.leaf.kind.mark(), ev.nz);
         match (&ev.leaf.kind, pe.inter.as_ref()) {
             (Kind::Inter(mv), _) => pe.plane.set_mv(x0, y0, w, h, *mv),
+            (Kind::Local(mv, a), _) => set_local_mvs(&mut pe.plane, x0, y0, w, h, *mv, a),
             (Kind::Warp, Some(ip)) => ip.set_warp_mvs(&mut pe.plane, x0, y0, w, h),
             _ => {}
         }
         match &ev.leaf.kind {
             Kind::Palette(p) => pe.sc.last_pal = Some(p.colors.clone()),
             Kind::Ibc(bv) => pe.sc.last_bv = *bv,
-            Kind::Inter(mv) => pe.sc.last_mv = *mv,
+            Kind::Inter(mv) | Kind::Local(mv, _) => pe.sc.last_mv = *mv,
             Kind::Intra(_) | Kind::Warp => {}
         }
     }
@@ -3581,12 +3754,14 @@ impl DecState {
                 Kind::Palette(_) => "pal".to_string(),
                 Kind::Ibc(_) => "ibc".to_string(),
                 Kind::Inter(mv) => format!("inter{}", if *mv == (0, 0) { "0" } else { "" }),
+                Kind::Local(..) => "local".to_string(),
                 Kind::Warp => "warp".to_string(),
             };
             eprintln!("LEAF {pc} {k} {w}x{h} {}", nz as u8);
         }
         match (&kind, ip.as_ref()) {
             (Kind::Inter(mv), _) => p.set_mv(x0, y0, w, h, *mv),
+            (Kind::Local(mv, a), _) => set_local_mvs(p, x0, y0, w, h, *mv, a),
             (Kind::Warp, Some(ip)) => ip.set_warp_mvs(p, x0, y0, w, h),
             _ => {}
         }
