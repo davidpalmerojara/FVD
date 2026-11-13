@@ -8,6 +8,11 @@
 //!    signo. Los contextos dependen del tamaño, del plano, de la clase de
 //!    frecuencia y de la magnitud de los vecinos de mayor frecuencia ya
 //!    codificados (plantilla de 5 posiciones).
+//!
+//! En la v2, la última posición se codifica como (x, y), el resto tiene
+//! contexto de la suma de la plantilla y, en los bloques DCT, los signos van
+//! al final del bloque con ocultación de un signo por grupo de 16 posiciones
+//! (sign data hiding, como en HEVC).
 
 use crate::dct::size_index;
 use crate::rc::{Coder, Model, UintCtx, Visit};
@@ -88,6 +93,132 @@ pub struct CoefCtx {
     gt2: Vec<Model>,
     rem: Vec<UintCtx>,
     dc_sign: [Model; NPC],
+    /// v2, solo DCT: ocultación de signos (sign data hiding) por grupos de
+    /// `SDH_GROUP` posiciones del barrido.
+    sdh: bool,
+    /// v2: última posición como (x, y) y resto con contexto de los vecinos.
+    v2: bool,
+    /// v2: prefijos de la última posición, por plano, lado y bin.
+    last: Vec<Model>,
+    /// v2: resto por plano, clase de frecuencia y clase de la suma de vecinos.
+    rem_n: Vec<UintCtx>,
+    /// Búfer de trabajo (no es estado del flujo): no nulos del bloque.
+    nzl: Vec<(u16, u16)>,
+}
+
+/// Bins de prefijo de una coordenada de la última posición (lado 64).
+const NLB: usize = 11;
+/// Clases de la suma de magnitudes de la plantilla para el resto.
+const NRC: usize = 7;
+
+/// Grupo de una coordenada de la última posición: 0, 1, 2, 3, 4–5, 6–7,
+/// 8–11, 12–15, 16–23, 24–31, 32–47, 48–63.
+#[inline]
+fn last_group(v: u32) -> u32 {
+    if v < 4 {
+        v
+    } else {
+        let k = 31 - v.leading_zeros();
+        2 * k + ((v >> (k - 1)) & 1)
+    }
+}
+
+/// Primer valor del grupo `g`.
+#[inline]
+fn group_min(g: u32) -> u32 {
+    if g < 4 {
+        g
+    } else {
+        let k = g / 2;
+        (1 << k) | ((g & 1) << (k - 1))
+    }
+}
+
+/// Índice en el barrido de cada posición (orden fila) de un bloque `w × h`.
+fn scan_index(w: usize, h: usize) -> &'static [u16] {
+    static S: OnceLock<Vec<Vec<u16>>> = OnceLock::new();
+    let all = S.get_or_init(|| {
+        let mut out = Vec::new();
+        for &h in &crate::dct::SIZES {
+            for &w in &crate::dct::SIZES {
+                let mut v = vec![0u16; w * h];
+                for (i, &(x, y)) in scan(w, h).iter().enumerate() {
+                    v[y as usize * w + x as usize] = i as u16;
+                }
+                out.push(v);
+            }
+        }
+        out
+    });
+    &all[size_index(h) * 5 + size_index(w)]
+}
+
+/// Suma sin tope de las magnitudes de la plantilla de vecinos.
+#[inline(always)]
+fn tmpl_sum(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> u32 {
+    let i = y * w + x;
+    let a = |v: i32| v.unsigned_abs();
+    let (xr, xr2, yd, yd2) = (x + 1 < w, x + 2 < w, y + 1 < h, y + 2 < h);
+    let mut s = 0;
+    if xr {
+        s += a(levels[i + 1]);
+        if yd {
+            s += a(levels[i + w + 1]);
+        }
+    }
+    if xr2 {
+        s += a(levels[i + 2]);
+    }
+    if yd {
+        s += a(levels[i + w]);
+    }
+    if yd2 {
+        s += a(levels[i + 2 * w]);
+    }
+    s
+}
+
+/// Clase del resto según la suma sin tope de la plantilla.
+#[inline]
+fn rem_class(s: u32) -> usize {
+    match s {
+        0..=2 => 0,
+        3..=5 => 1,
+        6..=9 => 2,
+        10..=15 => 3,
+        16..=25 => 4,
+        26..=40 => 5,
+        _ => 6,
+    }
+}
+
+/// Posiciones del barrido por grupo de ocultación de signo.
+const SDH_GROUP: usize = 16;
+/// Distancia mínima en el barrido entre el primer y el último no nulo de un
+/// grupo para que se oculte el signo del primero.
+const SDH_SPAN: usize = 4;
+
+/// Primer y último índice no nulo del grupo `lo..hi` y suma de magnitudes.
+#[inline]
+fn sdh_group(
+    levels: &[i32],
+    sc: &[(u8, u8)],
+    n: usize,
+    lo: usize,
+    hi: usize,
+) -> (usize, usize, u32) {
+    let (mut first, mut last, mut sum) = (usize::MAX, 0, 0u32);
+    for (i, &(x, y)) in sc[lo..hi].iter().enumerate() {
+        let a = levels[y as usize * n + x as usize].unsigned_abs();
+        if a != 0 {
+            if first == usize::MAX {
+                first = lo + i;
+            }
+            last = lo + i;
+            sum += a;
+        }
+    }
+    (first, last, sum)
 }
 
 impl Default for CoefCtx {
@@ -101,6 +232,11 @@ impl Default for CoefCtx {
             gt2: vec![Model::new(); nctx],
             rem: vec![UintCtx::default(); NPC * NF],
             dc_sign: [Model::new(); NPC],
+            sdh: false,
+            v2: false,
+            last: vec![Model::new(); NPC * NSZ * NLB],
+            rem_n: vec![UintCtx::default(); NPC * NF * NRC],
+            nzl: Vec::new(),
         }
     }
 }
@@ -123,6 +259,87 @@ impl Visit for CoefCtx {
 }
 
 impl CoefCtx {
+    /// Modelos de la v2 (van al final del orden de visita de `Ctx`).
+    pub fn visit_v2(&mut self, f: &mut dyn FnMut(&mut Model)) {
+        self.last.visit(f);
+        self.rem_n.visit(f);
+    }
+
+    /// Activa la sintaxis de la v2 (`sdh`: con ocultación de signos). Con
+    /// `inherit` (la tabla entrenada no cubre los modelos nuevos), cada resto
+    /// nuevo empieza con el estado del resto de la v1 de su plano y clase de
+    /// frecuencia.
+    pub fn init_v2(&mut self, sdh: bool, inherit: bool) {
+        self.v2 = true;
+        self.sdh = sdh;
+        if inherit {
+            for (k, r) in self.rem_n.iter_mut().enumerate() {
+                *r = self.rem[k / NRC].clone();
+            }
+        }
+    }
+
+    #[inline]
+    fn rem_idx(
+        pc: usize,
+        fc: usize,
+        levels: &[i32],
+        w: usize,
+        h: usize,
+        x: usize,
+        y: usize,
+    ) -> usize {
+        (pc * NF + fc) * NRC + rem_class(tmpl_sum(levels, w, h, x, y))
+    }
+
+    /// Última posición (v2): x y luego y, cada una con el grupo en unario
+    /// truncado (con contexto) y la posición dentro del grupo en bypass.
+    fn code_last<C: Coder>(
+        &mut self,
+        c: &mut C,
+        pc: usize,
+        w: usize,
+        h: usize,
+        eob: usize,
+    ) -> usize {
+        let (ex, ey) = scan(w, h)[eob.max(1) - 1];
+        let mut xy = [0u32; 2];
+        for (d, (v, len)) in [(ex as u32, w), (ey as u32, h)].into_iter().enumerate() {
+            let g_enc = last_group(v);
+            let ng = last_group(len as u32 - 1);
+            let base = (pc * NSZ + size_index(len)) * NLB;
+            let mut g = 0;
+            while g < ng && c.bit(&mut self.last[base + g as usize], g_enc > g) {
+                g += 1;
+            }
+            xy[d] = group_min(g);
+            if g > 3 {
+                xy[d] += c.bypass_bits(v.wrapping_sub(group_min(g)), g / 2 - 1);
+            }
+        }
+        scan_index(w, h)[xy[1] as usize * w + xy[0] as usize] as usize + 1
+    }
+
+    fn last_cost(&self, pc: usize, w: usize, h: usize, eob: usize) -> f32 {
+        let (ex, ey) = scan(w, h)[eob - 1];
+        let mut bits = 0.0;
+        for (v, len) in [(ex as u32, w), (ey as u32, h)] {
+            let g_enc = last_group(v);
+            let ng = last_group(len as u32 - 1);
+            let base = (pc * NSZ + size_index(len)) * NLB;
+            for g in 0..ng {
+                bits += self.last[base + g as usize].cost(g_enc > g);
+                if g_enc <= g {
+                    break;
+                }
+            }
+            if g_enc > 3 {
+                bits += (g_enc / 2 - 1) as f32;
+            }
+        }
+        bits
+    }
+
     /// Codifica/decodifica los niveles de un bloque N×N (orden fila).
     /// `cbf_ctx` (0..3) resume si los vecinos tenían coeficientes.
     pub fn code_block<C: Coder>(
@@ -149,9 +366,16 @@ impl CoefCtx {
             levels[..nn].fill(0);
             return false;
         }
-        let eob = self.eob[pc * NSZ + sz].code(c, eob_enc.saturating_sub(1) as u32) as usize + 1;
+        let eob = if self.v2 {
+            self.code_last(c, pc, w, h, eob_enc)
+        } else {
+            self.eob[pc * NSZ + sz].code(c, eob_enc.saturating_sub(1) as u32) as usize + 1
+        };
         let enc_vals: Vec<i32> = levels[..nn].to_vec();
         levels[..nn].fill(0);
+        // v2: posiciones no nulas en orden de decodificación (para los signos).
+        let mut nzl = std::mem::take(&mut self.nzl);
+        nzl.clear();
         for i in (0..eob.min(nn)).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let pos = y * n + x;
@@ -165,8 +389,20 @@ impl CoefCtx {
             if c.bit(&mut self.gt1[idx], a > 1) {
                 m = 2;
                 if c.bit(&mut self.gt2[idx], a > 2) {
-                    m = 3 + self.rem[pc * NF + freq_class(x, y)].code(c, a.saturating_sub(3));
+                    let fc = freq_class(x, y);
+                    let r = if self.v2 {
+                        &mut self.rem_n[Self::rem_idx(pc, fc, levels, w, h, x, y)]
+                    } else {
+                        &mut self.rem[pc * NF + fc]
+                    };
+                    m = 3 + r.code(c, a.saturating_sub(3));
                 }
+            }
+            if self.sdh {
+                // Los signos van después de todos los niveles.
+                levels[pos] = m as i32;
+                nzl.push((i as u16, pos as u16));
+                continue;
             }
             let neg = if pos == 0 {
                 c.bit(&mut self.dc_sign[pc], v < 0)
@@ -175,14 +411,62 @@ impl CoefCtx {
             };
             levels[pos] = if neg { -(m as i32) } else { m as i32 };
         }
+        // Signos por grupos de SDH_GROUP posiciones del barrido, del último al
+        // primero; `nzl` ya está en ese orden (índices decrecientes).
+        let mut k = 0;
+        while k < nzl.len() {
+            let g = nzl[k].0 as usize / SDH_GROUP;
+            let mut e = k;
+            let mut sum = 0u32;
+            while e < nzl.len() && nzl[e].0 as usize / SDH_GROUP == g {
+                sum += levels[nzl[e].1 as usize] as u32;
+                e += 1;
+            }
+            let hide = (nzl[k].0 - nzl[e - 1].0) as usize >= SDH_SPAN;
+            for (j, &(_, pos)) in nzl[k..e].iter().enumerate() {
+                let pos = pos as usize;
+                let v = enc_vals[pos];
+                let neg = if hide && k + j == e - 1 {
+                    sum & 1 == 1
+                } else if pos == 0 {
+                    c.bit(&mut self.dc_sign[pc], v < 0)
+                } else {
+                    c.bypass(v < 0)
+                };
+                if neg {
+                    levels[pos] = -levels[pos];
+                }
+            }
+            k = e;
+        }
+        self.nzl = nzl;
         true
     }
 
+    /// Signos ocultos de un bloque (bits que no se escriben).
+    fn hidden_signs(&self, w: usize, h: usize, levels: &[i32], eob: usize) -> f32 {
+        if !self.sdh {
+            return 0.0;
+        }
+        let sc = scan(w, h);
+        let mut k = 0;
+        for g in 0..eob.div_ceil(SDH_GROUP) {
+            let (lo, hi) = (g * SDH_GROUP, ((g + 1) * SDH_GROUP).min(eob));
+            let (first, last, _) = sdh_group(levels, sc, w, lo, hi);
+            k += (first != usize::MAX && last - first >= SDH_SPAN) as u32;
+        }
+        k as f32
+    }
+
     /// Coste aproximado de un nivel (magnitud) en la posición dada.
+    #[allow(clippy::too_many_arguments)]
     fn level_cost(
         &self,
         pc: usize,
         sz: usize,
+        levels: &[i32],
+        w: usize,
+        h: usize,
         x: usize,
         y: usize,
         mc: usize,
@@ -202,10 +486,32 @@ impl CoefCtx {
         if a > 1 {
             bits += self.gt2[idx].cost(a > 2);
             if a > 2 {
-                bits += self.rem[pc * NF + freq_class(x, y)].cost(a - 3);
+                bits += self
+                    .rem_model(pc, freq_class(x, y), levels, w, h, x, y)
+                    .cost(a - 3);
             }
         }
         bits
+    }
+
+    /// Modelo del resto de la posición (x, y).
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn rem_model(
+        &self,
+        pc: usize,
+        fc: usize,
+        levels: &[i32],
+        w: usize,
+        h: usize,
+        x: usize,
+        y: usize,
+    ) -> &UintCtx {
+        if self.v2 {
+            &self.rem_n[Self::rem_idx(pc, fc, levels, w, h, x, y)]
+        } else {
+            &self.rem[pc * NF + fc]
+        }
     }
 
     pub fn block_cost(&self, pc: usize, w: usize, h: usize, cbf_ctx: usize, levels: &[i32]) -> f32 {
@@ -220,14 +526,19 @@ impl CoefCtx {
         if eob == 0 {
             return cbf.cost(false);
         }
-        let mut bits = cbf.cost(true) + self.eob[pc * NSZ + sz].cost(eob as u32 - 1);
+        let eob_bits = if self.v2 {
+            self.last_cost(pc, w, h, eob)
+        } else {
+            self.eob[pc * NSZ + sz].cost(eob as u32 - 1)
+        };
+        let mut bits = cbf.cost(true) + eob_bits;
         for i in (0..eob).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let a = levels[y * n + x].unsigned_abs();
             let mc = mag_class(levels, w, h, x, y);
-            bits += self.level_cost(pc, sz, x, y, mc, a, i == eob - 1);
+            bits += self.level_cost(pc, sz, levels, w, h, x, y, mc, a, i == eob - 1);
         }
-        bits
+        bits - self.hidden_signs(w, h, levels, eob)
     }
 
     /// Cuantización RDO. `coefs` son los coeficientes transformados, `qs` el
@@ -284,7 +595,7 @@ impl CoefCtx {
             let fc = freq_class(x, y);
             let idx = cidx(pc, sz, fc, mc);
             let (sig, gt1, gt2) = (&self.sig[idx], &self.gt1[idx], &self.gt2[idx]);
-            let rem = &self.rem[pc * NF + fc];
+            let rem = self.rem_model(pc, fc, levels, w, h, x, y);
             let lcost = |a: u32, is_last: bool| -> f32 {
                 let mut bits = 0.0;
                 if !is_last {
@@ -381,10 +692,122 @@ impl CoefCtx {
                 bits = best.2;
             }
         }
+        if self.sdh {
+            let (d, b) = self.sdh_fix(pc, w, h, cbf_ctx, coefs, qs, lambda, levels);
+            dist += d;
+            if let Some(b) = b {
+                bits = b;
+            }
+        }
         if zero_dist + lambda * zero_bits <= dist + lambda * bits {
             levels[..nn].fill(0);
             return (zero_dist, zero_bits);
         }
+        debug_assert!(self.parity_ok(w, h, levels), "paridad de un signo oculto");
         (dist, bits)
+    }
+
+    /// ¿Cumplen la paridad todos los signos ocultos del bloque? (comprobación
+    /// en compilaciones de depuración)
+    fn parity_ok(&self, w: usize, h: usize, levels: &[i32]) -> bool {
+        let sc = scan(w, h);
+        let eob = sc
+            .iter()
+            .rposition(|&(x, y)| levels[y as usize * w + x as usize] != 0)
+            .map_or(0, |i| i + 1);
+        !self.sdh
+            || (0..eob.div_ceil(SDH_GROUP)).all(|g| {
+                let (lo, hi) = (g * SDH_GROUP, ((g + 1) * SDH_GROUP).min(eob));
+                let (first, last, sum) = sdh_group(levels, sc, w, lo, hi);
+                first == usize::MAX || last - first < SDH_SPAN || {
+                    let (x, y) = sc[first];
+                    (levels[y as usize * w + x as usize] < 0) == (sum & 1 == 1)
+                }
+            })
+    }
+
+    /// Ocultación de signos en el codificador: en cada grupo con el signo del
+    /// primer no nulo oculto, si la paridad de la suma de magnitudes no lo
+    /// da, cambia en ±1 el nivel que menos encarece J = D + λ·R. Devuelve el
+    /// aumento de distorsión y, si cambió algo, los bits del bloque.
+    #[allow(clippy::too_many_arguments)]
+    fn sdh_fix(
+        &self,
+        pc: usize,
+        w: usize,
+        h: usize,
+        cbf_ctx: usize,
+        coefs: &[f32],
+        qs: &[f32],
+        lambda: f32,
+        levels: &mut [i32],
+    ) -> (f32, Option<f32>) {
+        let n = w;
+        let sz = size_index(w.max(h));
+        let sc = scan(w, h);
+        let Some(eob) = sc
+            .iter()
+            .rposition(|&(x, y)| levels[y as usize * n + x as usize] != 0)
+            .map(|i| i + 1)
+        else {
+            return (0.0, None);
+        };
+        let mut dd = 0f32;
+        let mut changed = false;
+        for g in 0..eob.div_ceil(SDH_GROUP) {
+            let (lo, hi) = (g * SDH_GROUP, ((g + 1) * SDH_GROUP).min(eob));
+            let (first, last, sum) = sdh_group(levels, sc, n, lo, hi);
+            if first == usize::MAX || last - first < SDH_SPAN {
+                continue;
+            }
+            let pf = sc[first].1 as usize * n + sc[first].0 as usize;
+            if (levels[pf] < 0) == (sum & 1 == 1) {
+                continue;
+            }
+            // (coste, posición, nuevo nivel con signo, aumento de distorsión)
+            let mut best = (f32::INFINITY, 0usize, 0i32, 0f32);
+            for (i, &(x, y)) in sc.iter().enumerate().take(hi).skip(first) {
+                let (x, y) = (x as usize, y as usize);
+                let p = y * n + x;
+                let l = levels[p].unsigned_abs();
+                let ca = coefs[p].abs();
+                let q = qs[p];
+                let d0 = (ca - l as f32 * q).powi(2);
+                let mc = mag_class(levels, w, h, x, y);
+                let is_last = i == eob - 1;
+                let r0 = self.level_cost(pc, sz, levels, w, h, x, y, mc, l, is_last);
+                let mut cands = [u32::MAX; 2];
+                cands[0] = l + 1;
+                // Bajar a 0 cambiaría el primero, el último o el final del bloque.
+                if l >= 2 || (l == 1 && i != first && i != last && !is_last) {
+                    cands[1] = l - 1;
+                }
+                for nl in cands {
+                    if nl == u32::MAX {
+                        continue;
+                    }
+                    let d1 = (ca - nl as f32 * q).powi(2);
+                    let r1 = self.level_cost(pc, sz, levels, w, h, x, y, mc, nl, is_last);
+                    let j = d1 - d0 + lambda * (r1 - r0);
+                    if j < best.0 {
+                        let s = if l != 0 {
+                            levels[p].signum()
+                        } else if coefs[p] < 0.0 {
+                            -1
+                        } else {
+                            1
+                        };
+                        best = (j, p, s * nl as i32, d1 - d0);
+                    }
+                }
+            }
+            levels[best.1] = best.2;
+            dd += best.3;
+            changed = true;
+        }
+        if !changed {
+            return (0.0, None);
+        }
+        (dd, Some(self.block_cost(pc, w, h, cbf_ctx, levels)))
     }
 }

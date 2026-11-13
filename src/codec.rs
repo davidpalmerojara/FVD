@@ -491,6 +491,9 @@ impl Visit for Ctx {
         self.warp.visit(f);
         self.inh.visit(f);
         self.mv_alt.visit(f);
+        // Coeficientes de la v2.
+        self.coef.visit_v2(f);
+        self.coef_ts.visit_v2(f);
     }
 }
 
@@ -521,6 +524,7 @@ impl Ctx {
             crate::init_probs::TABLES[s][b]
         };
         if UNTRAINED.load(std::sync::atomic::Ordering::Relaxed) {
+            c.set_v2(version, false);
             return c;
         }
         let mut n = 0;
@@ -536,7 +540,18 @@ impl Ctx {
                 i += 1;
             });
         }
+        c.set_v2(version, t.len() < n);
         c
+    }
+
+    /// Sintaxis de coeficientes de la v2 (salvo sin pérdida y alfa, que
+    /// usan `Ctx::new()` y siguen con la de la v1). `inherit`: la tabla no
+    /// cubre los modelos nuevos.
+    fn set_v2(&mut self, version: u8, inherit: bool) {
+        if version >= 2 {
+            self.coef.init_v2(true, inherit);
+            self.coef_ts.init_v2(false, inherit);
+        }
     }
 
     /// Estado final de todos los modelos: (probabilidad, observaciones).

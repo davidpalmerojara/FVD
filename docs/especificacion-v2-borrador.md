@@ -238,6 +238,42 @@ El codificador de referencia no usa rectángulos en N = 64, pero el decodificado
 Al terminar una hoja w × h se marcan sus unidades de 4 × 4 igual que en la v1. El «lado menor del
 bloque» que guarda el mapa (y que usa el contexto de `split`) es min(w, h).
 
+### 2.4 Coeficientes
+
+Cambian tres pasos de la sección 6.3 de la v1. Valen para los dos conjuntos de contextos (DCT y
+transform skip), salvo la ocultación de signos, que solo se aplica a los bloques DCT. El modo sin
+pérdida y el canal alfa, que empiezan con todos los modelos a ½ en lugar de las tablas, siguen
+con la sintaxis de la v1.
+
+1. **Última posición** (sustituye a `eob`). Se codifican las coordenadas (x, y) del último
+   coeficiente no nulo en el orden del barrido: primero x, con lado L = w, y luego y, con L = h.
+   Para cada coordenada v (0 ≤ v < L):
+   - **Grupo.** g(v) = v si v < 4; si no, con k = ⌊log2 v⌋, g(v) = 2k + (bit k − 1 de v). Los
+     grupos son 0, 1, 2, 3, 4–5, 6–7, 8–11, 12–15, 16–23, 24–31, 32–47 y 48–63.
+   - **Prefijo.** El grupo en unario truncado a G = g(L − 1): para j = 0, 1, … mientras j < G,
+     bit `last[(pc·5 + size_index(L))·11 + j]`; el primer 0 termina y g es el número de unos.
+   - **Sufijo.** Si g > 3, `g/2 − 1` bits en bypass (el más significativo primero), que se suman
+     al primer valor del grupo, `2^(g/2) + (g mod 2)·2^(g/2 − 1)`.
+
+   `eob` es 1 más el índice de (x, y) en el barrido.
+2. **Resto.** `m = 3 + Uint(rem_n[(pc·5 + fc)·7 + r])` en lugar de `Uint(rem[pc·5 + fc])`. La
+   clase r sale de la suma **sin tope** s de |nivel| en las cinco posiciones de la plantilla de
+   `mc` (las mismas, ya decodificadas): 0–2 → 0; 3–5 → 1; 6–9 → 2; 10–15 → 3; 16–25 → 4;
+   26–40 → 5; ≥ 41 → 6.
+3. **Signos y ocultación del signo (solo DCT).** Los signos ya no siguen a cada nivel: primero se
+   decodifican las magnitudes de todo el bloque (significancia, `gt1`, `gt2` y resto, en el mismo
+   orden y con los mismos contextos) y después los signos. Las posiciones 0 … eob − 1 del barrido
+   se dividen en grupos de 16 (el último puede ser más corto). Se recorren los grupos del último
+   al primero y, dentro de cada uno, sus niveles no nulos de mayor a menor índice. Cada signo se
+   lee como en la v1 (en (0, 0) con `dc_sign[pc]`, en las demás posiciones en bypass) salvo el
+   del **primer** no nulo del grupo (el de menor índice) cuando el índice del último no nulo del
+   grupo lo supera en 4 o más: ese signo no se lee y es negativo si la suma de las magnitudes del
+   grupo es impar.
+
+   El codificador de referencia cumple la paridad en la cuantización: en cada grupo con el signo
+   oculto que no la cumple, sube o baja en 1 el nivel que menos encarece D + λ·R, sin cambiar
+   cuál es el primer no nulo del grupo ni el final del bloque (informativo).
+
 ## 3. Reconstrucción de una hoja rectangular
 
 En un bloque cuadrado, todo es idéntico bit a bit a la v1.
@@ -293,6 +329,11 @@ color.
 Los modelos se inicializan con `init_probs_v2::TABLES[sintético][banda]`, en el mismo orden de
 visita que en la v1. Los modelos nuevos (`rect` y `rect_dir`) van **al final** de ese orden, así
 que el prefijo coincide con la lista de modelos de la v1.
+
+Tras los demás modelos de la v2 van los de los coeficientes (sección 2.4): `last: [2·5·11]` y
+`rem_n: Uint[2·5·7]` del conjunto DCT y después los mismos del de transform skip. Si la tabla no
+llega a cubrir todos los modelos, `last` empieza a ½ y cada `rem_n[(pc·5 + fc)·7 + r]` con el
+estado de `rem[pc·5 + fc]` del mismo conjunto, ya inicializado con la tabla.
 
 ## 6. Pendiente antes de congelar
 
