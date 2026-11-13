@@ -515,6 +515,92 @@ impl CoefCtx {
         }
     }
 
+    /// Coste de la cabecera de un bloque no vacío: cbf y última posición.
+    #[inline]
+    fn block_head(&self, pc: usize, w: usize, h: usize, cbf_ctx: usize, eob: usize) -> f32 {
+        let sz = size_index(w.max(h));
+        let eob_bits = if self.v2 {
+            self.last_cost(pc, w, h, eob)
+        } else {
+            self.eob[pc * NSZ + sz].cost(eob as u32 - 1)
+        };
+        self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx].cost(true) + eob_bits
+    }
+
+    /// Coste de la posición `i` del barrido (el de `block_cost` para ese
+    /// término), con los niveles actuales.
+    #[inline(always)]
+    fn term(&self, pc: usize, w: usize, h: usize, levels: &[i32], i: usize, eob: usize) -> f32 {
+        let sz = size_index(w.max(h));
+        let (x, y) = scan(w, h)[i];
+        let (x, y) = (x as usize, y as usize);
+        let a = levels[y * w + x].unsigned_abs();
+        let mc = mag_class(levels, w, h, x, y);
+        self.level_cost(pc, sz, levels, w, h, x, y, mc, a, i == eob - 1)
+    }
+
+    /// Recalcula los términos en `terms` afectados por un cambio del nivel
+    /// de la posición `i` del barrido: ella misma y los vecinos de la
+    /// plantilla que la tienen en su contexto (todos con índice menor).
+    fn refresh_terms(
+        &self,
+        pc: usize,
+        w: usize,
+        h: usize,
+        levels: &[i32],
+        terms: &mut [f32],
+        i: usize,
+        eob: usize,
+    ) {
+        let (x, y) = scan(w, h)[i];
+        let (x, y) = (x as usize, y as usize);
+        let si = scan_index(w, h);
+        terms[i] = self.term(pc, w, h, levels, i, eob);
+        let nb = [
+            (x >= 1, x.wrapping_sub(1), y),
+            (x >= 2, x.wrapping_sub(2), y),
+            (y >= 1, x, y.wrapping_sub(1)),
+            (y >= 2, x, y.wrapping_sub(2)),
+            (x >= 1 && y >= 1, x.wrapping_sub(1), y.wrapping_sub(1)),
+        ];
+        for (ok, nx, ny) in nb {
+            if ok {
+                let j = si[ny * w + nx] as usize;
+                if j < eob {
+                    terms[j] = self.term(pc, w, h, levels, j, eob);
+                }
+            }
+        }
+    }
+
+    /// Suma de `base` y los términos de `eob - 1` a 0 menos los signos
+    /// ocultos: el mismo resultado, bit a bit, que `block_cost`.
+    fn sum_terms(&self, base: f32, w: usize, h: usize, levels: &[i32], terms: &[f32], eob: usize) -> f32 {
+        let sc = scan(w, h);
+        let mut bits = base;
+        let (mut hidden, mut g_cur, mut g_hi, mut g_lo) = (0u32, usize::MAX, 0usize, 0usize);
+        for i in (0..eob).rev() {
+            if self.sdh {
+                let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
+                if levels[y * w + x] != 0 {
+                    let g = i / SDH_GROUP;
+                    if g != g_cur {
+                        if g_cur != usize::MAX && g_hi - g_lo >= SDH_SPAN {
+                            hidden += 1;
+                        }
+                        (g_cur, g_hi) = (g, i);
+                    }
+                    g_lo = i;
+                }
+            }
+            bits += terms[i];
+        }
+        if g_cur != usize::MAX && g_hi - g_lo >= SDH_SPAN {
+            hidden += 1;
+        }
+        bits - hidden as f32
+    }
+
     pub fn block_cost(&self, pc: usize, w: usize, h: usize, cbf_ctx: usize, levels: &[i32]) -> f32 {
         let n = w;
         let sz = size_index(w.max(h));
@@ -523,16 +609,10 @@ impl CoefCtx {
             .iter()
             .rposition(|&(x, y)| levels[y as usize * n + x as usize] != 0)
             .map_or(0, |i| i + 1);
-        let cbf = &self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx];
         if eob == 0 {
-            return cbf.cost(false);
+            return self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx].cost(false);
         }
-        let eob_bits = if self.v2 {
-            self.last_cost(pc, w, h, eob)
-        } else {
-            self.eob[pc * NSZ + sz].cost(eob as u32 - 1)
-        };
-        let mut bits = cbf.cost(true) + eob_bits;
+        let mut bits = self.block_head(pc, w, h, cbf_ctx, eob);
         // Signos ocultos contados en la misma pasada (igual que
         // `hidden_signs`): por grupo, distancia entre el primer y el último no nulo.
         let (mut hidden, mut g_cur, mut g_hi, mut g_lo) = (0u32, usize::MAX, 0usize, 0usize);
@@ -596,7 +676,11 @@ impl CoefCtx {
             levels[y as usize * n + x as usize] = 0;
         }
         let mut seen_nz = false;
+        let mut eob = 0;
         let mut dist = 0f32;
+        // Término de coste de cada posición (el de `block_cost`), para no
+        // recalcular el bloque entero al probar finales y ocultar signos.
+        let mut terms = vec![0f32; last + 1];
         for i in (0..=last).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let p = y * n + x;
@@ -607,6 +691,7 @@ impl CoefCtx {
             let mut best_l = 0u32;
             let mut best_cost = f32::INFINITY;
             let mut best_d = 0.0;
+            let mut best_r = 0.0;
             let lo = l0.saturating_sub(1);
             // Los mismos costes que `level_cost`, sumados en el mismo orden,
             // pero con el contexto y los modelos consultados una sola vez.
@@ -650,11 +735,14 @@ impl CoefCtx {
                     best_cost = cost;
                     best_l = l;
                     best_d = d;
+                    best_r = r;
                 }
             }
-            if best_l != 0 {
+            if best_l != 0 && !seen_nz {
                 seen_nz = true;
+                eob = i + 1;
             }
+            terms[i] = best_r;
             dist += best_d;
             levels[p] = if coefs[p] < 0.0 {
                 -(best_l as i32)
@@ -669,51 +757,82 @@ impl CoefCtx {
         if !seen_nz {
             return (zero_dist, zero_bits);
         }
-        let mut bits = self.block_cost(pc, w, h, cbf_ctx, levels);
+        let head = self.block_head(pc, w, h, cbf_ctx, eob);
+        let mut bits = self.sum_terms(head, w, h, levels, &terms, eob);
+        debug_assert_eq!(bits, self.block_cost(pc, w, h, cbf_ctx, levels));
         // Optimización del final del barrido (EOB): prueba a truncar el bloque
         // en cada uno de los últimos coeficientes no nulos.
-        let nz_pos: Vec<usize> = (0..=last)
-            .filter(|&i| levels[sc[i].1 as usize * n + sc[i].0 as usize] != 0)
-            .collect();
-        if nz_pos.len() > 1 {
-            let mut trial = levels[..nn].to_vec();
-            let mut d_trial = dist;
-            let mut best = (dist + lambda * bits, nz_pos.len(), bits);
-            for k in (1..nz_pos.len()).rev().take(4) {
-                // Solo compensa recortar coeficientes ±1 del final del barrido.
-                let pk = sc[nz_pos[k]].1 as usize * n + sc[nz_pos[k]].0 as usize;
-                if trial[pk].abs() > 1 {
+        let mut tail = [0usize; 5];
+        let mut nt = 0;
+        for i in (0..eob).rev() {
+            if levels[sc[i].1 as usize * n + sc[i].0 as usize] != 0 {
+                tail[nt] = i;
+                nt += 1;
+                if nt == tail.len() {
                     break;
                 }
-                // Quita el coeficiente no nulo k (y con él todo lo posterior).
-                let i = nz_pos[k];
+            }
+        }
+        if nt > 1 {
+            let mut d_trial = dist;
+            // (J, coeficientes quitados, bits)
+            let mut best = (dist + lambda * bits, 0usize, bits);
+            let mut saved = [(0usize, 0i32); 4];
+            let mut nrem = 0;
+            for j in 0..(nt - 1).min(4) {
+                let i = tail[j];
                 let p = sc[i].1 as usize * n + sc[i].0 as usize;
+                // Solo compensa recortar coeficientes ±1 del final del barrido.
+                if levels[p].abs() > 1 {
+                    break;
+                }
+                // Quita el coeficiente no nulo (y con él todo lo posterior).
                 let c = coefs[p].abs();
-                let l = trial[p].unsigned_abs() as f32;
+                let l = levels[p].unsigned_abs() as f32;
                 d_trial += c * c - (c - l * qs[p]).powi(2);
-                trial[p] = 0;
-                let b = self.block_cost(pc, w, h, cbf_ctx, &trial);
-                let j = d_trial + lambda * b;
-                if j < best.0 {
-                    best = (j, k, b);
+                saved[nrem] = (i, levels[p]);
+                nrem += 1;
+                levels[p] = 0;
+                let ne = tail[j + 1] + 1;
+                self.refresh_terms(pc, w, h, levels, &mut terms, i, ne);
+                // El nuevo último coeficiente pierde el coste de significancia.
+                terms[ne - 1] = self.term(pc, w, h, levels, ne - 1, ne);
+                let head = self.block_head(pc, w, h, cbf_ctx, ne);
+                let b = self.sum_terms(head, w, h, levels, &terms, ne);
+                let jv = d_trial + lambda * b;
+                if jv < best.0 {
+                    best = (jv, nrem, b);
                 }
             }
-            if best.1 < nz_pos.len() {
+            // Devuelve los coeficientes quitados de más y deja `terms` al día.
+            let keep = best.1;
+            if nrem > keep {
+                for &(i, v) in &saved[keep..nrem] {
+                    levels[sc[i].1 as usize * n + sc[i].0 as usize] = v;
+                }
+                let ne = if keep == 0 { eob } else { tail[keep] + 1 };
+                for &(i, _) in &saved[keep..nrem] {
+                    self.refresh_terms(pc, w, h, levels, &mut terms, i, ne);
+                }
+                // El último de la prueba más profunda deja de serlo.
+                terms[tail[nrem]] = self.term(pc, w, h, levels, tail[nrem], ne);
+            }
+            if keep > 0 {
                 let mut d = dist;
-                for &i in &nz_pos[best.1..] {
+                // En orden creciente del barrido (como siempre).
+                for &(i, _) in saved[..keep].iter().rev() {
                     let p = sc[i].1 as usize * n + sc[i].0 as usize;
                     let c = coefs[p].abs();
-                    let l = levels[p].unsigned_abs() as f32;
-                    d += c * c - (c - l * qs[p]).powi(2);
-                    levels[p] = 0;
+                    d += c * c - (c - qs[p]).powi(2);
                 }
                 dist = d;
+                eob = tail[keep] + 1;
                 // Es el mismo bloque que el de la prueba ganadora.
                 bits = best.2;
             }
         }
         if self.sdh {
-            let (d, b) = self.sdh_fix(pc, w, h, cbf_ctx, coefs, qs, lambda, levels);
+            let (d, b) = self.sdh_fix(pc, w, h, cbf_ctx, coefs, qs, lambda, levels, &mut terms, eob);
             dist += d;
             if let Some(b) = b {
                 bits = b;
@@ -761,17 +880,12 @@ impl CoefCtx {
         qs: &[f32],
         lambda: f32,
         levels: &mut [i32],
+        terms: &mut [f32],
+        eob: usize,
     ) -> (f32, Option<f32>) {
         let n = w;
         let sz = size_index(w.max(h));
         let sc = scan(w, h);
-        let Some(eob) = sc
-            .iter()
-            .rposition(|&(x, y)| levels[y as usize * n + x as usize] != 0)
-            .map(|i| i + 1)
-        else {
-            return (0.0, None);
-        };
         let mut dd = 0f32;
         let mut changed = false;
         for g in 0..eob.div_ceil(SDH_GROUP) {
@@ -785,7 +899,7 @@ impl CoefCtx {
                 continue;
             }
             // (coste, posición, nuevo nivel con signo, aumento de distorsión)
-            let mut best = (f32::INFINITY, 0usize, 0i32, 0f32);
+            let mut best = (f32::INFINITY, 0usize, 0i32, 0f32, 0usize);
             for (i, &(x, y)) in sc.iter().enumerate().take(hi).skip(first) {
                 let (x, y) = (x as usize, y as usize);
                 let p = y * n + x;
@@ -795,7 +909,7 @@ impl CoefCtx {
                 let d0 = (ca - l as f32 * q).powi(2);
                 let mc = mag_class(levels, w, h, x, y);
                 let is_last = i == eob - 1;
-                let r0 = self.level_cost(pc, sz, levels, w, h, x, y, mc, l, is_last);
+                let r0 = terms[i];
                 let mut cands = [u32::MAX; 2];
                 cands[0] = l + 1;
                 // Bajar a 0 cambiaría el primero, el último o el final del bloque.
@@ -817,17 +931,21 @@ impl CoefCtx {
                         } else {
                             1
                         };
-                        best = (j, p, s * nl as i32, d1 - d0);
+                        best = (j, p, s * nl as i32, d1 - d0, i);
                     }
                 }
             }
             levels[best.1] = best.2;
+            self.refresh_terms(pc, w, h, levels, terms, best.4, eob);
             dd += best.3;
             changed = true;
         }
         if !changed {
             return (0.0, None);
         }
-        (dd, Some(self.block_cost(pc, w, h, cbf_ctx, levels)))
+        let head = self.block_head(pc, w, h, cbf_ctx, eob);
+        let b = self.sum_terms(head, w, h, levels, terms, eob);
+        debug_assert_eq!(b, self.block_cost(pc, w, h, cbf_ctx, levels));
+        (dd, Some(b))
     }
 }
