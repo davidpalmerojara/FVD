@@ -16,34 +16,80 @@
 
 use crate::dct::size_index;
 use crate::rc::{Coder, Model, UintCtx, Visit};
-use std::sync::OnceLock;
 
 const NF: usize = 5; // clases de frecuencia
 const NM: usize = 6; // clases de magnitud de vecinos
 const NPC: usize = 2; // luma / croma
 const NSZ: usize = 5;
 
-/// Orden de barrido diagonal de un bloque `w × h` (lados de 4 a 64).
-pub fn scan(w: usize, h: usize) -> &'static [(u8, u8)] {
-    static S: OnceLock<Vec<Vec<(u8, u8)>>> = OnceLock::new();
-    let all = S.get_or_init(|| {
-        let mut out = Vec::new();
-        for &h in &crate::dct::SIZES {
-            for &w in &crate::dct::SIZES {
-                let mut v = Vec::with_capacity(w * h);
-                for d in 0..w + h - 1 {
-                    for y in 0..h {
-                        if d >= y && d - y < w {
-                            v.push(((d - y) as u8, y as u8));
-                        }
-                    }
+/// Suma de `w·h` de todos los tamaños (lados 4 a 64), ordenados por alto y ancho.
+const SCAN_TOTAL: usize = 124 * 124;
+
+/// Desplazamiento en las tablas de barrido del bloque de índices de tamaño
+/// (alto, ancho); el último valor es el total.
+const fn scan_offsets() -> [usize; 26] {
+    let mut offs = [0usize; 26];
+    let mut k = 0;
+    while k < 25 {
+        let (h, w) = (4usize << (k / 5), 4usize << (k % 5));
+        offs[k + 1] = offs[k] + w * h;
+        k += 1;
+    }
+    offs
+}
+
+const SCAN_OFFS: [usize; 26] = scan_offsets();
+
+/// Todos los barridos diagonales concatenados (tiempo de compilación).
+const fn build_scan() -> [(u8, u8); SCAN_TOTAL] {
+    let mut out = [(0u8, 0u8); SCAN_TOTAL];
+    let mut k = 0;
+    while k < 25 {
+        let (h, w) = (4usize << (k / 5), 4usize << (k % 5));
+        let mut n = SCAN_OFFS[k];
+        let mut d = 0;
+        while d < w + h - 1 {
+            let mut y = 0;
+            while y < h {
+                if d >= y && d - y < w {
+                    out[n] = ((d - y) as u8, y as u8);
+                    n += 1;
                 }
-                out.push(v);
+                y += 1;
             }
+            d += 1;
         }
-        out
-    });
-    &all[size_index(h) * 5 + size_index(w)]
+        k += 1;
+    }
+    out
+}
+
+/// Índice en el barrido de cada posición (orden fila), en el mismo formato.
+const fn build_scan_index(sc: &[(u8, u8); SCAN_TOTAL]) -> [u16; SCAN_TOTAL] {
+    let mut out = [0u16; SCAN_TOTAL];
+    let mut k = 0;
+    while k < 25 {
+        let w = 4usize << (k % 5);
+        let (lo, hi) = (SCAN_OFFS[k], SCAN_OFFS[k + 1]);
+        let mut i = lo;
+        while i < hi {
+            let (x, y) = sc[i];
+            out[lo + y as usize * w + x as usize] = (i - lo) as u16;
+            i += 1;
+        }
+        k += 1;
+    }
+    out
+}
+
+static SCAN: [(u8, u8); SCAN_TOTAL] = build_scan();
+static SCAN_INDEX: [u16; SCAN_TOTAL] = build_scan_index(&SCAN);
+
+/// Orden de barrido diagonal de un bloque `w × h` (lados de 4 a 64).
+#[inline]
+pub fn scan(w: usize, h: usize) -> &'static [(u8, u8)] {
+    let k = size_index(h) * 5 + size_index(w);
+    &SCAN[SCAN_OFFS[k]..SCAN_OFFS[k + 1]]
 }
 
 #[inline]
@@ -64,6 +110,11 @@ fn mag_class(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> usize {
     const LUT: [u8; 16] = [0, 1, 2, 3, 3, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5];
     let i = y * w + x;
     let c = |v: i32| v.unsigned_abs().min(3) as usize;
+    if x + 2 < w && y + 2 < h {
+        // Interior: los cinco vecinos existen.
+        let (r0, r1, r2) = (&levels[i..i + 3], &levels[i + w..i + w + 2], levels[i + 2 * w]);
+        return LUT[c(r0[1]) + c(r0[2]) + c(r1[0]) + c(r1[1]) + c(r2)] as usize;
+    }
     let (xr, xr2, yd, yd2) = (x + 1 < w, x + 2 < w, y + 1 < h, y + 2 < h);
     let mut s = 0;
     if xr {
@@ -135,22 +186,10 @@ fn group_min(g: u32) -> u32 {
 }
 
 /// Índice en el barrido de cada posición (orden fila) de un bloque `w × h`.
+#[inline]
 fn scan_index(w: usize, h: usize) -> &'static [u16] {
-    static S: OnceLock<Vec<Vec<u16>>> = OnceLock::new();
-    let all = S.get_or_init(|| {
-        let mut out = Vec::new();
-        for &h in &crate::dct::SIZES {
-            for &w in &crate::dct::SIZES {
-                let mut v = vec![0u16; w * h];
-                for (i, &(x, y)) in scan(w, h).iter().enumerate() {
-                    v[y as usize * w + x as usize] = i as u16;
-                }
-                out.push(v);
-            }
-        }
-        out
-    });
-    &all[size_index(h) * 5 + size_index(w)]
+    let k = size_index(h) * 5 + size_index(w);
+    &SCAN_INDEX[SCAN_OFFS[k]..SCAN_OFFS[k + 1]]
 }
 
 /// Suma sin tope de las magnitudes de la plantilla de vecinos.
@@ -158,6 +197,10 @@ fn scan_index(w: usize, h: usize) -> &'static [u16] {
 fn tmpl_sum(levels: &[i32], w: usize, h: usize, x: usize, y: usize) -> u32 {
     let i = y * w + x;
     let a = |v: i32| v.unsigned_abs();
+    if x + 2 < w && y + 2 < h {
+        let (r0, r1, r2) = (&levels[i..i + 3], &levels[i + w..i + w + 2], levels[i + 2 * w]);
+        return a(r0[1]) + a(r0[2]) + a(r1[0]) + a(r1[1]) + a(r2);
+    }
     let (xr, xr2, yd, yd2) = (x + 1 < w, x + 2 < w, y + 1 < h, y + 2 < h);
     let mut s = 0;
     if xr {
@@ -533,15 +576,32 @@ impl CoefCtx {
     fn term(&self, pc: usize, w: usize, h: usize, levels: &[i32], i: usize, eob: usize) -> f32 {
         let sz = size_index(w.max(h));
         let (x, y) = scan(w, h)[i];
-        let (x, y) = (x as usize, y as usize);
+        self.term_xy(pc, sz, w, h, levels, x as usize, y as usize, i == eob - 1)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn term_xy(
+        &self,
+        pc: usize,
+        sz: usize,
+        w: usize,
+        h: usize,
+        levels: &[i32],
+        x: usize,
+        y: usize,
+        is_last: bool,
+    ) -> f32 {
         let a = levels[y * w + x].unsigned_abs();
         let mc = mag_class(levels, w, h, x, y);
-        self.level_cost(pc, sz, levels, w, h, x, y, mc, a, i == eob - 1)
+        self.level_cost(pc, sz, levels, w, h, x, y, mc, a, is_last)
     }
 
     /// Recalcula los términos en `terms` afectados por un cambio del nivel
-    /// de la posición `i` del barrido: ella misma y los vecinos de la
-    /// plantilla que la tienen en su contexto (todos con índice menor).
+    /// de la posición `i` del barrido: los vecinos de la plantilla que la
+    /// tienen en su contexto (todos con índice menor) y, con `own`, ella
+    /// misma.
+    #[allow(clippy::too_many_arguments)]
     fn refresh_terms(
         &self,
         pc: usize,
@@ -551,11 +611,14 @@ impl CoefCtx {
         terms: &mut [f32],
         i: usize,
         eob: usize,
+        own: bool,
     ) {
-        let (x, y) = scan(w, h)[i];
-        let (x, y) = (x as usize, y as usize);
-        let si = scan_index(w, h);
-        terms[i] = self.term(pc, w, h, levels, i, eob);
+        let sz = size_index(w.max(h));
+        let (sc, si) = (scan(w, h), scan_index(w, h));
+        let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
+        if own {
+            terms[i] = self.term_xy(pc, sz, w, h, levels, x, y, i == eob - 1);
+        }
         let nb = [
             (x >= 1, x.wrapping_sub(1), y),
             (x >= 2, x.wrapping_sub(2), y),
@@ -567,7 +630,7 @@ impl CoefCtx {
             if ok {
                 let j = si[ny * w + nx] as usize;
                 if j < eob {
-                    terms[j] = self.term(pc, w, h, levels, j, eob);
+                    terms[j] = self.term_xy(pc, sz, w, h, levels, nx, ny, j == eob - 1);
                 }
             }
         }
@@ -688,6 +751,16 @@ impl CoefCtx {
             let q = qs[p];
             let l0 = levels[p] as u32;
             let mc = mag_class(levels, w, h, x, y);
+            if l0 == 0 {
+                // Único candidato: el cero (distorsión ca², sin resto ni signo).
+                dist += ca * ca;
+                terms[i] = if seen_nz {
+                    self.sig[cidx(pc, sz, freq_class(x, y), mc)].cost(false)
+                } else {
+                    0.0
+                };
+                continue;
+            }
             let mut best_l = 0u32;
             let mut best_cost = f32::INFINITY;
             let mut best_d = 0.0;
@@ -794,7 +867,7 @@ impl CoefCtx {
                 nrem += 1;
                 levels[p] = 0;
                 let ne = tail[j + 1] + 1;
-                self.refresh_terms(pc, w, h, levels, &mut terms, i, ne);
+                self.refresh_terms(pc, w, h, levels, &mut terms, i, ne, false);
                 // El nuevo último coeficiente pierde el coste de significancia.
                 terms[ne - 1] = self.term(pc, w, h, levels, ne - 1, ne);
                 let head = self.block_head(pc, w, h, cbf_ctx, ne);
@@ -812,7 +885,7 @@ impl CoefCtx {
                 }
                 let ne = if keep == 0 { eob } else { tail[keep] + 1 };
                 for &(i, _) in &saved[keep..nrem] {
-                    self.refresh_terms(pc, w, h, levels, &mut terms, i, ne);
+                    self.refresh_terms(pc, w, h, levels, &mut terms, i, ne, true);
                 }
                 // El último de la prueba más profunda deja de serlo.
                 terms[tail[nrem]] = self.term(pc, w, h, levels, tail[nrem], ne);
@@ -936,7 +1009,7 @@ impl CoefCtx {
                 }
             }
             levels[best.1] = best.2;
-            self.refresh_terms(pc, w, h, levels, terms, best.4, eob);
+            self.refresh_terms(pc, w, h, levels, terms, best.4, eob, true);
             dd += best.3;
             changed = true;
         }

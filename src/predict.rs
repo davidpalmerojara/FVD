@@ -467,11 +467,13 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
         MODE_PLANAR => {
             let tr = r.top[w + 1];
             let bl = r.left[h + 1];
-            for y in 0..h {
-                for x in 0..w {
-                    let pv = ((h - 1 - y) as i32 * r.top[x + 1] + (y + 1) as i32 * bl) << lw;
-                    let ph = ((w - 1 - x) as i32 * r.left[y + 1] + (x + 1) as i32 * tr) << lh;
-                    out[y * w + x] = (pv + ph + (w * h) as i32) >> (lw + lh + 1);
+            let top = &r.top[1..=w];
+            for (y, row) in out[..w * h].chunks_exact_mut(w).enumerate() {
+                let (hy, by, ly) = ((h - 1 - y) as i32, (y + 1) as i32 * bl, r.left[y + 1]);
+                for (x, (o, &t)) in row.iter_mut().zip(top).enumerate() {
+                    let pv = (hy * t + by) << lw;
+                    let ph = ((w - 1 - x) as i32 * ly + (x + 1) as i32 * tr) << lh;
+                    *o = (pv + ph + (w * h) as i32) >> (lw + lh + 1);
                 }
             }
         }
@@ -496,9 +498,7 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
             // buffer con índice desplazado: refb[off + k] = ref[k], k en [-len_side, len_main+len_side+1]
             let off = len_side + 1;
             let mut refb = [0i32; 64 * 3 + 5];
-            for k in 0..=len_main + len_side + 1 {
-                refb[off + k] = main[k];
-            }
+            refb[off..=off + len_main + len_side + 1].copy_from_slice(&main[..=len_main + len_side + 1]);
             refb[off + len_main + len_side + 2] = main[len_main + len_side + 1];
             if angle < 0 {
                 let inv = inv_angle(angle);
@@ -519,23 +519,18 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
                     let idx = pos >> 5;
                     let c = FC[(pos & 31) as usize];
                     let b0 = (off as i32 + idx + 1) as usize;
-                    let f = |i: usize| {
-                        let b = b0 + i;
-                        ((c[0] * refb[b - 1]
-                            + c[1] * refb[b]
-                            + c[2] * refb[b + 1]
-                            + c[3] * refb[b + 2]
-                            + 32)
-                            >> 6)
+                    let f = |p: &[i32]| {
+                        ((c[0] * p[0] + c[1] * p[1] + c[2] * p[2] + c[3] * p[3] + 32) >> 6)
                             .clamp(0, 255)
                     };
+                    let src = refb[b0 - 1..b0 + len_main + 2].windows(4);
                     if vertical {
-                        for (i, o) in out[j * w..j * w + len_main].iter_mut().enumerate() {
-                            *o = f(i);
+                        for (o, p) in out[j * w..j * w + len_main].iter_mut().zip(src) {
+                            *o = f(p);
                         }
                     } else {
-                        for i in 0..len_main {
-                            out[i * w + j] = f(i);
+                        for (o, p) in out[j..].iter_mut().step_by(w).zip(src) {
+                            *o = f(p);
                         }
                     }
                 }
@@ -546,14 +541,15 @@ fn predict_base(r: &Refs, mode: u8, w: usize, h: usize, cubic: bool, out: &mut [
                 let idx = pos >> 5;
                 let f = pos & 31;
                 let b0 = (off as i32 + idx + 1) as usize;
-                let v = |i: usize| ((32 - f) * refb[b0 + i] + f * refb[b0 + i + 1] + 16) >> 5;
+                let v = |p: &[i32]| ((32 - f) * p[0] + f * p[1] + 16) >> 5;
+                let src = refb[b0..b0 + len_main + 1].windows(2);
                 if vertical {
-                    for (i, o) in out[j * w..j * w + len_main].iter_mut().enumerate() {
-                        *o = v(i);
+                    for (o, p) in out[j * w..j * w + len_main].iter_mut().zip(src) {
+                        *o = v(p);
                     }
                 } else {
-                    for i in 0..len_main {
-                        out[i * w + j] = v(i);
+                    for (o, p) in out[j..].iter_mut().step_by(w).zip(src) {
+                        *o = v(p);
                     }
                 }
             }

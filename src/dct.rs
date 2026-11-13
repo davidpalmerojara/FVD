@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 pub const SIZES: [usize; 5] = [4, 8, 16, 32, 64];
 
+#[inline]
 pub fn size_index(n: usize) -> usize {
     match n {
         4 => 0,

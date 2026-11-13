@@ -11,7 +11,6 @@
 //! (de)codificado: el codificador devuelve lo que recibió y el decodificador
 //! ignora el argumento y devuelve lo leído.
 
-use std::sync::OnceLock;
 
 const PROB_BITS: u32 = 16;
 const PROB_ONE: u32 = 1 << PROB_BITS;
@@ -124,16 +123,44 @@ impl Model {
     }
 }
 
+/// -log2(p) en `f64`, evaluable en tiempo de compilación: normaliza a [1, 2)
+/// (exacto) y usa ln(m) = 2·atanh((m-1)/(m+1)). El error (~1e-16) no cambia el
+/// redondeo a `f32` (lo comprueba la prueba `cost_table_exacta`).
+const fn neg_log2(p: f64) -> f64 {
+    const LN2: f64 = core::f64::consts::LN_2;
+    let (mut m, mut e) = (p, 0.0);
+    while m < 1.0 {
+        m *= 2.0;
+        e -= 1.0;
+    }
+    let z = (m - 1.0) / (m + 1.0);
+    let z2 = z * z;
+    let (mut term, mut sum, mut k) = (z, 0.0, 1.0);
+    while k < 60.0 {
+        sum += term / k;
+        term *= z2;
+        k += 2.0;
+    }
+    -(e + 2.0 * sum / LN2)
+}
+
+#[allow(long_running_const_eval)]
+const fn build_cost_table() -> [f32; 4096] {
+    let mut t = [0f32; 4096];
+    let mut i = 0;
+    while i < 4096 {
+        t[i] = neg_log2((i as f64 + 0.5) / 4096.0) as f32;
+        i += 1;
+    }
+    t
+}
+
+/// Coste en bits de un suceso de probabilidad (i + 0.5)/4096.
+static COST_TABLE: [f32; 4096] = build_cost_table();
+
+#[inline(always)]
 fn cost_table() -> &'static [f32; 4096] {
-    static T: OnceLock<[f32; 4096]> = OnceLock::new();
-    T.get_or_init(|| {
-        let mut t = [0f32; 4096];
-        for (i, v) in t.iter_mut().enumerate() {
-            let p = (i as f64 + 0.5) / 4096.0;
-            *v = (-p.log2()) as f32;
-        }
-        t
-    })
+    &COST_TABLE
 }
 
 pub trait Coder {
@@ -451,6 +478,15 @@ impl TreeCtx {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cost_table_exacta() {
+        for (i, &v) in super::COST_TABLE.iter().enumerate() {
+            let p = (i as f64 + 0.5) / 4096.0;
+            assert_eq!(v, (-p.log2()) as f32, "entrada {i}");
+        }
+    }
+
+
     use super::*;
 
     #[test]
