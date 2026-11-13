@@ -4631,9 +4631,18 @@ pub fn encode_animation_recon(
     // Fotograma original de la referencia larga.
     let mut gold_idx = 0;
     let mut whist = WarpHist::default();
-    let gold_dq: Option<f32> = std::env::var("TESELA_GOLD_DQ")
+    // Fotogramas que predicen con movimiento global de la referencia larga
+    // (zooms, giros): se cuantizan aún más gruesos, porque su error no se
+    // encadena (el siguiente vuelve a predecir de la referencia larga) y lo
+    // que más se ve es el detalle que ya trae ella. Zooms −3 a −8 %; paneos
+    // y objetos, igual. Más grueso solo compensa a calidad baja.
+    let gold_dq: f32 = std::env::var("TESELA_GOLD_DQ")
         .ok()
-        .and_then(|v| v.parse().ok());
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30.0);
+    // ¿El fotograma anterior predijo así? El siguiente suele hacer lo mismo:
+    // se codifica directamente con su calidad y solo se repite si no.
+    let mut prev_gw = false;
     // ¿Contenido fotográfico? Se decide una vez con el primer fotograma
     // completo (los rectángulos que cambian pueden ser muy pequeños).
     let photo = !p
@@ -4767,26 +4776,26 @@ pub fn encode_animation_recon(
                         Some(af),
                     )
                 };
-                let mut e = enc(&mut st, &pf, tdq.clone());
+                let pg = Params {
+                    quality: (sub.quality - gold_dq).max(1.0),
+                    ..pf.clone()
+                };
+                let guess = prev_gw && snapshot.is_some();
+                let mut e = enc(&mut st, if guess { &pg } else { &pf }, tdq.clone());
+                let gw = |st: &AnimState| {
+                    !st.last_gold && st.last_warp.is_some_and(|w| w.gold && w.p != [0; 6])
+                };
                 if st.last_gold && i > 0 && boost_gold && i - gold_idx >= 8 {
                     if let Some(snap) = snapshot {
                         st = snap;
                         e = enc(&mut st, &sub, tdq);
                     }
-                } else if let Some(gdq) = gold_dq.filter(|_| {
-                    !st.last_gold && st.last_warp.is_some_and(|w| w.gold && w.p != [0; 6])
-                }) {
-                    // Predice con movimiento global de la referencia larga: su
-                    // error no se encadena al siguiente fotograma.
-                    if let Some(snap) = snapshot {
-                        st = snap;
-                        let pg = Params {
-                            quality: (sub.quality - gdq).max(1.0),
-                            ..pf.clone()
-                        };
-                        e = enc(&mut st, &pg, tdq);
-                    }
+                } else if snapshot.is_some() && gw(&st) != guess {
+                    st = snapshot.unwrap();
+                    let q = if guess { &pf } else { &pg };
+                    e = enc(&mut st, q, tdq);
                 }
+                prev_gw = gw(&st);
                 recons.push(st.canvas.clone());
                 if st.last_gold {
                     gold_idx = i;
