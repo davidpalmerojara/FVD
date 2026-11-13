@@ -1,47 +1,62 @@
-:root {
-  --bg: #f6f5f2;
-  --surface: #ffffff;
-  --surface-2: #efede8;
-  --text: #1d1c1a;
-  --muted: #6b6862;
-  --border: #dedad2;
-  --accent: #c2410c;
-  --accent-soft: #fde7da;
-  --good: #15803d;
-  --bad: #b91c1c;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 16px rgb(0 0 0 / 0.04);
-  --radius: 12px;
-  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  /* colores por códec */
-  --c-tesela: #c2410c;
-  --c-webp: #2563eb;
-  --c-avif: #16a34a;
-  --c-jxl: #7c3aed;
-  --c-jpeg: #78716c;
-  color-scheme: light;
+/* Sistema visual compartido con davidpalmero.dev (portafolio, Mara Vey,
+   Paxl, Picklet): fondo casi negro, Manrope para el texto, DM Mono en
+   mayúsculas para etiquetas, navegación y botones, y el melocotón del
+   portafolio en titulares y botones. Cada proyecto lleva además su acento,
+   usado con mesura: el de Tesela es lila (logo, mosaico, mejores resultados). */
+
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('fonts/manrope.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'DM Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/dm-mono-regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'DM Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/dm-mono-medium.woff2') format('woff2');
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --bg: #141312;
-    --surface: #1d1c1a;
-    --surface-2: #26241f;
-    --text: #f1efe9;
-    --muted: #a19d94;
-    --border: #36332d;
-    --accent: #fb923c;
-    --accent-soft: #3b2415;
-    --good: #4ade80;
-    --bad: #f87171;
-    --shadow: none;
-    --c-tesela: #fb923c;
-    --c-webp: #60a5fa;
-    --c-avif: #4ade80;
-    --c-jxl: #a78bfa;
-    --c-jpeg: #a8a29e;
-    color-scheme: dark;
-  }
+:root {
+  --bg: #09090a;
+  --surface: #141416;
+  --surface-2: #111113;
+  --text: #f4f2ec;
+  --muted: rgba(244, 242, 236, 0.66);
+  --faint: rgba(244, 242, 236, 0.5);
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --ink: #121213;
+  /* Melocotón del portafolio: titulares, botones, enlaces. */
+  --accent: #ffc2a9;
+  --accent-strong: #ff7a4d;
+  --accent-soft: rgba(255, 194, 169, 0.1);
+  /* Acento de Tesela. */
+  --tesela: #c4b5fd;
+  --tesela-line: rgba(196, 181, 253, 0.34);
+  --tesela-soft: rgba(196, 181, 253, 0.1);
+  --good: #8fe08e;
+  --bad: #f87171;
+  --shadow: none;
+  --radius: 18px;
+  --mono: 'DM Mono', ui-monospace, Consolas, monospace;
+  --sans: 'Manrope', 'Segoe UI', Arial, sans-serif;
+  /* colores por códec */
+  --c-tesela: #c4b5fd;
+  --c-webp: #60a5fa;
+  --c-avif: #4ade80;
+  --c-jxl: #fbbf24;
+  --c-jpeg: #a8a29e;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -50,9 +65,13 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.55 var(--sans);
+  font: 15px/1.6 var(--sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+::selection { color: var(--ink); background: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+h1, h2, h3 { letter-spacing: -0.03em; }
 
 a { color: var(--accent); }
 code, pre { font-family: var(--mono); font-size: 0.88em; }
@@ -67,18 +86,30 @@ pre {
 .wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
 
 header.top {
+  position: sticky;
+  top: 0;
+  z-index: 50;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: rgba(9, 9, 10, 0.92);
+  backdrop-filter: blur(10px);
 }
 header.top .wrap { display: flex; align-items: center; gap: 14px; padding-top: 14px; padding-bottom: 14px; flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -0.01em; text-decoration: none; color: var(--text); }
 .logo { width: 26px; height: 26px; display: grid; grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; }
-.logo i { background: var(--accent); border-radius: 3px; }
+.logo i { background: var(--tesela); border-radius: 3px; }
+/* Marca del portafolio: vuelve a davidpalmero.dev. */
+.dp {
+  display: grid; place-items: center; width: 30px; height: 30px; flex: none;
+  color: var(--ink); background: var(--accent); border-radius: 50%;
+  font: 500 10.5px var(--mono); text-decoration: none;
+}
+.dp:hover { background: #ffd5c3; }
+.dp + .brand { padding-left: 12px; border-left: 1px solid var(--border); }
 .logo i:first-child { grid-row: span 2; }
 .logo i:nth-child(3) { opacity: 0.55; }
-nav.links { margin-left: auto; display: flex; gap: 16px; font-size: 14px; }
-nav.links a { color: var(--muted); text-decoration: none; }
-nav.links a[aria-current='page'] { color: var(--text); font-weight: 600; }
+nav.links { margin-left: auto; display: flex; gap: 2px; font: 11px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+nav.links a { color: var(--muted); text-decoration: none; padding: 7px 11px; border-radius: 999px; }
+nav.links a[aria-current='page'] { color: var(--text); background: rgba(255, 255, 255, 0.07); }
 
 .card {
   background: var(--surface);
@@ -99,7 +130,7 @@ button, select, input[type='number'] {
   padding: 6px 10px;
 }
 button { cursor: pointer; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--ink); font-weight: 600; }
 button:disabled { opacity: 0.5; cursor: default; }
 input[type='range'] { accent-color: var(--accent); width: 100%; }
 input[type='checkbox'] { accent-color: var(--accent); }
@@ -112,15 +143,18 @@ nav.links a.ext::after { content: ' ↗'; font-size: 0.85em; }
 nav.links a:hover { color: var(--text); }
 
 .btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  text-decoration: none; padding: 10px 18px; border-radius: 10px; font-weight: 600;
-  border: 1px solid var(--border); color: var(--text); background: var(--surface);
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 48px; padding: 0 22px; border-radius: 999px; text-decoration: none;
+  font: 500 11px var(--mono); letter-spacing: 0.07em; text-transform: uppercase;
+  border: 1px solid var(--border-strong); color: var(--text); background: transparent;
+  transition: transform 0.2s, background 0.2s, border-color 0.2s;
 }
-.btn:hover { border-color: var(--muted); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { filter: brightness(1.08); }
+.btn:hover { transform: translateY(-2px); background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.36); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ink); }
+.btn.primary:hover { background: #ffd5c3; }
+@media (prefers-reduced-motion: reduce) { .btn, .btn:hover { transition: none; transform: none; } }
 
-.eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+.eyebrow { font: 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 0 0 12px; }
 .section { padding: 56px 0 0; }
 .section h2 { font-size: 28px; letter-spacing: -0.02em; line-height: 1.2; margin: 0 0 10px; }
 .section .lead { color: var(--muted); max-width: 720px; margin: 0 0 24px; font-size: 16.5px; }
@@ -130,24 +164,26 @@ nav.links a:hover { color: var(--text); }
 .feature { padding: 20px 22px; }
 .feature h3 { margin: 0 0 6px; font-size: 16px; }
 .feature p { margin: 0; color: var(--muted); font-size: 14.5px; }
-.feature .ico { width: 34px; height: 34px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; margin-bottom: 12px; }
+.feature .ico { width: 34px; height: 34px; border-radius: 9px; background: var(--tesela-soft); color: var(--tesela); display: grid; place-items: center; margin-bottom: 12px; }
 .feature .ico svg { width: 18px; height: 18px; }
 
 .tabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .tabs button { border: 0; background: transparent; padding: 6px 14px; border-radius: 7px; color: var(--muted); font-weight: 600; }
-.tabs button[aria-selected='true'] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.tabs button[aria-selected='true'] { background: rgba(255, 255, 255, 0.08); color: var(--text); }
 
 table.data { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 table.data th, table.data td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
 table.data th:first-child, table.data td:first-child { text-align: left; white-space: normal; }
-table.data th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+table.data th { font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
 table.data tr:last-child td { border-bottom: 0; }
 .tw { overflow-x: auto; }
-.best { color: var(--accent); font-weight: 700; }
+.best { color: var(--tesela); font-weight: 700; }
 
 footer.site { margin-top: 72px; border-top: 1px solid var(--border); background: var(--surface); }
 footer.site .wrap { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 24px; padding-top: 36px; padding-bottom: 40px; font-size: 14px; }
-footer.site h4 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+footer.site h4 { margin: 0 0 10px; font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+footer.site .by { color: var(--faint); font: 10.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+footer.site .by a { display: inline; color: var(--accent); }
 footer.site a { display: block; color: var(--text); text-decoration: none; margin: 0 0 6px; }
 footer.site a:hover { color: var(--accent); }
 footer.site p { color: var(--muted); margin: 8px 0 0; max-width: 320px; }

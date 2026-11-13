@@ -14,10 +14,11 @@
     .hero { padding: 64px 0 8px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 48px; align-items: center; }
     .hero h1 { font-size: 50px; line-height: 1.04; letter-spacing: -0.035em; margin: 0 0 18px; }
     .hero h1 em { font-style: normal; color: var(--accent); }
-    .hero p { font-size: 18.5px; color: var(--muted); margin: 0 0 26px; max-width: 580px; }
+    .hero p.eyebrow { font-size: 11px; margin: 0 0 14px; color: var(--accent); }
+    .hero p:not(.eyebrow) { font-size: 18.5px; color: var(--muted); margin: 0 0 26px; max-width: 580px; }
     .cta { display: flex; gap: 12px; flex-wrap: wrap; }
     .mosaic { display: grid; grid-template-columns: repeat(8, 1fr); grid-auto-rows: 1fr; gap: 4px; aspect-ratio: 1; max-width: 420px; justify-self: end; width: 100%; }
-    .mosaic i { border-radius: 4px; background: var(--accent); transition: opacity 0.6s; }
+    .mosaic i { border-radius: 4px; background: var(--tesela); transition: opacity 0.6s; }
     .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 40px; }
     .stat { padding: 18px 20px; }
     .stat b { display: block; font-size: 34px; letter-spacing: -0.03em; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.1; }
@@ -31,8 +32,8 @@
     .gal.zoom .tile img { width: 200%; height: 200%; image-rendering: pixelated; transform: translate(-25%, -25%); }
     .tile figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 10px; font-size: 14px; }
     .tile figcaption b { font-size: 15px; }
-    .tile.us { border-color: var(--accent); }
-    .tile.us figcaption b { color: var(--accent); }
+    .tile.us { border-color: var(--tesela-line); }
+    .tile.us figcaption b { color: var(--tesela); }
     .meter { height: 6px; border-radius: 3px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
     .meter i { display: block; height: 100%; border-radius: 3px; }
     .gal-note { font-size: 13px; margin-top: 12px; }
@@ -63,6 +64,7 @@
 <body>
   <header class="top">
     <div class="wrap">
+      <a class="dp" href="https://davidpalmero.dev/" title="David Palmero, portafolio" aria-label="David Palmero, portafolio">DP</a>
       <a class="brand" href="./index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
       <nav class="links">
         <a href="./index.html" aria-current="page">Visión general</a>
@@ -91,10 +93,10 @@
     </section>
 
     <div class="stats">
-      <div class="card stat"><b>−30&nbsp;%</b><span>bytes frente a WebP en fotos a igual calidad (AVIF: −25&nbsp;%)</span></div>
-      <div class="card stat"><b>−60&nbsp;%</b><span>en capturas de pantalla (AVIF: −51&nbsp;%, JPEG XL: −36&nbsp;%)</span></div>
-      <div class="card stat"><b>−62&nbsp;%</b><span>en ilustraciones (AVIF: −54&nbsp;%)</span></div>
-      <div class="card stat"><b>2–5×</b><span>más rápido que AVIF al decodificar fotos</span></div>
+      <div class="card stat"><b>−30&nbsp;%</b><span>bytes frente a WebP en fotos a igual calidad (AVIF: −26&nbsp;%)</span></div>
+      <div class="card stat"><b>−60&nbsp;%</b><span>en capturas de pantalla (AVIF: −54&nbsp;%, JPEG XL: −36&nbsp;%)</span></div>
+      <div class="card stat"><b>−62&nbsp;%</b><span>en ilustraciones (AVIF: −56&nbsp;%)</span></div>
+      <div class="card stat"><b>~3×</b><span>más rápido que AVIF al decodificar fotos</span></div>
     </div>
 
     <section class="section" id="galeria">
@@ -227,7 +229,8 @@
   <footer class="site">
     <div class="wrap">
       <div><a class="brand" href="./index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
-        <p>Formato de imagen experimental escrito en Rust. Código, banco de pruebas y metodología, abiertos.</p></div>
+        <p>Formato de imagen experimental escrito en Rust. Código, banco de pruebas y metodología, abiertos.</p>
+        <p class="by">Un proyecto de <a href="https://davidpalmero.dev/">David Palmero</a></p></div>
       <div><h4>Producto</h4><a href="./compare/index.html">Comparador</a><a href="./demo/index.html">Demo web</a><a href="./demo/img.html">HTML normal</a></div>
       <div><h4>Documentación</h4><a href="./docs/index.html#empezar">Empezar</a><a href="./docs/index.html#web">En la web</a><a href="./docs/index.html#formato">Cómo funciona</a><a href="./docs/index.html#faq">Preguntas</a></div>
       <div><h4>Proyecto</h4><a href="https://github.com/davidpalmerojara/FVD">GitHub</a><a href="https://github.com/davidpalmerojara/FVD/blob/HEAD/docs/especificacion-v1.md">Especificación v1</a><a href="https://github.com/davidpalmerojara/FVD/tree/HEAD/bench/results">Datos del banco</a></div>

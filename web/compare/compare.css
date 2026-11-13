@@ -26,6 +26,7 @@
 .settings h3 { margin: 4px 0 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 14px; }
 .row input[type='number'] { width: 70px; }
+.row select { min-width: 0; max-width: 58%; }
 .hint { font-size: 12.5px; margin: 2px 0 0; }
 details summary { cursor: pointer; font-size: 14px; color: var(--muted); }
 details[open] { display: flex; flex-direction: column; gap: 8px; }
