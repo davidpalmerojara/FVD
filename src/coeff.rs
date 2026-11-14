@@ -92,15 +92,25 @@ pub fn scan(w: usize, h: usize) -> &'static [(u8, u8)] {
     &SCAN[SCAN_OFFS[k]..SCAN_OFFS[k + 1]]
 }
 
-#[inline]
-fn freq_class(x: usize, y: usize) -> usize {
-    match x + y {
-        0 => 0,
-        1..=2 => 1,
-        3..=5 => 2,
-        6..=10 => 3,
-        _ => 4,
+/// Clase de frecuencia por `x + y` (0 a 126).
+const FC_LUT: [u8; 128] = {
+    let mut t = [4u8; 128];
+    let mut s = 0;
+    while s < 11 {
+        t[s] = match s {
+            0 => 0,
+            1..=2 => 1,
+            3..=5 => 2,
+            _ => 3,
+        };
+        s += 1;
     }
+    t
+};
+
+#[inline(always)]
+fn freq_class(x: usize, y: usize) -> usize {
+    FC_LUT[(x + y) & 127] as usize
 }
 
 /// Clase de magnitud de la plantilla de vecinos de mayor frecuencia ya

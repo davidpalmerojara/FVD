@@ -259,12 +259,17 @@ pub fn apply(p: &mut Plane, d: &Decision) {
             // Coeficientes de cada columna de píxeles (los bloques sin filtro
             // llevan ceros: el resultado es el píxel sin cambios).
             let mut coef = [[0i16; BLK]; NC];
+            let mut any = false;
             for (b, &c) in cls.iter().enumerate() {
                 if let Some(f) = d.filters[c as usize] {
+                    any = true;
                     for k in 0..NC {
                         coef[k][b * 4..b * 4 + 4].fill(f[k] as i16);
                     }
                 }
+            }
+            if !any {
+                continue;
             }
             for y in gy * 4..gy * 4 + 4 {
                 let i0 = pad.idx(bx * BLK, y);
