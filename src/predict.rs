@@ -644,3 +644,215 @@ pub fn predict_cclm(
         }
     }
 }
+
+// ------------------------------------------------------------ CCLM de la v2
+
+/// v2: variantes de CCLM (sección 3.5 de la especificación). `_T` y `_L`
+/// ajustan el modelo solo con la fila de arriba o con la columna de la
+/// izquierda, de 2w o 2h muestras (el MDLM de VVC); `MMLM` usa dos modelos
+/// separados por la media de la fuente en los vecinos; `CB` predice el Cr
+/// desde el Cb reconstruido en lugar de la luma, y `YCB` desde los dos.
+pub const MODE_CCLM_T: u8 = 39;
+pub const MODE_CCLM_L: u8 = 40;
+pub const MODE_MMLM: u8 = 41;
+pub const MODE_CCLM_CB: u8 = 42;
+pub const MODE_CCLM_YCB: u8 = 43;
+
+pub fn is_cclm(m: u8) -> bool {
+    m == MODE_CCLM || (MODE_CCLM_T..=MODE_CCLM_YCB).contains(&m)
+}
+
+/// Fuente de la predicción de croma (luma submuestreada o Cb), de `w × h`;
+/// las coordenadas se recortan al plano.
+#[derive(Clone, Copy)]
+pub struct Src<'a> {
+    pub data: &'a [u8],
+    pub w: usize,
+    pub h: usize,
+}
+
+impl Src<'_> {
+    #[inline]
+    fn px(&self, x: usize, y: usize) -> i32 {
+        self.data[y.min(self.h - 1) * self.w + x.min(self.w - 1)] as i32
+    }
+
+    /// Fila `y` del bloque desde `x0`, de `n` muestras.
+    fn row(&self, x0: usize, y: usize, n: usize, out: &mut [i32]) {
+        let r = &self.data[y.min(self.h - 1) * self.w..][..self.w];
+        if x0 + n <= self.w {
+            for (o, &v) in out[..n].iter_mut().zip(&r[x0..x0 + n]) {
+                *o = v as i32;
+            }
+        } else {
+            for (i, o) in out[..n].iter_mut().enumerate() {
+                *o = r[(x0 + i).min(self.w - 1)] as i32;
+            }
+        }
+    }
+}
+
+/// Posiciones vecinas de la croma con las que se ajusta el modelo: `top`
+/// muestras de la fila de arriba y `left` de la columna de la izquierda,
+/// cada tramo hasta la primera que no esté disponible.
+fn lm_neighbors(
+    chroma: &Plane,
+    x0: usize,
+    y0: usize,
+    top: usize,
+    left: usize,
+) -> Vec<(usize, usize)> {
+    let mut v = Vec::with_capacity(top + left);
+    for i in 0..top {
+        if !chroma.is_avail((x0 + i) as isize, y0 as isize - 1) {
+            break;
+        }
+        v.push((x0 + i, y0 - 1));
+    }
+    for i in 0..left {
+        if !chroma.is_avail(x0 as isize - 1, (y0 + i) as isize) {
+            break;
+        }
+        v.push((x0 - 1, y0 + i));
+    }
+    v
+}
+
+/// Mínimos cuadrados en enteros sobre (n, Σs, Σc, Σs², Σs·c): (a, b) en
+/// 1/2^16, con la predicción `(a·s + b + 2^15) >> 16`.
+fn lm_fit(n: i64, sx: i64, sy: i64, sxx: i64, sxy: i64) -> (i32, i32) {
+    if n == 0 {
+        return (0, 128 << 16);
+    }
+    let den = n * sxx - sx * sx;
+    let a = if den > 0 {
+        (((n * sxy - sx * sy) << 16) / den).clamp(-4 << 16, 4 << 16)
+    } else {
+        0
+    };
+    (a as i32, ((sy << 16) - a * sx).div_euclid(n) as i32)
+}
+
+/// Variantes de una sola fuente (`MODE_CCLM_T`, `_L`, `MMLM` y `_CB`).
+#[allow(clippy::too_many_arguments)]
+pub fn predict_lm(
+    chroma: &Plane,
+    src: Src,
+    mode: u8,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i32],
+) {
+    let (top, left) = match mode {
+        MODE_CCLM_T => (2 * w, 0),
+        MODE_CCLM_L => (0, 2 * h),
+        _ => (w, h),
+    };
+    let pairs: Vec<(i64, i64)> = lm_neighbors(chroma, x0, y0, top, left)
+        .into_iter()
+        .map(|(x, y)| (src.px(x, y) as i64, chroma.px(x, y) as i64))
+        .collect();
+    let fit = |sel: &dyn Fn(i64) -> bool| {
+        let mut s = [0i64; 5];
+        for &(l, c) in pairs.iter().filter(|p| sel(p.0)) {
+            s[0] += 1;
+            s[1] += l;
+            s[2] += c;
+            s[3] += l * l;
+            s[4] += l * c;
+        }
+        (lm_fit(s[0], s[1], s[2], s[3], s[4]), s[0])
+    };
+    let (m0, n) = fit(&|_| true);
+    let mut row = [0i32; 64];
+    if mode == MODE_MMLM && n > 0 {
+        let thr = pairs.iter().map(|p| p.0).sum::<i64>().div_euclid(n);
+        let (lo, nlo) = fit(&|l| l <= thr);
+        let (hi, nhi) = fit(&|l| l > thr);
+        let lo = if nlo >= 2 { lo } else { m0 };
+        let hi = if nhi >= 2 { hi } else { m0 };
+        let thr = thr as i32;
+        for y in 0..h {
+            src.row(x0, y0 + y, w, &mut row);
+            for (o, &l) in out[y * w..(y + 1) * w].iter_mut().zip(&row[..w]) {
+                let (a, b) = if l <= thr { lo } else { hi };
+                *o = ((a * l + b + (1 << 15)) >> 16).clamp(0, 255);
+            }
+        }
+        return;
+    }
+    let (a, b) = m0;
+    for y in 0..h {
+        src.row(x0, y0 + y, w, &mut row);
+        for (o, &l) in out[y * w..(y + 1) * w].iter_mut().zip(&row[..w]) {
+            *o = ((a * l + b + (1 << 15)) >> 16).clamp(0, 255);
+        }
+    }
+}
+
+/// `MODE_CCLM_YCB`: Cr = a·Y + b·Cb + c por mínimos cuadrados sobre los
+/// vecinos de arriba (w) y de la izquierda (h).
+#[allow(clippy::too_many_arguments)]
+pub fn predict_ycb(
+    chroma: &Plane,
+    luma: Src,
+    cb: Src,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i32],
+) {
+    // n, ΣY, ΣB, ΣC, ΣY², ΣB², ΣYB, ΣYC, ΣBC
+    let mut s = [0i64; 9];
+    for (x, y) in lm_neighbors(chroma, x0, y0, w, h) {
+        let (a, b, c) = (
+            luma.px(x, y) as i64,
+            cb.px(x, y) as i64,
+            chroma.px(x, y) as i64,
+        );
+        for (k, v) in [1, a, b, c, a * a, b * b, a * b, a * c, b * c]
+            .into_iter()
+            .enumerate()
+        {
+            s[k] += v;
+        }
+    }
+    let n = s[0];
+    let (a, b, c) = if n == 0 {
+        (0, 0, 128 << 16)
+    } else {
+        let cov = |i: usize, j: usize, ij: usize| (n * s[ij] - s[i] * s[j]) as i128;
+        let (syy, sbb, syb) = (cov(1, 1, 4), cov(2, 2, 5), cov(1, 2, 6));
+        let (syc, sbc) = (cov(1, 3, 7), cov(2, 3, 8));
+        let det = syy * sbb - syb * syb;
+        let (a, b) = if det > 0 {
+            (
+                ((syc * sbb - sbc * syb) << 16) / det,
+                ((sbc * syy - syc * syb) << 16) / det,
+            )
+        } else if sbb > 0 {
+            (0, (sbc << 16) / sbb)
+        } else {
+            (0, 0)
+        };
+        let lim = 4i128 << 16;
+        let (a, b) = (a.clamp(-lim, lim) as i64, b.clamp(-lim, lim) as i64);
+        (a, b, ((s[3] << 16) - a * s[1] - b * s[2]).div_euclid(n))
+    };
+    let (a, b, c) = (a as i32, b as i32, c as i32);
+    let (mut ry, mut rb) = ([0i32; 64], [0i32; 64]);
+    for y in 0..h {
+        luma.row(x0, y0 + y, w, &mut ry);
+        cb.row(x0, y0 + y, w, &mut rb);
+        let it = out[y * w..(y + 1) * w]
+            .iter_mut()
+            .zip(&ry[..w])
+            .zip(&rb[..w]);
+        for ((o, &l), &v) in it {
+            *o = ((a * l + b * v + c + (1 << 15)) >> 16).clamp(0, 255);
+        }
+    }
+}

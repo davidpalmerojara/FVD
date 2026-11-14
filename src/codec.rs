@@ -10,8 +10,8 @@ use crate::coeff::CoefCtx;
 use crate::color;
 use crate::dct::{self, size_index};
 use crate::predict::{
-    self, MODE_CCLM, MODE_DC, MODE_PLANAR, MODE_SMOOTH, MODE_SMOOTH_H, MODE_SMOOTH_V, MODE_VER,
-    Plane,
+    self, MODE_CCLM, MODE_CCLM_CB, MODE_DC, MODE_PLANAR, MODE_SMOOTH, MODE_SMOOTH_H, MODE_SMOOTH_V,
+    MODE_VER, Plane,
 };
 use crate::rc::{Coder, CostCounter, Decoder, Encoder, Model, SintCtx, TreeCtx, Visit};
 use crate::restore;
@@ -471,6 +471,8 @@ struct Ctx {
     /// v2: si el modo es planar, ¿es una variante SMOOTH? y cuál.
     smooth: Vec<Model>,
     smooth_k: [[Model; 2]; 2],
+    /// v2: variantes de CCLM (sección 3.5): cuál, en unario truncado.
+    cclm_k: [[Model; 5]; 2],
 }
 
 impl Visit for Ctx {
@@ -503,6 +505,8 @@ impl Visit for Ctx {
         // Coeficientes de la v2 (sección 2.4), los últimos.
         self.coef.visit_v2(f);
         self.coef_ts.visit_v2(f);
+        // --- Variantes de CCLM (v2, sección 3.5) ---
+        self.cclm_k.visit(f);
     }
 }
 
@@ -595,7 +599,25 @@ impl Ctx {
             mv_alt: [Model::new(); 2],
             smooth: vec![Model::new(); 2 * 5],
             smooth_k: [[Model::new(); 2]; 2],
+            cclm_k: [[Model::new(); 5]; 2],
         }
+    }
+}
+
+/// Variantes de CCLM de la v2 en el Cb (`lm` = 1) y el Cr (2), en el orden
+/// de la binarización (detrás del CCLM de la v1).
+fn lm_variants(lm: usize) -> &'static [u8] {
+    use predict::{MODE_CCLM_L, MODE_CCLM_T, MODE_CCLM_YCB, MODE_MMLM};
+    match lm {
+        1 => &[MODE_MMLM, MODE_CCLM_T, MODE_CCLM_L],
+        2 => &[
+            MODE_CCLM_YCB,
+            MODE_CCLM_CB,
+            MODE_MMLM,
+            MODE_CCLM_T,
+            MODE_CCLM_L,
+        ],
+        _ => &[],
     }
 }
 
@@ -625,6 +647,7 @@ fn mpm_list(p: &Plane, x0: usize, y0: usize) -> [u8; 3] {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn code_mode<C: Coder>(
     ctx: &mut Ctx,
     c: &mut C,
@@ -633,10 +656,17 @@ fn code_mode<C: Coder>(
     mpm: [u8; 3],
     mode: u8,
     v2: bool,
+    lm: usize,
 ) -> u8 {
     let sz = size_index(n);
-    if pc == 1 && c.bit(&mut ctx.cclm[sz], mode == MODE_CCLM) {
-        return MODE_CCLM;
+    if pc == 1 && c.bit(&mut ctx.cclm[sz], predict::is_cclm(mode)) {
+        // v2: variante de CCLM, en unario truncado sobre [CCLM, variantes…].
+        let lms = lm_variants(lm);
+        let mut i = 0;
+        while i < lms.len() && c.bit(&mut ctx.cclm_k[lm - 1][i], lms[i..].contains(&mode)) {
+            i += 1;
+        }
+        return if i == 0 { MODE_CCLM } else { lms[i - 1] };
     }
     let m = code_mode_base(
         ctx,
@@ -993,6 +1023,7 @@ fn code_leaf_head<C: Coder>(
     warp: bool,
     inherit: Option<(i32, i32)>,
     v2: bool,
+    lm: usize,
 ) -> (Kind, bool) {
     let n = w.max(h);
     let sz = size_index(n);
@@ -1068,7 +1099,7 @@ fn code_leaf_head<C: Coder>(
             Kind::Intra(m) => m,
             _ => MODE_DC,
         };
-        Kind::Intra(code_mode(ctx, c, pc, n, mpm_list(p, x0, y0), m, v2))
+        Kind::Intra(code_mode(ctx, c, pc, n, mpm_list(p, x0, y0), m, v2, lm))
     });
     let ts = lossless || (screen && n <= 16 && c.bit(&mut ctx.ts[pc * 3 + sz.min(2)], leaf.ts));
     (kind, ts)
@@ -1132,10 +1163,13 @@ fn reconstruct(
     LEAF_SCRATCH.set(sc);
 }
 
+#[derive(Clone)]
 struct LumaRef {
     data: Vec<u8>,
     w: usize,
     h: usize,
+    /// Plano Cb reconstruido (al codificar el Cr), para `MODE_CCLM_CB`.
+    cb: Option<(Vec<u8>, usize, usize)>,
 }
 
 /// Fotogramas predichos: marcas y vectores de la luma ya codificada, para que
@@ -1185,6 +1219,7 @@ impl LumaRef {
                 data: luma.data.clone(),
                 w: luma.w,
                 h: luma.h,
+                cb: None,
             };
         }
         let (w, h) = (luma.w / 2, luma.h / 2);
@@ -1198,7 +1233,12 @@ impl LumaRef {
                 data[y * w + x] = ((s + 2) / 4) as u8;
             }
         }
-        LumaRef { data, w, h }
+        LumaRef {
+            data,
+            w,
+            h,
+            cb: None,
+        }
     }
 }
 
@@ -1217,6 +1257,24 @@ fn predict_mode(
     if mode == MODE_CCLM {
         let l = lref.expect("CCLM solo en croma");
         predict::predict_cclm(p, &l.data, l.w, l.h, x0, y0, w, h, out);
+    } else if predict::is_cclm(mode) {
+        let l = lref.expect("CCLM solo en croma");
+        let luma = predict::Src {
+            data: &l.data,
+            w: l.w,
+            h: l.h,
+        };
+        // Sin el Cb (no debería ocurrir), las variantes del Cr usan la luma.
+        let cb = l.cb.as_ref().map_or(luma, |(d, w, h)| predict::Src {
+            data: d,
+            w: *w,
+            h: *h,
+        });
+        match mode {
+            MODE_CCLM_CB => predict::predict_lm(p, cb, mode, x0, y0, w, h, out),
+            predict::MODE_CCLM_YCB => predict::predict_ycb(p, luma, cb, x0, y0, w, h, out),
+            _ => predict::predict_lm(p, luma, mode, x0, y0, w, h, out),
+        }
     } else {
         predict::predict(refs, mode, w, h, out);
     }
@@ -1786,6 +1844,8 @@ struct EncState {
     v2: bool,
     /// Esfuerzo (1..9): los niveles bajos recortan la búsqueda para ir más rápido.
     effort: u8,
+    /// Variantes de CCLM del plano (v2): 0 ninguna, 1 Cb, 2 Cr.
+    lm: usize,
     /// Fotograma con predicción desde el anterior (cada hoja lleva el bit inter).
     inter: bool,
     /// La tesela lleva movimiento global.
@@ -1869,6 +1929,7 @@ impl EncState {
             lossless: self.lossless,
             v2: self.v2,
             effort: self.effort,
+            lm: self.lm,
             inter: self.inter,
             warp: self.warp,
             lmv: self.lmv.clone(),
@@ -1911,6 +1972,7 @@ impl EncState {
             self.warp,
             self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
             self.v2,
+            self.lm,
         );
         cc.bits
     }
@@ -2142,6 +2204,7 @@ impl EncState {
             todo.extend_from_slice(&mpm);
             if nmodes > predict::NUM_ANGULAR_MODES {
                 todo.push(MODE_CCLM);
+                todo.extend_from_slice(lm_variants(self.lm));
             }
             if self.v2 {
                 todo.extend_from_slice(&[MODE_SMOOTH, MODE_SMOOTH_V, MODE_SMOOTH_H]);
@@ -2177,7 +2240,7 @@ impl EncState {
                         zero_outside(&mut res, w, h, vis);
                     }
                     let mut cc = CostCounter::default();
-                    code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode, self.v2);
+                    code_mode(&mut self.ctx, &mut cc, pc, n, mpm, mode, self.v2, self.lm);
                     let s = dct::satd_rect(&res, w, h);
                     cands.push((s + slam * cc.bits, mode, cc.bits));
                     if two_stage {
@@ -2507,6 +2570,7 @@ impl EncState {
             self.warp,
             self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
             self.v2,
+            self.lm,
         );
         let mut l = leaf.levels.clone();
         let coef = if leaf.ts {
@@ -3413,6 +3477,7 @@ fn encode_tile_ref(
         lossless,
         v2: header.version >= 2,
         effort: p.effort.clamp(1, 9),
+        lm: 0,
         inter: iref.is_some(),
         warp: false,
         lmv: None,
@@ -3462,6 +3527,7 @@ fn encode_tile_ref(
                 }
             }
         }
+        st.lm = if st.v2 { pi } else { 0 };
         let (plane, src) = encode_plane(
             &mut st,
             &mut enc,
@@ -3480,6 +3546,12 @@ fn encode_tile_ref(
             if st.inter {
                 st.lmv = Some(std::sync::Arc::new(LumaMv::new(&plane, sub)));
             }
+        } else if pi == 1
+            && st.v2
+            && let Some(l) = lref.as_mut()
+        {
+            // El Cr de la v2 puede predecirse desde el Cb reconstruido.
+            l.cb = Some((plane.data.clone(), plane.w, plane.h));
         }
         planes.push(plane);
         srcs.push(src);
@@ -3520,6 +3592,7 @@ fn encode_tile_ref(
             lossless: true,
             v2: header.version >= 2,
             effort: st.effort,
+            lm: 0,
             inter: false,
             warp: false,
             lmv: None,
@@ -3641,6 +3714,8 @@ fn finish_planes(
 
 struct DecState {
     ctx: Ctx,
+    /// Variantes de CCLM del plano (v2): 0 ninguna, 1 Cb, 2 Cr.
+    lm: usize,
     qt: QuantTables,
     screen: bool,
     lossless: bool,
@@ -3729,10 +3804,11 @@ impl DecState {
             self.warp,
             self.lmv.as_ref().and_then(|m| m.colocated(x0, y0, w, h)),
             self.v2,
+            self.lm,
         );
         let kind = match kind {
-            Kind::Intra(m) if m == MODE_CCLM && lref.is_none() => Kind::Intra(MODE_DC),
-            Kind::Intra(m) if m > MODE_SMOOTH_H => Kind::Intra(MODE_DC),
+            Kind::Intra(m) if predict::is_cclm(m) && lref.is_none() => Kind::Intra(MODE_DC),
+            Kind::Intra(m) if m > predict::MODE_CCLM_YCB => Kind::Intra(MODE_DC),
             k => k,
         };
         let mut sc = LEAF_SCRATCH.take();
@@ -3989,6 +4065,7 @@ fn decode_tile_ref(
             None => Ctx::trained(base_q, h.tools & TOOL_SCREEN != 0, h.version),
         },
         qt: QuantTables::new(h.qm_luma as f32 / 16.0, h.qm_chroma as f32 / 16.0),
+        lm: 0,
         screen: h.tools & TOOL_SCREEN != 0,
         lossless,
         v2: h.version >= 2,
@@ -4026,6 +4103,7 @@ fn decode_tile_ref(
             }
         }
         st.cur.0 = pi;
+        st.lm = if st.v2 { pi } else { 0 };
         let plane = decode_plane(
             &mut st,
             &mut dec,
@@ -4041,6 +4119,12 @@ fn decode_tile_ref(
             if st.inter {
                 st.lmv = Some(std::sync::Arc::new(LumaMv::new(&plane, sub)));
             }
+        } else if pi == 1
+            && st.v2
+            && let Some(l) = lref.as_mut()
+        {
+            // El Cr de la v2 puede predecirse desde el Cb reconstruido.
+            l.cb = Some((plane.data.clone(), plane.w, plane.h));
         }
         planes.push(plane);
     }
@@ -4063,6 +4147,7 @@ fn decode_tile_ref(
         let mut ast = DecState {
             ctx: Ctx::new(),
             qt: QuantTables::new(0.0, 0.0),
+            lm: 0,
             screen: true,
             lossless: true,
             v2: h.version >= 2,

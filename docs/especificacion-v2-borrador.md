@@ -378,6 +378,49 @@ referencias de la predicción (T, L y C) y P la muestra predicha:
 
 Todo en enteros con desplazamiento aritmético.
 
+**Variantes de CCLM (modos 39 a 43).** En la croma, si el bit `cclm[sz]` vale 1 (sección 6.2 de
+la v1), sigue la variante en unario truncado sobre la lista del plano:
+
+| Plano (sin pérdida: B y R) | Lista |
+|---|---|
+| Cb | CCLM (35), MMLM (41), CCLM_T (39), CCLM_L (40) |
+| Cr | CCLM (35), CCLM_YCB (43), CCLM_CB (42), MMLM (41), CCLM_T (39), CCLM_L (40) |
+
+Para i = 0, 1, … mientras i sea menor que la longitud de la lista menos 1, se decodifica el bit
+`cclm_k[c][i]` (c = 0 en el Cb y 1 en el Cr); el primer 0 termina y el modo es el de la posición
+i (el número de unos). El modo 35 es el CCLM de la v1, sin cambios. En el mapa de modos la hoja
+guarda el número del modo, y la lista MPM de los vecinos cuenta 39 a 43 como DC, igual que 35.
+
+Las variantes se calculan en enteros (64 bits, salvo donde se indica). La **fuente** S es la luma
+de referencia del CCLM de la v1 (sección 7.4, submuestreada en 4:2:0) en todas salvo CCLM_CB, que
+usa el plano **Cb reconstruido** (tal como queda al terminar de decodificarlo, antes de la
+restauración); CCLM_YCB usa las dos. Las coordenadas de la fuente se recortan a su plano; C es la
+croma reconstruida del plano actual. Los **vecinos** son, en este orden, hasta `nT` posiciones
+(x0 + i, y0 − 1) y hasta `nL` posiciones (x0 − 1, y0 + i), i = 0, 1, …, cada tramo hasta la primera
+posición que no esté disponible (fuera del plano o sin decodificar):
+
+| Modo | nT | nL |
+|---|---|---|
+| CCLM_T (39) | 2w | 0 |
+| CCLM_L (40) | 0 | 2h |
+| MMLM, CCLM_CB, CCLM_YCB | w | h |
+
+**Ajuste.** Sobre un conjunto de n pares (s, c): si n = 0, a = 0 y b = 128·2¹⁶. Si no, con
+`den = n·Σs² − (Σs)²`, `a = clamp(⌊(n·Σsc − Σs·Σc)·2¹⁶ / den⌋₀, −4·2¹⁶, 4·2¹⁶)` si den > 0
+(⌊·⌋₀: división hacia cero) y a = 0 si no; y `b = ⌊(Σc·2¹⁶ − a·Σs) / n⌋` (hacia −∞). La
+predicción de una muestra con fuente s es `clamp((a·s + b + 2¹⁵) >> 16, 0, 255)`.
+
+- **CCLM_T, CCLM_L y CCLM_CB.** Un solo ajuste con todos los vecinos.
+- **MMLM.** Con n > 0, el umbral es `t = ⌊Σs / n⌋` y se hacen dos ajustes, con los vecinos de
+  s ≤ t y con los de s > t; si uno de los dos tiene menos de 2 pares, usa en su lugar el ajuste con
+  todos. Cada muestra usa el primero si su s ≤ t y el segundo si no. Con n = 0, todas valen 128.
+- **CCLM_YCB** (solo Cr). Con la luma Y y el Cb B de cada vecino, sean `Kuv = n·Σuv − Σu·Σv`
+  (en 128 bits) para u, v ∈ {Y, B, C}, y `det = KYY·KBB − KYB²`. Si det > 0,
+  `a = ⌊(KYC·KBB − KBC·KYB)·2¹⁶ / det⌋₀` y `b = ⌊(KBC·KYY − KYC·KYB)·2¹⁶ / det⌋₀`; si no, a = 0
+  y b = ⌊KBC·2¹⁶ / KBB⌋₀ si KBB > 0, o 0. Los dos se recortan a ±4·2¹⁶ y
+  `c = ⌊(ΣC·2¹⁶ − a·ΣY − b·ΣB) / n⌋` (hacia −∞). La muestra es
+  `clamp((a·Y + b·B + c + 2¹⁵) >> 16, 0, 255)`. Sin vecinos, a = b = 0 y c = 128·2¹⁶.
+
 ## 3.4 Mapa de cuantización adaptativa
 
 En la v2, el dq de cada celda AQ (sección de la v1) no se codifica tal cual sino como diferencia
@@ -407,6 +450,8 @@ Tras los demás modelos de la v2 van los de los coeficientes (sección 2.4): `la
 `rem_n: Uint[2·5·7]` del conjunto DCT y después los mismos del de transform skip. Si la tabla no
 llega a cubrir todos los modelos, `last` empieza a ½ y cada `rem_n[(pc·5 + fc)·7 + r]` con el
 estado de `rem[pc·5 + fc]` del mismo conjunto, ya inicializado con la tabla.
+
+Detrás de todos ellos va `cclm_k[2][5]` (variantes de CCLM, sección 3.5), que empieza en p = 1/2.
 
 ## 6. Pendiente antes de congelar
 
