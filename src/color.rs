@@ -2,14 +2,49 @@
 //! con muestras de croma centradas.
 
 /// `v.round().clamp(0.0, 255.0) as u8` sin la llamada a `roundf` (sin SSE4.1
-/// es una rutina por software): se acota primero (no cambia el resultado) y,
-/// ya en [0, 255], el redondeo "mitad hacia fuera" es truncar y sumar 1 si la
-/// parte fraccionaria (exacta) es ≥ ½. NaN da 0, igual que antes.
+/// es una rutina por software). NaN da 0, igual que antes. Se acota primero
+/// (no cambia el resultado) y, ya en [0, 255], el redondeo "mitad hacia
+/// fuera" es el suelo más 1 si la parte fraccionaria (exacta) es ≥ ½.
+///
+/// En x86 se usa una versión sin conversión float→entero con saturación (el
+/// compilador no sabe vectorizarla): el suelo sale de sumar y restar 2²³ y el
+/// byte se lee de la mantisa. En WebAssembly (sin SIMD) la conversión
+/// saturante es una sola instrucción y se usa esa.
 #[inline(always)]
 pub fn round_u8(v: f32) -> u8 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        round_u8_trunc(v)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        round_u8_bits(v)
+    }
+}
+
+#[inline(always)]
+#[allow(dead_code)]
+fn round_u8_trunc(v: f32) -> u8 {
     let c = v.clamp(0.0, 255.0);
     let t = c as i32;
     (t + ((c - t as f32) >= 0.5) as i32) as u8
+}
+
+#[inline(always)]
+#[allow(dead_code)]
+fn round_u8_bits(v: f32) -> u8 {
+    // c en [0, 255] (NaN → 0)
+    let c = if v > 0.0 {
+        if v < 255.0 { v } else { 255.0 }
+    } else {
+        0.0
+    };
+    const M: f32 = 8_388_608.0; // 2^23
+    let r = (c + M) - M; // redondeo al par
+    let fl = r - if r > c { 1.0 } else { 0.0 };
+    let res = fl + if c - fl >= 0.5 { 1.0 } else { 0.0 };
+    // res es un entero en [0, 255]: sumando 2^23 queda en la mantisa.
+    ((res + M).to_bits() & 0xFF) as u8
 }
 
 pub struct Ycc {
@@ -166,7 +201,9 @@ mod tests {
             vals.extend(near(k as f32 + 0.5));
         }
         for v in vals {
-            assert_eq!(round_u8(v), v.round().clamp(0.0, 255.0) as u8, "{v}");
+            let e = v.round().clamp(0.0, 255.0) as u8;
+            assert_eq!(round_u8_bits(v), e, "{v}");
+            assert_eq!(round_u8_trunc(v), e, "{v}");
         }
     }
 }
