@@ -1110,7 +1110,7 @@ fn reconstruct(
         }
     }
     for i in 0..nn {
-        out[i] = (pred[i] as f32 + buf[i]).round().clamp(0.0, 255.0) as u8;
+        out[i] = color::round_u8(pred[i] as f32 + buf[i]);
     }
 }
 
@@ -1564,7 +1564,7 @@ fn planes_u8(rgb: &[u8], w: usize, h: usize, header: &Header) -> RefPlanes {
         .map(|(p, pw, ph)| {
             let v = p
                 .iter()
-                .map(|v| v.round().clamp(0.0, 255.0) as u8)
+                .map(|&v| color::round_u8(v))
                 .collect();
             (v, pw, ph)
         })

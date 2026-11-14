@@ -1,6 +1,17 @@
 //! Conversión RGB ↔ YCbCr (BT.601, rango completo) y submuestreo 4:2:0
 //! con muestras de croma centradas.
 
+/// `v.round().clamp(0.0, 255.0) as u8` sin la llamada a `roundf` (sin SSE4.1
+/// es una rutina por software): se acota primero (no cambia el resultado) y,
+/// ya en [0, 255], el redondeo "mitad hacia fuera" es truncar y sumar 1 si la
+/// parte fraccionaria (exacta) es ≥ ½. NaN da 0, igual que antes.
+#[inline(always)]
+pub fn round_u8(v: f32) -> u8 {
+    let c = v.clamp(0.0, 255.0);
+    let t = c as i32;
+    (t + ((c - t as f32) >= 0.5) as i32) as u8
+}
+
 pub struct Ycc {
     /// (datos, ancho, alto) para Y, Cb, Cr.
     pub planes: Vec<(Vec<f32>, usize, usize)>,
@@ -116,10 +127,33 @@ pub fn ycbcr_to_rgb(
             let r = l + 1.402 * v;
             let g = l - 0.344_136 * u - 0.714_136 * v;
             let b = l + 1.772 * u;
-            out[3 * i] = r.round().clamp(0.0, 255.0) as u8;
-            out[3 * i + 1] = g.round().clamp(0.0, 255.0) as u8;
-            out[3 * i + 2] = b.round().clamp(0.0, 255.0) as u8;
+            out[3 * i] = round_u8(r);
+            out[3 * i + 1] = round_u8(g);
+            out[3 * i + 2] = round_u8(b);
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `round_u8` coincide con `round().clamp()` en un barrido fino, los
+    /// empates .5 y los valores extremos.
+    #[test]
+    fn round_u8_exacto() {
+        let mut vals = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 1e30, -1e30];
+        let near = |v: f32| [v, f32::from_bits(v.to_bits() + 1), f32::from_bits(v.to_bits() - 1)];
+        for i in 1..=52000i32 {
+            vals.extend(near(i as f32 * 0.005));
+            vals.extend(near(-(i as f32) * 0.005));
+        }
+        for k in 0..=256 {
+            vals.extend(near(k as f32 + 0.5));
+        }
+        for v in vals {
+            assert_eq!(round_u8(v), v.round().clamp(0.0, 255.0) as u8, "{v}");
+        }
+    }
 }

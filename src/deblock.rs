@@ -52,7 +52,7 @@ pub fn filter(p: &mut Plane, q: f32, strength: u8) {
     }
     let _ = h;
     for (o, v) in p.data.iter_mut().zip(&d) {
-        *o = v.round().clamp(0.0, 255.0) as u8;
+        *o = crate::color::round_u8(*v);
     }
 }
 

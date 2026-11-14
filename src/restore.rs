@@ -135,9 +135,13 @@ impl Padded {
             let sy = y.saturating_sub(PAD).min(h - 1);
             let row = &p.data[sy * w..sy * w + w];
             let out = &mut d[y * pw..y * pw + pw];
-            for (x, o) in out.iter_mut().enumerate() {
-                *o = row[x.saturating_sub(PAD).min(w - 1)] as i16;
+            let (izq, resto) = out.split_at_mut(PAD);
+            let (centro, der) = resto.split_at_mut(w);
+            izq.fill(row[0] as i16);
+            for (o, &v) in centro.iter_mut().zip(row) {
+                *o = v as i16;
             }
+            der.fill(row[w - 1] as i16);
         }
         let offs = OFFS.map(|(dx, dy)| dx + dy * pw as isize);
         Padded { d, pw, offs }
@@ -175,13 +179,17 @@ impl Padded {
     fn class(&self, bx: usize, by: usize) -> u8 {
         let (mut sh, mut sv) = (0i32, 0i32);
         let pw = self.pw;
-        for y in by * 4..by * 4 + 4 {
-            let mut i = self.idx(bx * 4, y);
-            for _ in 0..4 {
-                let c = 2 * self.d[i] as i32;
-                sh += (c - self.d[i - 1] as i32 - self.d[i + 1] as i32).abs();
-                sv += (c - self.d[i - pw] as i32 - self.d[i + pw] as i32).abs();
-                i += 1;
+        let base = self.idx(bx * 4, by * 4);
+        for y in 0..4 {
+            let i = base + y * pw;
+            // Rebanadas de longitud fija: sin comprobaciones por píxel.
+            let mid: &[i16; 6] = self.d[i - 1..i + 5].try_into().unwrap();
+            let up: &[i16; 4] = self.d[i - pw..i - pw + 4].try_into().unwrap();
+            let dn: &[i16; 4] = self.d[i + pw..i + pw + 4].try_into().unwrap();
+            for x in 0..4 {
+                let c = 2 * mid[x + 1] as i32;
+                sh += (c - mid[x] as i32 - mid[x + 2] as i32).abs();
+                sv += (c - up[x] as i32 - dn[x] as i32).abs();
             }
         }
         let act = (sh + sv) / 16;
@@ -199,6 +207,33 @@ impl Padded {
             0
         };
         (a * 3 + dir) as u8
+    }
+
+    /// Filtra 4 píxeles contiguos desde el índice `i` del búfer (mismo
+    /// resultado que `grads` + `filter_px` por píxel). Los vecinos de los 4
+    /// píxeles se leen como rebanadas, sin comprobar cada uno.
+    #[inline(always)]
+    fn filter4(&self, i: usize, f: &Filter) -> [u8; 4] {
+        let d = &self.d;
+        let c: &[i16; 4] = d[i..i + 4].try_into().unwrap();
+        let mut s = [0i32; 4];
+        for k in 0..NC {
+            let o = self.offs[k];
+            let p: &[i16; 4] = d[(i as isize + o) as usize..][..4].try_into().unwrap();
+            let m: &[i16; 4] = d[(i as isize - o) as usize..][..4].try_into().unwrap();
+            let fk = f[k] as i16;
+            for x in 0..4 {
+                // Píxeles en 0..=255: |g| ≤ 510 cabe en i16 y |f| ≤ 64
+                // (multiplicación 16×16→32, barata sin SSE4.1).
+                let g = p[x] + m[x] - 2 * c[x];
+                s[x] += fk as i32 * g as i32;
+            }
+        }
+        let mut out = [0u8; 4];
+        for x in 0..4 {
+            out[x] = (c[x] as i32 + ((s[x] + 64) >> 7)).clamp(0, 255) as u8;
+        }
+        out
     }
 
     fn classify_all(&self, w: usize, h: usize) -> Vec<u8> {
@@ -241,12 +276,8 @@ pub fn apply(p: &mut Plane, d: &Decision) {
                     continue;
                 };
                 for y in gy * 4..gy * 4 + 4 {
-                    let mut pi = pad.idx(gx * 4, y);
-                    for x in gx * 4..gx * 4 + 4 {
-                        let (c, g) = pad.grads(pi);
-                        p.data[y * w + x] = filter_px(c, &g, &f);
-                        pi += 1;
-                    }
+                    let px = pad.filter4(pad.idx(gx * 4, y), &f);
+                    p.data[y * w + gx * 4..y * w + gx * 4 + 4].copy_from_slice(&px);
                 }
             }
         }
