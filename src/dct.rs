@@ -147,6 +147,21 @@ fn idct_1d(x: &mut [f32], tmp: &mut [f32]) {
     }
 }
 
+thread_local! {
+    /// Búfer de trabajo de las pasadas por lotes (se reutiliza: evita poner a
+    /// cero cientos de bytes en cada llamada).
+    static SCRATCH: std::cell::Cell<Vec<f32>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Toma el búfer de trabajo con al menos `n` valores.
+fn take_scratch(n: usize) -> Vec<f32> {
+    let mut b = SCRATCH.take();
+    if b.len() < n {
+        b.resize(n, 0.0);
+    }
+    b
+}
+
 /// DCT-III por lotes de columnas: `x` son `n` filas de `W` valores y la
 /// recursión de `idct_1d` opera sobre filas enteras (cada columna hace
 /// exactamente las mismas operaciones, en el mismo orden, que `idct_1d`; el
@@ -262,8 +277,8 @@ fn cols_w<const W: usize>(blk: &mut [f32], h: usize, inverse: bool) {
         return;
     }
     let (s0, s1) = norm(h);
-    let mut tmp = [[0f32; W]; 64];
-    let tmp = &mut tmp[..h];
+    let mut buf = take_scratch(h * W);
+    let tmp = buf[..h * W].as_chunks_mut::<W>().0;
     if inverse {
         for v in &mut x[0] {
             *v *= s0;
@@ -285,6 +300,7 @@ fn cols_w<const W: usize>(blk: &mut [f32], h: usize, inverse: bool) {
             }
         }
     }
+    SCRATCH.set(buf);
 }
 
 /// Pasada de columnas de un bloque `w × h` (ver `cols_w`).
@@ -388,10 +404,10 @@ fn rows_pass(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
             nr += 1;
         }
     }
-    let mut t = [[0f32; 8]; 64];
-    let mut tmp = [[0f32; 8]; 64];
+    let mut buf = take_scratch(16 * w);
+    let (t, tmp) = buf[..16 * w].split_at_mut(8 * w);
+    let (t, tmp) = (t.as_chunks_mut::<8>().0, tmp.as_chunks_mut::<8>().0);
     for chunk in rows[..nr].chunks(8) {
-        let (t, tmp) = (&mut t[..w], &mut tmp[..w]);
         for (r, &y) in chunk.iter().enumerate() {
             let row = &blk[y * w..y * w + w];
             for u in 0..w {
@@ -430,7 +446,7 @@ fn rows_pass(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
                 row[u] = t[u][r];
             }
         }
-    }
+    }    SCRATCH.set(buf);
 }
 
 /// Transformada directa ortonormal en el sitio: `blk` es N×N en orden fila.

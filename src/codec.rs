@@ -2213,12 +2213,18 @@ impl EncState {
                     let k = slot[mode as usize] as usize;
                     let mut co = pool[k * nn..(k + 1) * nn].to_vec();
                     dct::transform_rect(&mut co, w, h, false);
-                    let mut d = 0f32;
+                    // Cuantización (vectorizable) y suma de los errores en
+                    // el orden de siempre (`res` ya no se usa aquí).
+                    let err = &mut res[..nn];
                     for i in 0..nn {
                         let a = co[i].abs();
                         let l = (a / qs[i] + 0.42) as i32;
-                        d += (a - l as f32 * qs[i]).powi(2);
+                        err[i] = (a - l as f32 * qs[i]).powi(2);
                         levels[i] = if co[i] < 0.0 { -l } else { l };
+                    }
+                    let mut d = 0f32;
+                    for &e in err.iter() {
+                        d += e;
                     }
                     let bits = self.ctx.coef.block_cost(pc, w, h, cctx, &levels);
                     ests.push((d + lambda * (bits + mb), mode, co));
