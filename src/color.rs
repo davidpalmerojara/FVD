@@ -58,35 +58,41 @@ pub fn rgb_to_ycbcr(rgb: &[u8], w: usize, h: usize, sub: bool) -> Ycc {
     }
 }
 
-/// Interpolación bilineal 2× de un plano de croma (muestras centradas).
-fn upsample(c: &[u8], stride: usize, cw: usize, ch: usize, w: usize, h: usize) -> Vec<f32> {
-    let get = |x: isize, y: isize| -> f32 {
-        let x = x.clamp(0, cw as isize - 1) as usize;
-        let y = y.clamp(0, ch as isize - 1) as usize;
-        c[y * stride + x] as f32
-    };
-    // horizontal
+/// Primera pasada (horizontal) de la interpolación bilineal 2× de un plano de
+/// croma (muestras centradas): `ch` filas de `w` valores.
+fn upsample_h(c: &[u8], stride: usize, cw: usize, ch: usize, w: usize) -> Vec<f32> {
     let mut tmp = vec![0f32; w * ch];
+    let mut cf = vec![0f32; cw];
     for y in 0..ch {
-        for x in 0..w {
-            let i = (x / 2) as isize;
-            let o = if x % 2 == 0 { i - 1 } else { i + 1 };
-            tmp[y * w + x] = 0.75 * get(i, y as isize) + 0.25 * get(o, y as isize);
+        for (d, &v) in cf.iter_mut().zip(&c[y * stride..y * stride + cw]) {
+            *d = v as f32;
+        }
+        let row = &mut tmp[y * w..y * w + w];
+        for i in 0..cw {
+            // Columna par 2i (vecino i-1) e impar 2i+1 (vecino i+1), con
+            // los extremos replicados.
+            let m = cf[i];
+            row[2 * i] = 0.75 * m + 0.25 * cf[i.saturating_sub(1)];
+            if 2 * i + 1 < w {
+                row[2 * i + 1] = 0.75 * m + 0.25 * cf[(i + 1).min(cw - 1)];
+            }
         }
     }
-    let mut out = vec![0f32; w * h];
-    for y in 0..h {
-        let i = y / 2;
-        let o = if y % 2 == 0 {
-            i.saturating_sub(1)
-        } else {
-            (i + 1).min(ch - 1)
-        };
-        for x in 0..w {
-            out[y * w + x] = 0.75 * tmp[i * w + x] + 0.25 * tmp[o * w + x];
-        }
+    tmp
+}
+
+/// Segunda pasada (vertical) para la fila de salida `y`.
+fn upsample_v(tmp: &[f32], w: usize, ch: usize, y: usize, out: &mut [f32]) {
+    let i = y / 2;
+    let o = if y % 2 == 0 {
+        i.saturating_sub(1)
+    } else {
+        (i + 1).min(ch - 1)
+    };
+    let (a, b) = (&tmp[i * w..i * w + w], &tmp[o * w..o * w + w]);
+    for ((d, &p), &q) in out.iter_mut().zip(a).zip(b) {
+        *d = 0.75 * p + 0.25 * q;
     }
-    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -100,36 +106,43 @@ pub fn ycbcr_to_rgb(
     h: usize,
     sub: bool,
 ) -> Vec<u8> {
-    let (cbf, crf): (Vec<f32>, Vec<f32>) = if sub {
-        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    // Con submuestreo, la croma se interpola en horizontal de una vez y en
+    // vertical fila a fila (sin planos de croma completos en f32).
+    let (tb, tr) = if sub {
         (
-            upsample(cb, cstride, cw, ch, w, h),
-            upsample(cr, cstride, cw, ch, w, h),
+            upsample_h(cb, cstride, cw, ch, w),
+            upsample_h(cr, cstride, cw, ch, w),
         )
     } else {
-        let mut a = vec![0f32; w * h];
-        let mut b = vec![0f32; w * h];
-        for yy in 0..h {
-            for xx in 0..w {
-                a[yy * w + xx] = cb[yy * cstride + xx] as f32;
-                b[yy * w + xx] = cr[yy * cstride + xx] as f32;
-            }
-        }
-        (a, b)
+        (Vec::new(), Vec::new())
     };
     let mut out = vec![0u8; w * h * 3];
+    let (mut ub, mut vb) = (vec![0f32; w], vec![0f32; w]);
     for yy in 0..h {
-        for xx in 0..w {
-            let i = yy * w + xx;
-            let l = y[yy * ystride + xx] as f32;
-            let u = cbf[i] - 128.0;
-            let v = crf[i] - 128.0;
+        if sub {
+            upsample_v(&tb, w, ch, yy, &mut ub);
+            upsample_v(&tr, w, ch, yy, &mut vb);
+        } else {
+            for (d, &v) in ub.iter_mut().zip(&cb[yy * cstride..yy * cstride + w]) {
+                *d = v as f32;
+            }
+            for (d, &v) in vb.iter_mut().zip(&cr[yy * cstride..yy * cstride + w]) {
+                *d = v as f32;
+            }
+        }
+        let yrow = &y[yy * ystride..yy * ystride + w];
+        let orow = &mut out[3 * yy * w..3 * (yy + 1) * w];
+        for (((px, &l), &cbv), &crv) in orow.chunks_exact_mut(3).zip(yrow).zip(&ub).zip(&vb) {
+            let l = l as f32;
+            let u = cbv - 128.0;
+            let v = crv - 128.0;
             let r = l + 1.402 * v;
             let g = l - 0.344_136 * u - 0.714_136 * v;
             let b = l + 1.772 * u;
-            out[3 * i] = round_u8(r);
-            out[3 * i + 1] = round_u8(g);
-            out[3 * i + 2] = round_u8(b);
+            px[0] = round_u8(r);
+            px[1] = round_u8(g);
+            px[2] = round_u8(b);
         }
     }
     out
