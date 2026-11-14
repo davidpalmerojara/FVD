@@ -289,7 +289,8 @@ En un bloque cuadrado, todo es idéntico bit a bit a la v1.
 - **Solo DC.** Si solo el coeficiente (0, 0) es no nulo, el residuo es constante,
   `c(0,0) / √(w·h)`.
 - **Transformada.** DCT-II inversa ortonormal separable: primero las h filas de longitud w y
-  luego las w columnas de longitud h, con las mismas DCT 1-D de la v1 (sección 9).
+  luego las w columnas de longitud h, con las mismas DCT 1-D de la v1 (sección 9). Las hojas intra
+  usan además la DST-VII en algunos ejes (sección 3.6).
 
 ### 3.3 Predicción intra
 
@@ -420,6 +421,24 @@ predicción de una muestra con fuente s es `clamp((a·s + b + 2¹⁵) >> 16, 0, 
   y b = ⌊KBC·2¹⁶ / KBB⌋₀ si KBB > 0, o 0. Los dos se recortan a ±4·2¹⁶ y
   `c = ⌊(ΣC·2¹⁶ − a·ΣY − b·ΣB) / n⌋` (hacia −∞). La muestra es
   `clamp((a·Y + b·B + c + 2¹⁵) >> 16, 0, 255)`. Sin vecinos, a = b = 0 y c = 128·2¹⁶.
+
+### 3.6 Transformadas
+
+En la v2, las hojas intra (clase intra con un modo distinto de CCLM y de sus variantes 39 a 43, en luma y en croma) que no
+usan transform skip cambian de transformada sin señalizarlo: cada eje usa la **DST-VII** si su
+longitud es 4, 8 o 16, y la DCT-II de la v1 si es 32 o 64. El eje horizontal se decide con w y el
+vertical con h; un bloque de 32 × 8, por ejemplo, usa la DCT-II en las filas y la DST-VII en las
+columnas. Las demás hojas (CCLM y variantes, paleta, copia intra e inter) siguen con la DCT-II en los dos ejes.
+
+La DST-VII inversa de N puntos convierte los coeficientes c[k] en
+`x[i] = Σ_k M[k][i] · c[k]`, con `M[k][i] = √(4/(2N+1)) · sin(π(2k+1)(i+1)/(2N+1))`, calculada en
+`f64` y redondeada a `f32`. En `f32`, cada x[i] empieza en 0 y suma los productos en orden
+creciente de k, saltando los c[k] nulos.
+
+Si algún eje usa la DST-VII, la inversa 2-D se hace primero por filas (las h filas de longitud w,
+saltando las que tienen todos los coeficientes a 0) y después por columnas, con la transformada 1-D
+de cada eje (en los ejes con DCT-II, la DCT 1-D de la sección 3.2). El atajo de «solo DC» de la
+sección 3.2 solo vale con la DCT-II en los dos ejes.
 
 ## 3.4 Mapa de cuantización adaptativa
 

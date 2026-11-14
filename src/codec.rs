@@ -1119,8 +1119,24 @@ thread_local! {
     static LEAF_SCRATCH: std::cell::Cell<LeafScratch> = std::cell::Cell::new(LeafScratch::default());
 }
 
-/// Reconstruye un bloque `bw × bh`: descuantiza, transformada inversa (salvo
-/// transform skip) y suma la predicción.
+/// Transformadas (horizontal, vertical) de una hoja `w × h`, deducidas de su
+/// clase (v2, sección 3.6): en las hojas intra salvo CCLM, DST-VII en los ejes
+/// de 4 a 16 muestras; en las demás, y en la v1, DCT-II.
+fn leaf_tx(kind: &Kind, w: usize, h: usize, v2: bool) -> dct::Tx {
+    use dct::Tx1::{Dct, Dst};
+    match kind {
+        // Los modos de croma desde la luma (CCLM y sus variantes 39 a 43)
+        // siguen con la DCT-II.
+        Kind::Intra(m) if v2 && *m != MODE_CCLM && !(39..=43).contains(m) => {
+            let t = |n: usize| if n <= 16 { Dst } else { Dct };
+            (t(w), t(h))
+        }
+        _ => dct::DCT2,
+    }
+}
+
+/// Reconstruye un bloque `bw × bh`: descuantiza, transformada inversa `tx`
+/// (salvo transform skip) y suma la predicción.
 #[allow(clippy::too_many_arguments)]
 fn reconstruct(
     levels: &[i32],
@@ -1130,6 +1146,7 @@ fn reconstruct(
     bw: usize,
     bh: usize,
     ts: bool,
+    tx: dct::Tx,
     out: &mut [u8],
 ) {
     let nn = bw * bh;
@@ -1145,7 +1162,7 @@ fn reconstruct(
         }
     }
     if any && !ts {
-        if levels[1..nn].iter().all(|&l| l == 0) {
+        if tx == dct::DCT2 && levels[1..nn].iter().all(|&l| l == 0) {
             // Solo DC: la inversa es constante (base DC ortonormal = 1/√(w·h)).
             let v = if bw == bh {
                 buf[0] / bw as f32
@@ -1154,7 +1171,7 @@ fn reconstruct(
             };
             buf.fill(v);
         } else {
-            dct::transform_rect(buf, bw, bh, true);
+            dct::transform_tx(buf, bw, bh, true, tx);
         }
     }
     for i in 0..nn {
@@ -1977,8 +1994,9 @@ impl EncState {
         cc.bits
     }
 
-    /// Mejor codificación del residuo de una predicción (DCT y, si procede,
-    /// transform skip). Devuelve (J sin cabecera, niveles, ts).
+    /// Mejor codificación del residuo de una predicción (con las
+    /// transformadas `tx` y, si procede, transform skip). Devuelve (J sin
+    /// cabecera, niveles, ts).
     #[allow(clippy::too_many_arguments)]
     fn rd_residual(
         &self,
@@ -1991,7 +2009,7 @@ impl EncState {
         q: f32,
         lambda: f32,
         try_ts: bool,
-        allow_dct: bool,
+        tx: dct::Tx,
         vis: (usize, usize),
     ) -> (f32, Vec<i32>, bool) {
         let nn = w * h;
@@ -2005,7 +2023,6 @@ impl EncState {
             &masked[..]
         };
         let mut res = vec![0f32; nn];
-        let mut best = (f32::INFINITY, Vec::new(), false);
         let mut levels = vec![0i32; nn];
         if self.lossless {
             // Residuo exacto, sin cuantizar: solo cuenta la tasa.
@@ -2015,16 +2032,14 @@ impl EncState {
             let bits = self.ctx.coef_ts.block_cost(pc, w, h, cctx, &levels);
             return (lambda * bits, levels, true);
         }
-        if allow_dct {
-            sub_pred(&mut res[..nn], src, pred);
-            dct::transform_rect(&mut res, w, h, false);
-            let qs: Vec<f32> = self.qt.get(pc, w, h).iter().map(|&wi| wi * q).collect();
-            let (d, bits) =
-                self.ctx
-                    .coef
-                    .quantize_rdo(pc, w, h, cctx, &res, &qs, lambda, &mut levels);
-            best = (d + lambda * bits, levels.clone(), false);
-        }
+        sub_pred(&mut res[..nn], src, pred);
+        dct::transform_tx(&mut res, w, h, false, tx);
+        let qs: Vec<f32> = self.qt.get(pc, w, h).iter().map(|&wi| wi * q).collect();
+        let (d, bits) = self
+            .ctx
+            .coef
+            .quantize_rdo(pc, w, h, cctx, &res, &qs, lambda, &mut levels);
+        let mut best = (d + lambda * bits, levels.clone(), false);
         if try_ts {
             sub_pred(&mut res[..nn], src, pred);
             let qs = vec![q; nn];
@@ -2172,7 +2187,7 @@ impl EncState {
             for &(_, mv) in scored.iter().take(2) {
                 ip.predict(x0, y0, w, h, mv, &mut pred);
                 let (jr, lv, ts) =
-                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, dct::DCT2, vis);
                 let kind = Kind::Inter(mv);
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -2180,7 +2195,7 @@ impl EncState {
             if self.warp {
                 ip.predict_warp(x0, y0, w, h, &mut pred);
                 let (jr, lv, ts) =
-                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, dct::DCT2, vis);
                 let kind = Kind::Warp;
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -2275,7 +2290,8 @@ impl EncState {
                     }
                     let k = slot[mode as usize] as usize;
                     let mut co = pool[k * nn..(k + 1) * nn].to_vec();
-                    dct::transform_rect(&mut co, w, h, false);
+                    let tx = leaf_tx(&Kind::Intra(mode), w, h, self.v2);
+                    dct::transform_tx(&mut co, w, h, false, tx);
                     // Cuantización (vectorizable) y suma de los errores en
                     // el orden de siempre (`res` ya no se usa aquí).
                     let err = &mut res[..nn];
@@ -2315,9 +2331,10 @@ impl EncState {
                     break;
                 }
                 predict_mode(&pe.plane, &refs, lref, mode, x0, y0, w, h, &mut pred);
-                let (jr, lv, ts) =
-                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
                 let kind = Kind::Intra(mode);
+                let tx = leaf_tx(&kind, w, h, self.v2);
+                let (jr, lv, ts) =
+                    self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, tx, vis);
                 let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                 consider(&mut best, jr + lambda * hb, kind, lv, ts);
             }
@@ -2326,7 +2343,7 @@ impl EncState {
                 for pal in tools::palette_candidates(&src, w, h) {
                     tools::predict_palette(&pal, &mut pred);
                     let (jr, lv, ts) =
-                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                        self.rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, dct::DCT2, vis);
                     let kind = Kind::Palette(pal);
                     let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                     consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -2354,7 +2371,7 @@ impl EncState {
                     for &(_, bv) in scored.iter().take(2) {
                         tools::predict_ibc(&pe.plane, x0, y0, w, h, bv, &mut pred);
                         let (jr, lv, ts) = self
-                            .rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, true, vis);
+                            .rd_residual(pc, w, h, cctx, &src, &pred, q, lambda, try_ts, dct::DCT2, vis);
                         let kind = Kind::Ibc(bv);
                         let hb = self.head_bits(pe, x0, y0, w, h, &kind, ts);
                         consider(&mut best, jr + lambda * hb, kind, lv, ts);
@@ -2384,6 +2401,7 @@ impl EncState {
             w,
             h,
             ts,
+            leaf_tx(&kind, w, h, self.v2),
             &mut recon,
         );
         let nz = levels.iter().any(|&l| l != 0);
@@ -3846,6 +3864,7 @@ impl DecState {
             w,
             h,
             ts,
+            leaf_tx(&kind, w, h, self.v2),
             &mut recon,
         );
         p.write_block(x0, y0, w, h, &recon);

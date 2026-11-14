@@ -1,4 +1,5 @@
-//! DCT-II ortonormal separable para bloques cuadrados de 4 a 64.
+//! DCT-II ortonormal separable para bloques cuadrados de 4 a 64 (y la
+//! DST-VII de 4 a 16 puntos de las hojas intra de la v2).
 //! Al ser ortonormal, el error cuadrático en el dominio transformado es igual
 //! al del dominio de píxeles, lo que simplifica el RDO.
 
@@ -524,6 +525,96 @@ pub fn transform_rect(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
     cols_pass(blk, w, h, inverse);
 }
 
+/// Transformada 1-D de cada eje: DCT-II o DST-VII.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tx1 {
+    Dct,
+    Dst,
+}
+
+/// Transformadas (horizontal, vertical) de un bloque.
+pub type Tx = (Tx1, Tx1);
+pub const DCT2: Tx = (Tx1::Dct, Tx1::Dct);
+
+/// Matrices DST-VII ortonormales de 4, 8 y 16 puntos,
+/// `m[k·n + i] = √(4/(2n+1)) · sin(π(2k+1)(i+1)/(2n+1))`, y sus transpuestas.
+fn dst_matrices(n: usize) -> &'static (Vec<f32>, Vec<f32>) {
+    static M: OnceLock<[(Vec<f32>, Vec<f32>); 3]> = OnceLock::new();
+    let all = M.get_or_init(|| {
+        [4usize, 8, 16].map(|n| {
+            let s = (4.0 / (2 * n + 1) as f64).sqrt();
+            let mut m = vec![0f32; n * n];
+            let mut t = vec![0f32; n * n];
+            for k in 0..n {
+                for i in 0..n {
+                    let a = std::f64::consts::PI * ((2 * k + 1) * (i + 1)) as f64
+                        / (2 * n + 1) as f64;
+                    let v = (s * a.sin()) as f32;
+                    m[k * n + i] = v;
+                    t[i * n + k] = v;
+                }
+            }
+            (m, t)
+        })
+    });
+    &all[size_index(n)]
+}
+
+/// DST-VII 1-D ortonormal (directa o inversa) de un vector de 4, 8 o 16.
+/// Cada salida suma sus productos en orden creciente de la entrada; en la
+/// inversa se saltan las entradas nulas (no cambia el resultado).
+fn dst1_ortho(v: &mut [f32], inverse: bool) {
+    let n = v.len();
+    let (m, t) = dst_matrices(n);
+    // a[i·n + k]: peso de la entrada i en la salida k.
+    let a = if inverse { m } else { t };
+    let mut out = [0f32; 16];
+    for i in 0..n {
+        let vi = v[i];
+        if inverse && vi == 0.0 {
+            continue;
+        }
+        for (o, &c) in out[..n].iter_mut().zip(&a[i * n..i * n + n]) {
+            *o += c * vi;
+        }
+    }
+    v.copy_from_slice(&out[..n]);
+}
+
+#[inline]
+fn tx1(v: &mut [f32], t: Tx1, inverse: bool) {
+    match t {
+        Tx1::Dct => dct1_ortho(v, inverse),
+        Tx1::Dst => dst1_ortho(v, inverse),
+    }
+}
+
+/// Transformada 2-D separable de un bloque `w × h` con las transformadas
+/// `tx` = (horizontal, vertical): primero las filas y luego las columnas.
+/// Con DCT-II en los dos ejes es exactamente `transform_rect`.
+pub fn transform_tx(blk: &mut [f32], w: usize, h: usize, inverse: bool, tx: Tx) {
+    if tx == DCT2 {
+        return transform_rect(blk, w, h, inverse);
+    }
+    for y in 0..h {
+        let row = &mut blk[y * w..y * w + w];
+        if inverse && row.iter().all(|&c| c == 0.0) {
+            continue;
+        }
+        tx1(row, tx.0, inverse);
+    }
+    let mut col = [0f32; 64];
+    for x in 0..w {
+        for y in 0..h {
+            col[y] = blk[y * w + x];
+        }
+        tx1(&mut col[..h], tx.1, inverse);
+        for y in 0..h {
+            blk[y * w + x] = col[y];
+        }
+    }
+}
+
 fn inverse_sq(blk: &mut [f32], n: usize) {
     inverse(blk, n)
 }
@@ -701,6 +792,40 @@ mod tests {
             transform_rect(&mut b, w, h, true);
             for (a, c) in orig.iter().zip(&b) {
                 assert!((a - c).abs() < 1e-2, "{w}x{h}");
+            }
+        }
+    }
+
+    /// La primera base de la DST-VII crece desde el borde de la predicción.
+    #[test]
+    fn dst_first_basis_rises() {
+        for n in [4usize, 8, 16] {
+            let m = &dst_matrices(n).0;
+            assert!(m[..n].windows(2).all(|p| p[0] < p[1]), "n={n}");
+        }
+    }
+
+    #[test]
+    fn tx_roundtrip() {
+        use Tx1::*;
+        for (w, h) in [(4usize, 4usize), (8, 8), (16, 16), (8, 4), (4, 16), (32, 16), (16, 32)] {
+            let t = |n: usize| if n <= 16 { Dst } else { Dct };
+            for tx in [(t(w), t(h)), (t(w), Dct), (Dct, t(h))] {
+                if tx == DCT2 {
+                    continue;
+                }
+                let orig: Vec<f32> = (0..w * h)
+                    .map(|i| ((i * 37 + 11) % 255) as f32 - 128.0)
+                    .collect();
+                let mut b = orig.clone();
+                transform_tx(&mut b, w, h, false, tx);
+                let e_in: f32 = orig.iter().map(|v| v * v).sum();
+                let e_out: f32 = b.iter().map(|v| v * v).sum();
+                assert!((e_in - e_out).abs() / e_in < 1e-4, "Parseval {w}x{h} {tx:?}");
+                transform_tx(&mut b, w, h, true, tx);
+                for (a, c) in orig.iter().zip(&b) {
+                    assert!((a - c).abs() < 1e-2, "{w}x{h} {tx:?}");
+                }
             }
         }
     }
