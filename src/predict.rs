@@ -409,26 +409,38 @@ fn pdpc(r: &Refs, mode: u8, w: usize, h: usize, out: &mut [i32]) {
     let tl = r.top[0];
     // Los pesos se anulan a partir de 3·2^scale muestras del borde.
     let reach = 3usize << scale;
+    // Todo cabe en 16 bits (píxeles 0..=255, pesos ≤ 32, mezcla ≤ 64·255+32):
+    // en lanes de 16 bits el compilador vectoriza el bucle (sin pmulld en SSE2).
+    let mut top16 = [0i16; 64];
+    let mut wlx = [0i16; 64];
+    for x in 0..w {
+        top16[x] = r.top[x + 1] as i16;
+        wlx[x] = (32 >> ((x << 1) >> scale).min(31)) as i16;
+    }
     for y in 0..h {
         let wt = 32 >> ((y << 1) >> scale).min(31);
         let row = &mut out[y * w..y * w + w.min(if wt == 0 { reach } else { w })];
         let ly = r.left[y + 1];
+        let n = row.len();
         match mode {
             MODE_VER => {
-                for (x, o) in row.iter_mut().enumerate() {
-                    let wl = 32 >> ((x << 1) >> scale).min(31);
-                    *o = (*o + ((wl * (ly - tl) + 32) >> 6)).clamp(0, 255);
+                let dl = (ly - tl) as i16;
+                for (o, &wl) in row.iter_mut().zip(&wlx[..n]) {
+                    *o = (*o + ((wl * dl + 32) >> 6) as i32).clamp(0, 255);
                 }
             }
             MODE_HOR => {
-                for (x, o) in row.iter_mut().enumerate() {
-                    *o = (*o + ((wt * (r.top[x + 1] - tl) + 32) >> 6)).clamp(0, 255);
+                let wt = wt as i16;
+                let tl = tl as i16;
+                for (o, &t) in row.iter_mut().zip(&top16[..n]) {
+                    *o = (*o + ((wt * (t - tl) + 32) >> 6) as i32).clamp(0, 255);
                 }
             }
             _ => {
-                for (x, o) in row.iter_mut().enumerate() {
-                    let wl = 32 >> ((x << 1) >> scale).min(31);
-                    *o = (wl * ly + wt * r.top[x + 1] + (64 - wl - wt) * *o + 32) >> 6;
+                let (ly, wt) = (ly as i16, wt as i16);
+                for ((o, &wl), &t) in row.iter_mut().zip(&wlx[..n]).zip(&top16[..n]) {
+                    let v = wl * ly + wt * t + (64 - wl - wt) * (*o as i16) + 32;
+                    *o = (v >> 6) as i32;
                 }
             }
         }
