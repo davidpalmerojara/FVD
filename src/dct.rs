@@ -373,21 +373,72 @@ fn small_transform_n<const N: usize>(blk: &mut [f32], at: &[f32; 64]) {
     }
 }
 
+/// Pasada de filas de un bloque `w × h` (w ≥ 16): transformada 1-D
+/// ortonormal de cada fila, de 8 filas a la vez (se transponen a un búfer de
+/// `w × 8` y se usa la recursión por lotes). Mismo resultado, bit a bit, que
+/// `dct1_ortho` fila a fila. En la inversa se saltan las filas nulas (su
+/// resultado es cero).
+fn rows_pass(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
+    let (s0, s1) = norm(w);
+    let mut rows = [0usize; 64];
+    let mut nr = 0;
+    for y in 0..h {
+        if !inverse || blk[y * w..y * w + w].iter().any(|&c| c != 0.0) {
+            rows[nr] = y;
+            nr += 1;
+        }
+    }
+    let mut t = [[0f32; 8]; 64];
+    let mut tmp = [[0f32; 8]; 64];
+    for chunk in rows[..nr].chunks(8) {
+        let (t, tmp) = (&mut t[..w], &mut tmp[..w]);
+        for (r, &y) in chunk.iter().enumerate() {
+            let row = &blk[y * w..y * w + w];
+            for u in 0..w {
+                t[u][r] = row[u];
+            }
+        }
+        for r in chunk.len()..8 {
+            for u in 0..w {
+                t[u][r] = 0.0;
+            }
+        }
+        if inverse {
+            for v in &mut t[0] {
+                *v *= s0;
+            }
+            for row in &mut t[1..] {
+                for v in row {
+                    *v *= s1;
+                }
+            }
+            idct_cols(t, tmp);
+        } else {
+            dct_cols(t, tmp);
+            for v in &mut t[0] {
+                *v *= s0;
+            }
+            for row in &mut t[1..] {
+                for v in row {
+                    *v *= s1;
+                }
+            }
+        }
+        for (r, &y) in chunk.iter().enumerate() {
+            let row = &mut blk[y * w..y * w + w];
+            for u in 0..w {
+                row[u] = t[u][r];
+            }
+        }
+    }
+}
+
 /// Transformada directa ortonormal en el sitio: `blk` es N×N en orden fila.
 pub fn forward(blk: &mut [f32], n: usize) {
     if n <= 8 {
         return small_transform(blk, n, false);
     }
-    let (s0, s1) = norm(n);
-    let mut tmp = [0f32; 64];
-    for y in 0..n {
-        let row = &mut blk[y * n..y * n + n];
-        dct_1d(row, &mut tmp[..n]);
-        row[0] *= s0;
-        for v in &mut row[1..] {
-            *v *= s1;
-        }
-    }
+    rows_pass(blk, n, n, false);
     cols_pass(blk, n, n, false);
 }
 
@@ -397,21 +448,8 @@ pub fn inverse(blk: &mut [f32], n: usize) {
     if n <= 8 {
         return small_transform(blk, n, true);
     }
-    let (s0, s1) = norm(n);
-    let (a0, a1) = (s0, s1);
-    let mut tmp = [0f32; 64];
     // filas (frecuencia vertical fija): DCT-III sobre u
-    for v in 0..n {
-        let row = &mut blk[v * n..v * n + n];
-        if row.iter().all(|&c| c == 0.0) {
-            continue;
-        }
-        row[0] *= a0;
-        for c in &mut row[1..] {
-            *c *= a1;
-        }
-        idct_1d(row, &mut tmp[..n]);
-    }
+    rows_pass(blk, n, n, true);
     // columnas: DCT-III sobre v (todas a la vez)
     cols_pass(blk, n, n, true);
 }
@@ -460,8 +498,12 @@ pub fn transform_rect(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
         }
         return;
     }
-    for y in 0..h {
-        dct1_ortho(&mut blk[y * w..y * w + w], inverse);
+    if w <= 8 {
+        for y in 0..h {
+            dct1_ortho(&mut blk[y * w..y * w + w], inverse);
+        }
+    } else {
+        rows_pass(blk, w, h, inverse);
     }
     cols_pass(blk, w, h, inverse);
 }
