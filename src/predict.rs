@@ -259,17 +259,29 @@ pub fn build_refs(p: &Plane, x0: usize, y0: usize, w: usize, h: usize, v2: bool)
     let total = nl + 1 + nt;
     let mut vals = [0i32; 257];
     let mut av = [false; 257];
-    for k in 0..total {
-        let (x, y) = if k < nl {
-            (x0i - 1, y0i + (nl - 1 - k) as isize)
-        } else if k == nl {
-            (x0i - 1, y0i - 1)
-        } else {
-            (x0i + (k - nl - 1) as isize, y0i - 1)
-        };
-        if p.is_avail(x, y) {
-            av[k] = true;
-            vals[k] = p.px(x as usize, y as usize) as i32;
+    // La disponibilidad es por celdas de 4×4 y los lados del bloque son
+    // múltiplos de 4 (el plano también): una consulta por grupo de 4 muestras.
+    for g in 0..nl / 4 {
+        let y = y0i + (nl - 1 - 4 * g) as isize;
+        if p.is_avail(x0i - 1, y) {
+            for t in 0..4 {
+                av[4 * g + t] = true;
+                vals[4 * g + t] = p.px(x0 - 1, y as usize - t) as i32;
+            }
+        }
+    }
+    if p.is_avail(x0i - 1, y0i - 1) {
+        av[nl] = true;
+        vals[nl] = p.px(x0 - 1, y0 - 1) as i32;
+    }
+    for g in 0..nt / 4 {
+        let x = x0 + 4 * g;
+        if p.is_avail(x as isize, y0i - 1) {
+            let k = nl + 1 + 4 * g;
+            av[k..k + 4].fill(true);
+            for t in 0..4 {
+                vals[k + t] = p.px(x + t, y0 - 1) as i32;
+            }
         }
     }
     let any = av[..total].iter().any(|&a| a);

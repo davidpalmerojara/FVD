@@ -418,9 +418,11 @@ impl CoefCtx {
         let sz = size_index(w.max(h));
         let sc = scan(w, h);
         let mut eob_enc = 0;
-        for (i, &(x, y)) in sc.iter().enumerate() {
-            if levels[y as usize * n + x as usize] != 0 {
-                eob_enc = i + 1;
+        if !C::DECODING {
+            for (i, &(x, y)) in sc.iter().enumerate() {
+                if levels[y as usize * n + x as usize] != 0 {
+                    eob_enc = i + 1;
+                }
             }
         }
         let nz = c.bit(&mut self.cbf[(pc * NSZ + sz) * 3 + cbf_ctx], eob_enc > 0);
@@ -433,7 +435,12 @@ impl CoefCtx {
         } else {
             self.eob[pc * NSZ + sz].code(c, eob_enc.saturating_sub(1) as u32) as usize + 1
         };
-        let enc_vals: Vec<i32> = levels[..nn].to_vec();
+        // El decodificador no usa los valores a codificar (y los niveles llegan a cero).
+        let enc_vals: Vec<i32> = if C::DECODING {
+            Vec::new()
+        } else {
+            levels[..nn].to_vec()
+        };
         levels[..nn].fill(0);
         // v2: posiciones no nulas en orden de decodificación (para los signos).
         let mut nzl = std::mem::take(&mut self.nzl);
@@ -441,7 +448,7 @@ impl CoefCtx {
         for i in (0..eob.min(nn)).rev() {
             let (x, y) = (sc[i].0 as usize, sc[i].1 as usize);
             let pos = y * n + x;
-            let v = enc_vals[pos];
+            let v = if C::DECODING { 0 } else { enc_vals[pos] };
             let a = v.unsigned_abs();
             let idx = cidx(pc, sz, freq_class(x, y), mag_class(levels, w, h, x, y));
             if i != eob - 1 && !c.bit(&mut self.sig[idx], a != 0) {
@@ -487,7 +494,7 @@ impl CoefCtx {
             let hide = (nzl[k].0 - nzl[e - 1].0) as usize >= SDH_SPAN;
             for (j, &(_, pos)) in nzl[k..e].iter().enumerate() {
                 let pos = pos as usize;
-                let v = enc_vals[pos];
+                let v = if C::DECODING { 0 } else { enc_vals[pos] };
                 let neg = if hide && k + j == e - 1 {
                     sum & 1 == 1
                 } else if pos == 0 {

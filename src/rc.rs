@@ -164,6 +164,10 @@ fn cost_table() -> &'static [f32; 4096] {
 }
 
 pub trait Coder {
+    /// `true` solo en el decodificador: el valor que se pasa a `bit`/`bypass`
+    /// se ignora, de modo que quien llama puede no calcularlo.
+    const DECODING: bool = false;
+
     fn bit(&mut self, m: &mut Model, b: bool) -> bool;
     fn bypass(&mut self, b: bool) -> bool;
 
@@ -310,6 +314,8 @@ impl<'a> Decoder<'a> {
 }
 
 impl Coder for Decoder<'_> {
+    const DECODING: bool = true;
+
     #[inline]
     fn bit(&mut self, m: &mut Model, _b: bool) -> bool {
         let b = self.decode(m.p1());

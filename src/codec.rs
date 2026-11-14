@@ -1074,6 +1074,20 @@ fn code_leaf_head<C: Coder>(
     (kind, ts)
 }
 
+/// Búferes de trabajo de una hoja que se reutilizan entre hojas del mismo
+/// hilo (evitan una reserva y puesta a cero por hoja).
+#[derive(Default)]
+struct LeafScratch {
+    levels: Vec<i32>,
+    pred: Vec<i32>,
+    recon: Vec<u8>,
+    buf: Vec<f32>,
+}
+
+thread_local! {
+    static LEAF_SCRATCH: std::cell::Cell<LeafScratch> = std::cell::Cell::new(LeafScratch::default());
+}
+
 /// Reconstruye un bloque `bw × bh`: descuantiza, transformada inversa (salvo
 /// transform skip) y suma la predicción.
 #[allow(clippy::too_many_arguments)]
@@ -1088,7 +1102,10 @@ fn reconstruct(
     out: &mut [u8],
 ) {
     let nn = bw * bh;
-    let mut buf = vec![0f32; nn];
+    let mut sc = LEAF_SCRATCH.take();
+    let buf = &mut sc.buf;
+    buf.clear();
+    buf.resize(nn, 0.0);
     let mut any = false;
     for i in 0..nn {
         if levels[i] != 0 {
@@ -1106,12 +1123,13 @@ fn reconstruct(
             };
             buf.fill(v);
         } else {
-            dct::transform_rect(&mut buf, bw, bh, true);
+            dct::transform_rect(buf, bw, bh, true);
         }
     }
     for i in 0..nn {
         out[i] = color::round_u8(pred[i] as f32 + buf[i]);
     }
+    LEAF_SCRATCH.set(sc);
 }
 
 struct LumaRef {
@@ -3711,7 +3729,15 @@ impl DecState {
             Kind::Intra(m) if m > MODE_SMOOTH_H => Kind::Intra(MODE_DC),
             k => k,
         };
-        let mut levels = vec![0i32; w * h];
+        let mut sc = LEAF_SCRATCH.take();
+        let (mut levels, mut pred, mut recon) = (
+            std::mem::take(&mut sc.levels),
+            std::mem::take(&mut sc.pred),
+            std::mem::take(&mut sc.recon),
+        );
+        LEAF_SCRATCH.set(sc);
+        levels.clear();
+        levels.resize(w * h, 0);
         let coef = if ts {
             &mut self.ctx.coef_ts
         } else {
@@ -3719,14 +3745,16 @@ impl DecState {
         };
         let nz = coef.code_block(dec, pc, w, h, cbf_ctx(p, x0, y0), &mut levels);
         let refs = predict::build_refs(p, x0, y0, w, h, self.v2);
-        let mut pred = vec![0i32; w * h];
+        pred.clear();
+        pred.resize(w * h, 0);
         let (pi, tx, ty) = self.cur;
         let ip = self.rc.as_ref().map(|rc| InterPlane {
             warp: self.gw,
             ..rc.plane(pi, tx, ty)
         });
         predict_leaf(p, &refs, lref, &kind, x0, y0, w, h, ip.as_ref(), &mut pred);
-        let mut recon = vec![0u8; w * h];
+        recon.clear();
+        recon.resize(w * h, 0);
         let q = qm.q(pc, x0, y0, w, h);
         reconstruct(
             &levels,
@@ -3739,6 +3767,9 @@ impl DecState {
             &mut recon,
         );
         p.write_block(x0, y0, w, h, &recon);
+        let mut sc = LEAF_SCRATCH.take();
+        (sc.levels, sc.pred, sc.recon) = (levels, pred, recon);
+        LEAF_SCRATCH.set(sc);
         p.set_block(x0, y0, w, h, kind.mark(), nz);
         if leaf_log() {
             let k = match &kind {
