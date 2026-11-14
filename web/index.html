@@ -125,16 +125,16 @@
         <table class="data">
           <thead><tr><th>Conjunto</th><th>Tesela</th><th>AVIF</th><th>JPEG XL</th><th>Decodificación Tesela / AVIF</th></tr></thead>
           <tbody>
-            <tr><td>Fotos · CLIC 2020, 41 profesionales de 2,2 MP</td><td class="best">−35,9 %</td><td>−29,6 %</td><td>−22,2 %</td><td>0,49 s / 1,46 s</td></tr>
-            <tr><td>Fotos · Kodak, 24 de 768×512</td><td class="best">−30,7 %</td><td>−26,3 %</td><td>−12,1 %</td><td>81 ms / 256 ms</td></tr>
-            <tr><td>Fotos grandes · DIV2K, 50 de 2,7 MP</td><td class="best">−35,1 %</td><td>−34,4 %</td><td>−20,3 %</td><td>0,66 s / 1,88 s</td></tr>
-            <tr><td>Capturas de pantalla · 9</td><td class="best">−60,1 %</td><td>−54,3 %</td><td>−36,0 %</td><td>0,14 s / 0,15 s</td></tr>
-            <tr><td>Ilustraciones · 6</td><td class="best">−61,8 %</td><td>−56,0 %</td><td>+9,5 %</td><td>0,13 s / 0,10 s</td></tr>
+            <tr><td>Fotos · CLIC 2020, 41 profesionales de 2,2 MP</td><td class="best">−37,0 %</td><td>−29,6 %</td><td>−22,2 %</td><td>0,50 s / 1,46 s</td></tr>
+            <tr><td>Fotos · Kodak, 24 de 768×512</td><td class="best">−31,7 %</td><td>−26,3 %</td><td>−12,1 %</td><td>80 ms / 256 ms</td></tr>
+            <tr><td>Fotos grandes · DIV2K, 50 de 2,7 MP</td><td class="best">−36,5 %</td><td>−34,4 %</td><td>−20,3 %</td><td>0,59 s / 1,88 s</td></tr>
+            <tr><td>Capturas de pantalla · 9</td><td class="best">−60,5 %</td><td>−54,3 %</td><td>−36,0 %</td><td>0,15 s / 0,15 s</td></tr>
+            <tr><td>Ilustraciones · 6</td><td class="best">−63,1 %</td><td>−56,0 %</td><td>+9,5 %</td><td>0,13 s / 0,10 s</td></tr>
           </tbody>
         </table>
       </div>
       <p class="muted" style="font-size:13px">AVIF: libavif 1.4 con aom, speed 4, croma 4:4:4. JPEG XL: libjxl 0.12, effort 7. WebP: libwebp 1.6, método 6.
-        Codificar con Tesela es más lento que con AVIF. Metodología, curvas y otras métricas en la
+        En fotos y capturas también codifica más rápido que AVIF. Metodología, curvas y otras métricas en la
         <a href="./docs/index.html#resultados">documentación</a>.</p>
     </section>
 
@@ -217,11 +217,11 @@
       <details class="card"><summary>¿Los visitantes pueden guardar las imágenes?</summary>
         <p>Sí. Con <code>tesela-auto.js</code>, el navegador recibe la imagen ya decodificada y «Guardar imagen como» funciona
           igual que con cualquier otra.</p></details>
-      <details class="card"><summary>¿Por qué codifica más lento que AVIF?</summary>
-        <p>Porque prueba muchas más combinaciones de bloques y predicciones para ahorrar bytes. Usa todos los núcleos del
-          procesador, también en el navegador, y codificar se hace una vez mientras que decodificar, miles. Si hace falta
-          velocidad, los modos rápidos (<code>-e 1</code> a <code>-e 3</code>) codifican de 2,5 a 5 veces más rápido que el modo por defecto
-          y siguen comprimiendo como AVIF o más.</p></details>
+      <details class="card"><summary>¿Es rápido codificando?</summary>
+        <p>En fotos y capturas, más que AVIF (speed 4): 2,1 frente a 2,5 s por foto de Kodak. Pero mucho menos que JPEG XL
+          o WebP, porque prueba muchas más combinaciones de bloques y predicciones para ahorrar bytes. Usa todos los núcleos
+          del procesador, también en el navegador. Si hace falta más velocidad, los modos rápidos (<code>-e 1</code> a
+          <code>-e 3</code>) codifican varias veces más rápido que el modo por defecto.</p></details>
       <p><a href="./docs/index.html#faq">Más preguntas en la documentación →</a></p>
     </section>
   </main>
