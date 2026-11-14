@@ -147,6 +147,157 @@ fn idct_1d(x: &mut [f32], tmp: &mut [f32]) {
     }
 }
 
+/// DCT-III por lotes de columnas: `x` son `n` filas de `W` valores y la
+/// recursión de `idct_1d` opera sobre filas enteras (cada columna hace
+/// exactamente las mismas operaciones, en el mismo orden, que `idct_1d`; el
+/// bucle sobre `W` vectoriza). `tmp` tiene también `n` filas.
+fn idct_cols<const W: usize>(x: &mut [[f32; W]], tmp: &mut [[f32; W]]) {
+    let n = x.len();
+    if n == 1 {
+        return;
+    }
+    let h = n / 2;
+    {
+        let (t0, t1) = tmp.split_at_mut(h);
+        t0[0] = x[0];
+        t1[0] = x[1];
+        for i in 1..h {
+            let (a, b, c) = (&x[2 * i], &x[2 * i - 1], &x[2 * i + 1]);
+            t0[i] = *a;
+            for j in 0..W {
+                t1[i][j] = b[j] + c[j];
+            }
+        }
+    }
+    {
+        let (t0, t1) = tmp.split_at_mut(h);
+        let (x0, x1) = x.split_at_mut(h);
+        idct_cols(t0, x0);
+        idct_cols(t1, x1);
+    }
+    let f = &factors(n)[..h];
+    let (t0, t1) = tmp.split_at(h);
+    let (xl, xr) = x.split_at_mut(h);
+    for i in 0..h {
+        let (a, t, fi) = (&t0[i], &t1[i], f[i]);
+        for j in 0..W {
+            let b = t[j] * fi;
+            xl[i][j] = a[j] + b;
+            xr[h - 1 - i][j] = a[j] - b;
+        }
+    }
+}
+
+/// DCT-II por lotes de columnas (ver `idct_cols`); `n` ≥ 8.
+fn dct_cols<const W: usize>(x: &mut [[f32; W]], tmp: &mut [[f32; W]]) {
+    let n = x.len();
+    if n == 8 {
+        let m = cos8_t();
+        let mut out = [[0f32; W]; 8];
+        for k in 0..8 {
+            let c = m[k];
+            for j in 0..W {
+                out[k][j] = c * x[0][j];
+            }
+        }
+        for i in 1..8 {
+            for k in 0..8 {
+                let c = m[i * 8 + k];
+                for j in 0..W {
+                    out[k][j] += c * x[i][j];
+                }
+            }
+        }
+        x.copy_from_slice(&out);
+        return;
+    }
+    let h = n / 2;
+    let f = &factors(n)[..h];
+    {
+        let (xa, xb) = x.split_at(h);
+        let (t0, t1) = tmp.split_at_mut(h);
+        for i in 0..h {
+            let (a, b, fi) = (&xa[i], &xb[h - 1 - i], f[i]);
+            for j in 0..W {
+                t0[i][j] = a[j] + b[j];
+                t1[i][j] = (a[j] - b[j]) * fi;
+            }
+        }
+    }
+    {
+        let (t0, t1) = tmp.split_at_mut(h);
+        let (x0, x1) = x.split_at_mut(h);
+        dct_cols(t0, x0);
+        dct_cols(t1, x1);
+    }
+    let (t0, t1) = tmp.split_at(h);
+    for i in 0..h - 1 {
+        x[2 * i] = t0[i];
+        for j in 0..W {
+            x[2 * i + 1][j] = t1[i][j] + t1[i + 1][j];
+        }
+    }
+    x[n - 2] = t0[h - 1];
+    x[n - 1] = t1[h - 1];
+}
+
+/// Transformada 1-D ortonormal de todas las columnas de un bloque de `W`
+/// columnas y `h` filas (orden fila), todas a la vez. Mismo resultado, bit a
+/// bit, que aplicar `dct1_ortho` a cada columna.
+fn cols_w<const W: usize>(blk: &mut [f32], h: usize, inverse: bool) {
+    let x = blk[..h * W].as_chunks_mut::<W>().0;
+    if h <= 8 {
+        let (m, t) = small_matrices(h);
+        let at = if inverse { m } else { t };
+        let mut out = [[0f32; W]; 8];
+        for i in 0..h {
+            for k in 0..h {
+                let c = at[i * h + k];
+                for j in 0..W {
+                    out[k][j] += c * x[i][j];
+                }
+            }
+        }
+        x.copy_from_slice(&out[..h]);
+        return;
+    }
+    let (s0, s1) = norm(h);
+    let mut tmp = [[0f32; W]; 64];
+    let tmp = &mut tmp[..h];
+    if inverse {
+        for v in &mut x[0] {
+            *v *= s0;
+        }
+        for row in &mut x[1..] {
+            for v in row {
+                *v *= s1;
+            }
+        }
+        idct_cols(x, tmp);
+    } else {
+        dct_cols(x, tmp);
+        for v in &mut x[0] {
+            *v *= s0;
+        }
+        for row in &mut x[1..] {
+            for v in row {
+                *v *= s1;
+            }
+        }
+    }
+}
+
+/// Pasada de columnas de un bloque `w × h` (ver `cols_w`).
+fn cols_pass(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
+    match w {
+        4 => cols_w::<4>(blk, h, inverse),
+        8 => cols_w::<8>(blk, h, inverse),
+        16 => cols_w::<16>(blk, h, inverse),
+        32 => cols_w::<32>(blk, h, inverse),
+        _ => cols_w::<64>(blk, h, inverse),
+    }
+}
+
 #[inline]
 fn norm(n: usize) -> (f32, f32) {
     ((1.0 / n as f32).sqrt(), (2.0 / n as f32).sqrt())
@@ -229,7 +380,6 @@ pub fn forward(blk: &mut [f32], n: usize) {
     }
     let (s0, s1) = norm(n);
     let mut tmp = [0f32; 64];
-    let mut col = [0f32; 64];
     for y in 0..n {
         let row = &mut blk[y * n..y * n + n];
         dct_1d(row, &mut tmp[..n]);
@@ -238,16 +388,7 @@ pub fn forward(blk: &mut [f32], n: usize) {
             *v *= s1;
         }
     }
-    for x in 0..n {
-        for y in 0..n {
-            col[y] = blk[y * n + x];
-        }
-        dct_1d(&mut col[..n], &mut tmp[..n]);
-        blk[x] = col[0] * s0;
-        for y in 1..n {
-            blk[y * n + x] = col[y] * s1;
-        }
-    }
+    cols_pass(blk, n, n, false);
 }
 
 /// Transformada inversa ortonormal en el sitio. Las filas de coeficientes
@@ -259,7 +400,6 @@ pub fn inverse(blk: &mut [f32], n: usize) {
     let (s0, s1) = norm(n);
     let (a0, a1) = (s0, s1);
     let mut tmp = [0f32; 64];
-    let mut col = [0f32; 64];
     // filas (frecuencia vertical fija): DCT-III sobre u
     for v in 0..n {
         let row = &mut blk[v * n..v * n + n];
@@ -272,17 +412,8 @@ pub fn inverse(blk: &mut [f32], n: usize) {
         }
         idct_1d(row, &mut tmp[..n]);
     }
-    // columnas: DCT-III sobre v
-    for x in 0..n {
-        col[0] = blk[x] * a0;
-        for y in 1..n {
-            col[y] = blk[y * n + x] * a1;
-        }
-        idct_1d(&mut col[..n], &mut tmp[..n]);
-        for y in 0..n {
-            blk[y * n + x] = col[y];
-        }
-    }
+    // columnas: DCT-III sobre v (todas a la vez)
+    cols_pass(blk, n, n, true);
 }
 
 /// DCT 1-D ortonormal de un vector de longitud 4..64 (directa o inversa).
@@ -329,19 +460,10 @@ pub fn transform_rect(blk: &mut [f32], w: usize, h: usize, inverse: bool) {
         }
         return;
     }
-    let mut col = [0f32; 64];
     for y in 0..h {
         dct1_ortho(&mut blk[y * w..y * w + w], inverse);
     }
-    for x in 0..w {
-        for y in 0..h {
-            col[y] = blk[y * w + x];
-        }
-        dct1_ortho(&mut col[..h], inverse);
-        for y in 0..h {
-            blk[y * w + x] = col[y];
-        }
-    }
+    cols_pass(blk, w, h, inverse);
 }
 
 fn inverse_sq(blk: &mut [f32], n: usize) {
