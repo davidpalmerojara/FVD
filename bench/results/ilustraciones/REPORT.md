@@ -4,7 +4,7 @@ Imágenes: 6. BD-rate frente a **WebP** (negativo = menos bytes a igual calidad)
 
 | Códec | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Cod. (s/img) | Dec. (s/img) |
 |---|---|---|---|---|---|---|---|
-| TESELA | -63.1 % | -65.4 % | -57.5 % | -60.2 % | -70.9 % | 4.04 | 0.131 |
+| TESELA | -64.2 % | -66.6 % | -59.1 % | -61.7 % | -72.2 % | 5.70 | 0.113 |
 | WEBP | +0.0 % | +0.0 % | +0.0 % | +0.0 % | +0.0 % | 0.12 | 0.079 |
 | AVIF | -56.0 % | -58.0 % | -49.0 % | -53.9 % | -61.7 % | 3.26 | 0.098 |
 | JXL | +9.5 % | +7.3 % | +39.8 % | +47.9 % | +21.1 % | 0.49 | 0.198 |
