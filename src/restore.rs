@@ -428,3 +428,269 @@ pub fn decide(p: &Plane, src: &[f32], lambda: f32) -> Decision {
     }
     best
 }
+
+// ------------------------------------------------- Croma guiada por la luma (v2)
+//
+// En 4:2:0, la croma de salida se interpola con la luma como guía (filtro
+// guiado de He et al.): en cada muestra de croma se ajusta un modelo local
+// c ≈ a·Y + b con las medias de 3×3 de la croma y de la luma reducida, los
+// parámetros se promedian en 3×3, se interpolan como la croma (bilineal
+// centrada) y se evalúan con la luma completa. La salida mezcla esa
+// predicción con la interpolación bilineal en k/4 (k lo elige el
+// codificador por plano). Todo en enteros; con k = 0 coincide exactamente con
+// la interpolación bilineal.
+
+/// Bits fraccionarios de a y b.
+const GA: u32 = 10;
+/// ε = 30 (varianza de luma) en la escala de `var9` (1296 = 81 · 16).
+const GEPS: i64 = 1296 * 30;
+/// |a| ≤ 4.
+const GAMAX: i64 = 4 << GA;
+
+/// División redondeada (hacia +∞ en el empate) con divisor positivo.
+#[inline(always)]
+fn rdiv(n: i64, d: i64) -> i64 {
+    (2 * n + d).div_euclid(2 * d)
+}
+
+/// ⌊2^20 / 36⌉ y ⌊2^20 / 9⌉: divisiones por 36 y 9 como producto y desplazamiento.
+const INV36: i64 = 29127;
+const INV9: i64 = 116508;
+
+/// `(n·m + 2^19) >> 20`.
+#[inline(always)]
+fn mulsh(n: i32, m: i64) -> i32 {
+    ((n as i64 * m + (1 << 19)) >> 20) as i32
+}
+
+/// Fila `y` (de ancho `w`) de una rejilla.
+#[inline(always)]
+fn row(v: &[i32], y: usize, w: usize) -> &[i32] {
+    &v[y * w..y * w + w]
+}
+
+/// Suma horizontal de 3 con coordenadas recortadas, fila a fila (`w × h`).
+fn hsum3(v: &[i32], w: usize) -> Vec<i32> {
+    let mut out = vec![0i32; v.len()];
+    for (r, o) in v.chunks_exact(w).zip(out.chunks_exact_mut(w)) {
+        o[0] = r[0] + r[0] + r[1.min(w - 1)];
+        if w > 1 {
+            for (o, t) in o[1..].iter_mut().zip(r.windows(3)) {
+                *o = t[0] + t[1] + t[2];
+            }
+            o[w - 1] = r[w - 2] + r[w - 1] + r[w - 1];
+        }
+    }
+    out
+}
+
+/// Filas vecinas (arriba, abajo) recortadas a `0..h`.
+#[inline(always)]
+fn vnb(y: usize, h: usize) -> (usize, usize) {
+    (y.saturating_sub(1), (y + 1).min(h - 1))
+}
+
+/// Parámetros del modelo local sobre la rejilla de croma (`cw × ch`): ā y b̄
+/// (escala 2^GA) y la croma.
+struct Guide {
+    cw: usize,
+    ch: usize,
+    a: Vec<i32>,
+    b: Vec<i32>,
+    c: Vec<i32>,
+}
+
+fn guided_params(luma: &[u8], ys: usize, c: &[u8], cs: usize, w: usize, h: usize) -> Guide {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let n = cw * ch;
+    // Luma reducida D (suma de 2×2) y croma.
+    let mut d = vec![0i32; n];
+    let mut cv = vec![0i32; n];
+    for y in 0..ch {
+        let r0 = &luma[2 * y * ys..2 * y * ys + w];
+        let y1 = (2 * y + 1).min(h - 1);
+        let r1 = &luma[y1 * ys..y1 * ys + w];
+        let dr = &mut d[y * cw..y * cw + cw];
+        for ((o, p), q) in dr
+            .iter_mut()
+            .zip(r0.chunks_exact(2))
+            .zip(r1.chunks_exact(2))
+        {
+            *o = p[0] as i32 + p[1] as i32 + q[0] as i32 + q[1] as i32;
+        }
+        if w % 2 == 1 {
+            dr[cw - 1] = 2 * (r0[w - 1] as i32 + r1[w - 1] as i32);
+        }
+        for (o, &v) in cv[y * cw..y * cw + cw]
+            .iter_mut()
+            .zip(&c[y * cs..y * cs + cw])
+        {
+            *o = v as i32;
+        }
+    }
+    let dd: Vec<i32> = d.iter().map(|&v| v * v).collect();
+    let dc: Vec<i32> = d.iter().zip(&cv).map(|(&a, &b)| a * b).collect();
+    let (hd, hdd, hc, hdc) = (
+        hsum3(&d, cw),
+        hsum3(&dd, cw),
+        hsum3(&cv, cw),
+        hsum3(&dc, cw),
+    );
+    // Modelo local c ≈ a·Y + b en cada muestra (ventana de 3×3).
+    let mut a = vec![0i32; n];
+    let mut b = vec![0i32; n];
+    for y in 0..ch {
+        let (u, l) = vnb(y, ch);
+        let (d0, d1, d2) = (row(&hd, u, cw), row(&hd, y, cw), row(&hd, l, cw));
+        let (e0, e1, e2) = (row(&hdd, u, cw), row(&hdd, y, cw), row(&hdd, l, cw));
+        let (c0, c1, c2) = (row(&hc, u, cw), row(&hc, y, cw), row(&hc, l, cw));
+        let (f0, f1, f2) = (row(&hdc, u, cw), row(&hdc, y, cw), row(&hdc, l, cw));
+        let ar = &mut a[y * cw..y * cw + cw];
+        let br = &mut b[y * cw..y * cw + cw];
+        for x in 0..cw {
+            let sd = d0[x] + d1[x] + d2[x];
+            let sdd = e0[x] + e1[x] + e2[x];
+            let sc = c0[x] + c1[x] + c2[x];
+            let sdc = f0[x] + f1[x] + f2[x];
+            let var = 9 * sdd - sd * sd;
+            let cov = 9 * sdc - sd * sc;
+            let ai = rdiv((4 * cov as i64) << GA, var as i64 + GEPS).clamp(-GAMAX, GAMAX) as i32;
+            ar[x] = ai;
+            br[x] = mulsh(((4 * sc) << GA) - ai * sd, INV36);
+        }
+    }
+    // Promedio de 3×3 de a y b.
+    let (hd, hc) = (hsum3(&a, cw), hsum3(&b, cw));
+    for y in 0..ch {
+        let (u, l) = vnb(y, ch);
+        let (d0, d1, d2) = (row(&hd, u, cw), row(&hd, y, cw), row(&hd, l, cw));
+        let (c0, c1, c2) = (row(&hc, u, cw), row(&hc, y, cw), row(&hc, l, cw));
+        let ar = &mut a[y * cw..y * cw + cw];
+        let br = &mut b[y * cw..y * cw + cw];
+        for x in 0..cw {
+            ar[x] = mulsh(d0[x] + d1[x] + d2[x], INV9);
+            br[x] = mulsh(c0[x] + c1[x] + c2[x], INV9);
+        }
+    }
+    Guide {
+        cw,
+        ch,
+        a,
+        b,
+        c: cv,
+    }
+}
+
+/// Evalúa la mezcla `k`/4 fila a fila: para cada fila `y` de la salida
+/// (`w × h`) llama a `f(y, o)` con `o = (4 − k)·(u << GA) + k·(Â·Y + B̂)`
+/// (escala 2^(GA+6)), donde u es la interpolación bilineal de la croma.
+/// Por linealidad, se interpolan (4 − k)·(c << GA) + k·b̄ y k·ā.
+fn guided_eval(
+    gd: &Guide,
+    k: i32,
+    luma: &[u8],
+    ys: usize,
+    w: usize,
+    h: usize,
+    mut f: impl FnMut(usize, &[i32]),
+) {
+    let (cw, ch) = (gd.cw, gd.ch);
+    let fa: Vec<i32> = gd.a.iter().map(|&v| k * v).collect();
+    let fb: Vec<i32> =
+        gd.b.iter()
+            .zip(&gd.c)
+            .map(|(&b, &c)| (4 - k) * (c << GA) + k * b)
+            .collect();
+    let (mut va, mut vb) = (vec![0i32; cw], vec![0i32; cw]);
+    let (mut ha, mut hb) = (vec![0i32; 2 * cw], vec![0i32; 2 * cw]);
+    for y in 0..h {
+        let i = y / 2;
+        let o = if y % 2 == 0 {
+            i.saturating_sub(1)
+        } else {
+            (i + 1).min(ch - 1)
+        };
+        for (src, dst) in [(&fa, &mut va), (&fb, &mut vb)] {
+            let (ri, ro) = (&src[i * cw..i * cw + cw], &src[o * cw..o * cw + cw]);
+            for ((v, &p), &q) in dst.iter_mut().zip(ri).zip(ro) {
+                *v = 3 * p + q;
+            }
+        }
+        hup(&va, &mut ha);
+        hup(&vb, &mut hb);
+        let yr = &luma[y * ys..y * ys + w];
+        for ((av, &bv), &yv) in ha.iter_mut().zip(&hb).zip(yr) {
+            *av = *av * yv as i32 + bv;
+        }
+        f(y, &ha[..w]);
+    }
+}
+
+/// Interpolación horizontal 2× centrada (escala 4): la salida 2x es
+/// 3·v[x] + v[x−1] y la 2x+1, 3·v[x] + v[x+1] (vecinos recortados).
+fn hup(v: &[i32], out: &mut [i32]) {
+    let n = v.len();
+    out[0] = 4 * v[0];
+    out[1] = 3 * v[0] + v[1.min(n - 1)];
+    if n > 1 {
+        for (o, t) in out[2..].chunks_exact_mut(2).zip(v.windows(3)) {
+            o[0] = 3 * t[1] + t[0];
+            o[1] = 3 * t[1] + t[2];
+        }
+        out[2 * n - 2] = 3 * v[n - 1] + v[n - 2];
+        out[2 * n - 1] = 4 * v[n - 1];
+    }
+}
+
+/// Croma de salida a resolución completa (`w × h`, en f32 con 4 bits
+/// fraccionarios) con la mezcla `k`/4 de la predicción guiada.
+pub fn guided_chroma(
+    luma: &[u8],
+    ys: usize,
+    c: &[u8],
+    cs: usize,
+    w: usize,
+    h: usize,
+    k: u8,
+) -> Vec<f32> {
+    let gd = guided_params(luma, ys, c, cs, w, h);
+    let mut out = Vec::with_capacity(w * h);
+    guided_eval(&gd, k as i32, luma, ys, w, h, |_, o| {
+        out.extend(
+            o.iter()
+                .map(|&o| ((o + (1 << (GA + 1))) >> (GA + 2)).clamp(0, 255 * 16) as f32 / 16.0),
+        );
+    });
+    out
+}
+
+/// Codificador: mezcla k ∈ 0..=4 que minimiza el error cuadrático de la croma
+/// completa `src` (`w × h`).
+pub fn guided_choose(
+    luma: &[u8],
+    ys: usize,
+    c: &[u8],
+    cs: usize,
+    w: usize,
+    h: usize,
+    src: &[f32],
+) -> u8 {
+    let gd = guided_params(luma, ys, c, cs, w, h);
+    // u (k = 0) y g (k = 4), en escala 2^(GA+6).
+    let mut u = Vec::with_capacity(w * h);
+    guided_eval(&gd, 0, luma, ys, w, h, |_, o| u.extend_from_slice(o));
+    let sc = (1u32 << (GA + 2)) as f64;
+    let (mut num, mut den) = (0f64, 0f64);
+    guided_eval(&gd, 4, luma, ys, w, h, |y, g| {
+        for x in 0..w {
+            let uu = u[y * w + x] as f64 / sc;
+            let dlt = g[x] as f64 / sc - uu;
+            num += (src[y * w + x] as f64 * 16.0 - uu) * dlt;
+            den += dlt * dlt;
+        }
+    });
+    if den <= 0.0 {
+        return 0;
+    }
+    (4.0 * num / den).round().clamp(0.0, 4.0) as u8
+}

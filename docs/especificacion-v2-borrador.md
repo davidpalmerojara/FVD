@@ -448,6 +448,39 @@ el resto, la predicción **espacial** a partir de las celdas ya decodificadas: c
 izquierda y A la de arriba, `⌊(L + A) / 2⌋` si existen las dos, la que exista si solo hay una, y 0
 en la primera celda. El dq de la celda es la predicción más el valor leído, recortado a ±64.
 
+### 3.7 Croma guiada por la luma
+
+**Sintaxis.** En una tesela con pérdida y `subsample = 1`, justo después de la sintaxis de
+restauración de los tres planos (sección 5 de la v1, punto 2) y antes del plano alfa, se lee para
+Cb (i = 0) y para Cr (i = 1) la mezcla `k_i` (0 … 4): un bit `guide[i]`; si vale 0, `k_i = 0`; si
+vale 1, `k_i = 1 + Tree(2)(guide_k)`. Los modelos `guide[2]` y `guide_k: Tree(2)` van al final de
+la lista (sección 5) y empiezan en p = 1/2.
+
+**Semántica.** Sustituye la interpolación bilineal de la croma de la sección 10 de la v1 en el
+plano con `k_i > 0` (con `k_i = 0` la salida es exactamente la de la v1). Se calcula por tesela,
+con su parte visible: Y es la luma final (`w × h`) y C el plano de croma final
+(`cw × ch = ⌈w/2⌉ × ⌈h/2⌉`), ambos tras la restauración. Todas las coordenadas se recortan a su
+rejilla; `rdiv(n, d) = ⌊(2n + d) / (2d)⌋` (d > 0) es la división redondeada,
+`m(n, f) = (n·f + 2^19) >> 20` aproxima `n / (2^20 / f)`, y los desplazamientos son aritméticos
+(enteros de 64 bits).
+
+1. Luma reducida: `D(x, y) = Y(2x, 2y) + Y(2x+1, 2y) + Y(2x, 2y+1) + Y(2x+1, 2y+1)`.
+2. Para cada muestra de croma, sumas en su ventana de 3×3: `SD = ΣD`, `SDD = ΣD²`, `SC = ΣC` y
+   `SDC = ΣD·C`. Con `var = 9·SDD − SD²` y `cov = 9·SDC − SD·SC`:
+   - `a = clamp(rdiv((4·cov) << 10, var + 38880), −4096, 4096)`;
+   - `b = m(((4·SC) << 10) − a·SD, 29127)` (≈ / 36).
+
+   (Es el ajuste local `c ≈ a·Y + b` del filtro guiado, con ε = 30 y 10 bits fraccionarios.)
+3. `ā = m(Σa, 116508)` y `b̄ = m(Σb, 116508)` (≈ / 9) en la ventana de 3×3.
+4. ā, b̄ y C se interpolan a `w × h` como la croma de la v1, pero en enteros y sin dividir: en
+   horizontal, `3·v[⌊x/2⌋] + v[vecino]`, y después igual en vertical (escala 16). Son Â, B̂ y U.
+5. Con `G = Â·Y(x, y) + B̂` y `U' = U << 10`:
+   `v = (4·U' + k_i·(G − U') + 2^11) >> 12`, recortado a [0, 4080].
+6. La croma de esa muestra es `v / 16` (exacto en `f32`) y la conversión a RGB sigue como en la v1.
+
+El codificador elige `k_i` por mínimos cuadrados frente a la croma original a resolución completa
+(`k = round(4·Σ(S − u)·d / Σd²)` con `d = g − u`, recortado a 0 … 4).
+
 ## 4. Relleno de los planos
 
 Los planos se codifican con su tamaño redondeado a superbloques. En la v2, tras decodificar los
@@ -471,6 +504,8 @@ llega a cubrir todos los modelos, `last` empieza a ½ y cada `rem_n[(pc·5 + fc)
 estado de `rem[pc·5 + fc]` del mismo conjunto, ya inicializado con la tabla.
 
 Detrás de todos ellos va `cclm_k[2][5]` (variantes de CCLM, sección 3.5), que empieza en p = 1/2.
+Detrás de ese van `guide[2]` y `guide_k: Tree(2)` de la croma guiada (sección 3.7), que empiezan en
+p = 1/2.
 
 ## 6. Pendiente antes de congelar
 

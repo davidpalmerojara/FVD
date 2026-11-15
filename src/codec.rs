@@ -473,6 +473,9 @@ struct Ctx {
     smooth_k: [[Model; 2]; 2],
     /// v2: variantes de CCLM (sección 3.5): cuál, en unario truncado.
     cclm_k: [[Model; 5]; 2],
+    /// v2, 4:2:0: mezcla de la croma guiada por la luma (¿k > 0? por plano y k − 1).
+    guide: [Model; 2],
+    guide_k: TreeCtx,
 }
 
 impl Visit for Ctx {
@@ -507,7 +510,18 @@ impl Visit for Ctx {
         self.coef_ts.visit_v2(f);
         // --- Variantes de CCLM (v2, sección 3.5) ---
         self.cclm_k.visit(f);
+        // Croma guiada por la luma (v2, sección 3.7).
+        self.guide.visit(f);
+        self.guide_k.visit(f);
     }
+}
+
+/// Mezcla k (0..=4) de la croma guiada de un plano de croma (`i`: 0 Cb, 1 Cr).
+fn code_guide<C: Coder>(ctx: &mut Ctx, c: &mut C, i: usize, k: u8) -> u8 {
+    if !c.bit(&mut ctx.guide[i], k > 0) {
+        return 0;
+    }
+    1 + ctx.guide_k.code(c, k.saturating_sub(1) as u32) as u8
 }
 
 /// Banda de calidad (selecciona la tabla de probabilidades iniciales).
@@ -600,6 +614,8 @@ impl Ctx {
             smooth: vec![Model::new(); 2 * 5],
             smooth_k: [[Model::new(); 2]; 2],
             cclm_k: [[Model::new(); 5]; 2],
+            guide: [Model::new(); 2],
+            guide_k: TreeCtx::new(2),
         }
     }
 }
@@ -3593,6 +3609,26 @@ fn encode_tile_ref(
             .code(&mut enc, pc, plane.w / SB, plane.h / SB, &d);
         restore::apply(plane, &d);
     }
+    let mut guide = [0u8; 2];
+    if header.version >= 2 && sub {
+        let full = p
+            .restore
+            .then(|| color::rgb_to_ycbcr(rgb, width, height, false).planes);
+        for (i, g) in guide.iter_mut().enumerate() {
+            let k = full.as_ref().map_or(0, |f| {
+                restore::guided_choose(
+                    &planes[0].data,
+                    planes[0].w,
+                    &planes[i + 1].data,
+                    planes[i + 1].w,
+                    width,
+                    height,
+                    &f[i + 1].0,
+                )
+            });
+            *g = code_guide(&mut st.ctx, &mut enc, i, k);
+        }
+    }
     let stats = st.ctx.stats();
     // Canal alfa: plano adicional sin pérdida, con contextos propios.
     let mut recon_alpha = None;
@@ -3630,7 +3666,7 @@ fn encode_tile_ref(
         );
         recon_alpha = Some(crop_plane(&plane, width, height));
     }
-    let (recon, fp) = finish_planes(header, &planes, width, height, want_planes);
+    let (recon, fp) = finish_planes(header, &planes, width, height, want_planes, guide);
     (enc.finish(), recon, recon_alpha, stats, fp, st.ctx)
 }
 
@@ -3684,6 +3720,7 @@ fn finish_planes(
     w: usize,
     ht: usize,
     want: bool,
+    guide: [u8; 2],
 ) -> (Vec<u8>, RefPlanes) {
     if h.tools & TOOL_LOSSLESS != 0 {
         let (g, b, r) = (&planes[0], &planes[1], &planes[2]);
@@ -3710,7 +3747,7 @@ fn finish_planes(
             );
         }
     }
-    let rgb = color::ycbcr_to_rgb(
+    let rgb = color::ycbcr_to_rgb_guided(
         &ps[0].data,
         ps[0].w,
         &ps[1].data,
@@ -3719,6 +3756,7 @@ fn finish_planes(
         w,
         ht,
         h.subsample,
+        guide,
     );
     let fp = if want {
         final_planes(h, &ps, w, ht)
@@ -4162,6 +4200,12 @@ fn decode_tile_ref(
         );
         restore::apply(plane, &d);
     }
+    let mut guide = [0u8; 2];
+    if h.version >= 2 && h.subsample && h.tools & TOOL_LOSSLESS == 0 {
+        for (i, g) in guide.iter_mut().enumerate() {
+            *g = code_guide(&mut st.ctx, &mut dec, i, 0);
+        }
+    }
     let alpha = (h.tools & TOOL_ALPHA != 0).then(|| {
         let mut ast = DecState {
             ctx: Ctx::new(),
@@ -4181,7 +4225,7 @@ fn decode_tile_ref(
         let plane = decode_plane(&mut ast, &mut dec, w, ht, 0, None, &mut aq, false);
         crop_plane(&plane, w, ht)
     });
-    let (rgb, fp) = finish_planes(h, &planes, w, ht, want_planes);
+    let (rgb, fp) = finish_planes(h, &planes, w, ht, want_planes, guide);
     (rgb, alpha, fp, st.ctx)
 }
 

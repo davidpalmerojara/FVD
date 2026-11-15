@@ -141,31 +141,59 @@ pub fn ycbcr_to_rgb(
     h: usize,
     sub: bool,
 ) -> Vec<u8> {
+    ycbcr_to_rgb_guided(y, ystride, cb, cr, cstride, w, h, sub, [0, 0])
+}
+
+/// Croma de un plano a resolución completa: copia (4:4:4), bilineal en dos
+/// pasadas (4:2:0, k = 0) o guiada por la luma (4:2:0, k > 0, plano entero).
+enum Up {
+    Full,
+    Bilin(Vec<f32>),
+    Guided(Vec<f32>),
+}
+
+/// Como `ycbcr_to_rgb`; en 4:2:0, con la mezcla `guide[i]`/4 de la croma
+/// guiada por la luma en Cb (0) y Cr (1) (v2; 0 = interpolación bilineal).
+#[allow(clippy::too_many_arguments)]
+pub fn ycbcr_to_rgb_guided(
+    y: &[u8],
+    ystride: usize,
+    cb: &[u8],
+    cr: &[u8],
+    cstride: usize,
+    w: usize,
+    h: usize,
+    sub: bool,
+    guide: [u8; 2],
+) -> Vec<u8> {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    // Con submuestreo, la croma se interpola en horizontal de una vez y en
-    // vertical fila a fila (sin planos de croma completos en f32).
-    let (tb, tr) = if sub {
-        (
-            upsample_h(cb, cstride, cw, ch, w),
-            upsample_h(cr, cstride, cw, ch, w),
-        )
-    } else {
-        (Vec::new(), Vec::new())
+    // Con submuestreo bilineal, la croma se interpola en horizontal de una vez
+    // y en vertical fila a fila (sin planos de croma completos en f32); la
+    // guiada se calcula entera.
+    let up = |c: &[u8], k: u8| {
+        if !sub {
+            Up::Full
+        } else if k == 0 {
+            Up::Bilin(upsample_h(c, cstride, cw, ch, w))
+        } else {
+            Up::Guided(crate::restore::guided_chroma(y, ystride, c, cstride, w, h, k))
+        }
+    };
+    let (pb, pr) = (up(cb, guide[0]), up(cr, guide[1]));
+    let row = |p: &Up, c: &[u8], yy: usize, dst: &mut [f32]| match p {
+        Up::Full => {
+            for (d, &v) in dst.iter_mut().zip(&c[yy * cstride..yy * cstride + w]) {
+                *d = v as f32;
+            }
+        }
+        Up::Bilin(t) => upsample_v(t, w, ch, yy, dst),
+        Up::Guided(g) => dst.copy_from_slice(&g[yy * w..yy * w + w]),
     };
     let mut out = vec![0u8; w * h * 3];
     let (mut ub, mut vb) = (vec![0f32; w], vec![0f32; w]);
     for yy in 0..h {
-        if sub {
-            upsample_v(&tb, w, ch, yy, &mut ub);
-            upsample_v(&tr, w, ch, yy, &mut vb);
-        } else {
-            for (d, &v) in ub.iter_mut().zip(&cb[yy * cstride..yy * cstride + w]) {
-                *d = v as f32;
-            }
-            for (d, &v) in vb.iter_mut().zip(&cr[yy * cstride..yy * cstride + w]) {
-                *d = v as f32;
-            }
-        }
+        row(&pb, cb, yy, &mut ub);
+        row(&pr, cr, yy, &mut vb);
         let yrow = &y[yy * ystride..yy * ystride + w];
         let orow = &mut out[3 * yy * w..3 * (yy + 1) * w];
         for (((px, &l), &cbv), &crv) in orow.chunks_exact_mut(3).zip(yrow).zip(&ub).zip(&vb) {
