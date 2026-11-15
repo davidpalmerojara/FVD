@@ -3,7 +3,7 @@
 **Tesela** es un formato de imagen escrito desde cero en Rust. Divide cada imagen en *teselas*
 de tamaño adaptativo, como un mosaico. A igual calidad ocupa menos que WebP, AVIF y JPEG XL en todos los
 tipos de contenido probados: fotos pequeñas y grandes, capturas de pantalla e ilustraciones. En
-fotos decodifica unas 3 veces más rápido que AVIF, y funciona en cualquier navegador gracias a
+fotos decodifica de 3 a 4 veces más rápido que AVIF, y funciona en cualquier navegador gracias a
 WebAssembly.
 
 Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
@@ -92,24 +92,25 @@ imágenes sintéticas propias, nunca con las imágenes de evaluación.
 
 | Conjunto | Tesela | AVIF | JPEG XL | Decodificación Tesela / AVIF |
 |---|---|---|---|---|
-| **CLIC 2020**: 41 fotos profesionales de 2,2 MP (conjunto de referencia en investigación) | **−37,0 %** | −29,6 % | −22,2 % | 0,50 s / 1,46 s |
-| Kodak: 24 fotos de 768×512 | **−31,7 %** | −26,3 % | −12,1 % | 80 ms / 256 ms |
-| **DIV2K**: 50 fotos de validación de 2,7 MP ([informe](bench/results/div2k-50/REPORT.md)) | **−36,5 %** | −34,4 % | −20,3 % | 0,59 s / 1,88 s |
-| Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−60,5 %** | −54,3 % | −36,0 % | 0,15 s / 0,15 s |
-| Ilustraciones: 6 (emojis, vectorial, gráficos) | **−63,1 %** | −56,0 % | +9,5 % | 0,13 s / 0,10 s |
+| **CLIC 2020**: 41 fotos profesionales de 2,2 MP (conjunto de referencia en investigación) | **−39,3 %** | −29,6 % | −22,2 % | 0,51 s / 1,46 s |
+| Kodak: 24 fotos de 768×512 | **−33,3 %** | −26,3 % | −12,1 % | 58 ms / 256 ms |
+| **DIV2K**: 50 fotos de validación de 2,7 MP ([informe](bench/results/div2k-50/REPORT.md)) | **−38,9 %** | −34,4 % | −20,3 % | 0,63 s / 1,88 s |
+| Capturas de pantalla: 9 (código, documentación, terminal, hoja de cálculo, webs) | **−61,0 %** | −54,3 % | −36,0 % | 0,14 s / 0,15 s |
+| Ilustraciones: 6 (emojis, vectorial, gráficos) | **−64,2 %** | −56,0 % | +9,5 % | 0,11 s / 0,10 s |
 
 AVIF con croma completa (4:4:4): en todos los conjuntos ocupa menos que con 4:2:0, de un 2 a un 7 %
 a calidad media y bastante más a calidad alta, así que es la comparación justa. Tesela elige 4:2:0
 o 4:4:4 por imagen. Con AVIF en 4:2:0, la ventaja de Tesela parecía mayor (en DIV2K, −34,0 frente a
-−32,5 %; ahora −36,5 frente a −34,4 %). Los tiempos son los del banco, que
-codifica y decodifica cuatro imágenes a la vez.
+−32,5 %; ahora −38,9 frente a −34,4 %). Los tiempos son los del banco, que
+codifica y decodifica cuatro imágenes a la vez. Los de Kodak se tomaron con la máquina libre; los de
+los demás conjuntos, con la máquina compartida con otras tareas, así que los de Tesela son pesimistas.
 
 ### Kodak, todas las métricas
 
 | Formato | SSIMULACRA2 | SSIMULACRA2 alta calidad | PSNR-Y | SSIM-Y | PSNR RGB | Codificación | Decodificación |
 |---|---|---|---|---|---|---|---|
-| **Tesela** (por defecto) | **−31,7 %** | **−28,2 %** | −20,0 % | **−27,4 %** | −29,6 % | 2,11 s | **80 ms** |
-| Tesela `--tune psnr` | −17,6 % | −16,0 % | **−28,6 %** | −24,7 % | **−33,1 %** | 2,27 s | 85 ms |
+| **Tesela** (por defecto) | **−33,3 %** | **−30,2 %** | −21,6 % | **−28,9 %** | −31,6 % | 1,90 s | **58 ms** |
+| Tesela `--tune psnr` | −20,1 % | −18,6 % | **−30,1 %** | −26,4 % | **−35,2 %** | 2,04 s | 64 ms |
 | AVIF (libavif 1.4 + aom, `speed=4`, 4:4:4) | −26,3 % | −22,4 % | −12,9 % | −19,3 % | −20,5 % | 2,50 s | 256 ms |
 | JPEG XL (libjxl 0.12, `effort=7`) | −12,1 % | −13,4 % | +9,4 % | +4,4 % | +12,2 % | 0,19 s | 146 ms |
 | WebP (libwebp 1.6, `method=6`) | 0 % | 0 % | 0 % | 0 % | 0 % | 0,13 s | 115 ms |
@@ -118,16 +119,16 @@ codifica y decodifica cuatro imágenes a la vez.
 
 **Cómo leer estos resultados:**
 
-- **Fotos.** En SSIMULACRA2, Tesela supera a AVIF por 5 puntos en Kodak, 7 en CLIC y 2 en las fotos
-  grandes de DIV2K. En PSNR-Y (solo luma) la ventaja es menor, porque al
+- **Fotos.** En SSIMULACRA2, Tesela supera a AVIF por 7 puntos en Kodak, casi 10 en CLIC y 4,5 en las
+  fotos grandes de DIV2K. En PSNR-Y (solo luma) la ventaja es menor, porque al
   elegir 4:4:4 Tesela dedica más bits al color; en PSNR RGB, mayor.
-- **Contenido sintético.** Tesela supera a AVIF por 6-7 puntos en capturas e ilustraciones. Lo
+- **Contenido sintético.** Tesela supera a AVIF por 7-8 puntos en capturas e ilustraciones. Lo
   consigue con la paleta, la copia intra de bloques, el transform skip y la elección automática
   de 4:4:4.
-- **Velocidad.** En fotos, Tesela decodifica unas 3 veces más rápido que AVIF; en capturas,
-  igual; en ilustraciones, algo más lento (0,13 frente a 0,10 s). Codificar es ahora más rápido que
-  AVIF (speed 4) en fotos y capturas: 2,1 frente a 2,5 s por foto de Kodak y 10,7 frente a 16,8 s
-  en DIV2K; en ilustraciones, más lento (4,0 frente a 3,3 s). JPEG XL y WebP codifican de 10 a 20
+- **Velocidad.** En fotos, Tesela decodifica de 3 a 4 veces más rápido que AVIF (58 frente a
+  256 ms por foto de Kodak); en capturas, igual; en ilustraciones, algo más lento (0,11 frente a
+  0,10 s). Codificar es más rápido que AVIF (speed 4) en fotos: 1,9 frente a 2,5 s por foto de
+  Kodak; en ilustraciones, más lento. JPEG XL y WebP codifican de 10 a 20
   veces más rápido. Los tiempos del banco son de una imagen por núcleo; el codificador usa todos
   los núcleos para una sola imagen.
 - **Calibración de la escala.** La escala de calidad imita la de JPEG: `-q 85` se ve parecido a un
@@ -271,23 +272,38 @@ velocidad medida en instrucciones (callgrind), que no depende de la carga de la 
 | Poda de la búsqueda: los bloques de 64 y 32 muy texturados no se prueban como hoja; elección del modo intra en dos fases (los 8 mejores por SATD, estimación barata, los 2 mejores a RDO completo) | −26 % de instrucciones, compresión +0,04 % (ruido). **Adoptado** |
 | Total al codificar | −46 % de instrucciones; tiempo de CPU −29 %. Ahora codifica más rápido que AVIF en fotos |
 
+**Tercera ronda.** Otros cuatro agentes, con las mismas reglas (adoptar con −0,4 % o más y ningún
+tramo peor; DIV2K 851-900, n = 16, frente a la versión anterior):
+
+| Cambio | Resultado |
+|---|---|
+| Croma: variantes del CCLM (sobre la fila de arriba, sobre la columna izquierda y con dos modelos, de VVC) y Cr predicho desde el Cb reconstruido, solo o junto con la luma | −2,97 % (−2,98 baja, −3,08 media, −2,75 alta); codificar +1,9 %, decodificar −1,7 %. **Adoptado** |
+| Transformada: DST-VII implícita (sin señalizar) en los ejes de 4 a 16 muestras de las hojas intra | −1,40 %; codificar +2,8 %. **Adoptado** |
+| Croma 4:2:0 interpolada con la luma como guía (filtro guiado; mezcla elegida por tesela y plano) | −0,51 %; decodificar 4:2:0 +6 %. **Adoptado** |
+| Las tres juntas | −4,68 % (−4,84 baja, −4,81 media, −4,28 alta); CLIC −37,0 → −39,3 %, DIV2K −36,5 → −38,9 % |
+| MTS explícito (bandera DCT/DST), más líneas para ajustar el CCLM, MMLM con el Cb como fuente | peor que la DST implícita sola, o entre −0,04 y −0,31 %. **Descartado** |
+| Señalización del modo de luma: 6 MPM como VVC, DIMD, contextos por tamaño, forma o vecinos, conjunto reducido en 4×4 | entre −0,03 y +0,34 %: el modo restante cuesta ya 4,6 bits, casi uniforme. **Descartado** |
+| Restauración: diamante 7×7, recorte no lineal (VVC), CC-ALF, CDEF, menos clases | entre −0,11 y +0,94 %: el filtro solo baja el error cuadrático, y SSIMULACRA2 apenas lo nota. **Descartado** |
+| Núcleos sin cambiar un byte (DCT por lotes, restauración y color por filas, redondeo sin `roundf`) | −11 % de instrucciones al codificar y −54 % al decodificar; en el navegador, decodificar es un 20-35 % más rápido. **Adoptado** |
+
 **Animación.** Tamaño total a igual SSIMULACRA2 medio por fotograma
 ([`bench/results/animacion`](bench/results/animacion/REPORT.md); `python3 bench/anim_bench.py`):
 
 | Animación | GIF | WebP animado | Tesela | AVIF animado |
 |---|---|---|---|---|
-| Terminal, 90 fotogramas de 640×400, a calidad 90 | 242 KB | no llega (máx. 76) | **6,9 KB** | 14,2 KB |
-| Interfaz, 40 de 480×320, a calidad 90 | 68 KB | no llega (máx. 84) | **3,5 KB** | 5,4 KB |
-| Paneo sobre una foto, 30 de 400×300, a calidad 80 | 1 968 KB | 454 KB | **15,9 KB** | 16,8 KB |
-| Zoom sobre una foto, 30 de 400×300, a calidad 70 | 1 917 KB | 279 KB | **8,1 KB** | 9,8 KB |
-| El mismo zoom durante 90 fotogramas, a calidad 75 | 5 515 KB | 910 KB | 20,5 KB | **18,2 KB** |
-| Objetos que se mueven (y uno gira) sobre un fondo quieto, 40 de 400×300, a calidad 75 | 2 618 KB | 338 KB | 38,9 KB | **37,2 KB** |
+| Terminal, 90 fotogramas de 640×400, a calidad 90 | 242 KB | no llega (máx. 76) | **6,7 KB** | 14,2 KB |
+| Interfaz, 40 de 480×320, a calidad 90 | 68 KB | no llega (máx. 84) | **3,6 KB** | 5,4 KB |
+| Paneo sobre una foto, 30 de 400×300, a calidad 80 | 1 968 KB | 454 KB | **15,4 KB** | 16,8 KB |
+| Zoom sobre una foto, 30 de 400×300, a calidad 70 | 1 917 KB | 279 KB | **8,0 KB** | 9,8 KB |
+| El mismo zoom durante 90 fotogramas, a calidad 75 | 5 515 KB | 910 KB | 20,3 KB | **18,2 KB** |
+| Objetos que se mueven (y uno gira) sobre un fondo quieto, 40 de 400×300, a calidad 75 | 2 618 KB | 338 KB | 37,7 KB | **37,2 KB** |
 
 AVIF animado va con croma completa (4:4:4), que en estas animaciones le ahorra hasta un 28 %. Tesela
-ocupa entre 15 y 100 veces menos que GIF y WebP animado. Frente a AVIF gana en la terminal (−51 %),
-en la interfaz (−34 %), en el zoom (−18 %; −8 % a calidad 78) y en el paneo (−5 % a calidad 80,
-−12 % a 78; a 82 empatan). Pierde en el zoom largo de 90 fotogramas (AVIF ocupa un 11 % menos) y
-con objetos que se mueven y giran (un 4 % menos): AVIF codifica fotogramas futuros ocultos, predice
+ocupa entre 15 y 100 veces menos que GIF y WebP animado. Frente a AVIF gana en la terminal (−53 %),
+en la interfaz (−33 %), en el zoom (−18 %; −10 % a calidad 78) y en el paneo (−8 % a calidad 80,
+−14 % a 78, −2 % a 82). Pierde en el zoom largo de 90 fotogramas (AVIF ocupa un 10 % menos) y
+empata con objetos que se mueven y giran (AVIF un 1 % menos a calidad 75; Tesela un 10 % menos a
+78): AVIF codifica fotogramas futuros ocultos, predice
 en las dos direcciones y busca movimiento por bloques con más precisión. Forzar 4:4:4 en Tesela no
 ayuda en estas animaciones (de −2 a +12 %).
 
