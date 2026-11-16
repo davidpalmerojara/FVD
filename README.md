@@ -38,6 +38,22 @@ adds rectangular partitions and new probability tables. Its differences from v1 
 [`docs/especificacion-v2-borrador.md`](docs/especificacion-v2-borrador.md) (in Spanish). Until it is
 frozen, it may change.
 
+## Downloads
+
+Ready-made binaries, no Rust needed, are on the
+[Releases page](https://github.com/davidpalmerojara/tesela/releases):
+
+- **Desktop app** (viewer and converter for `.tsl`: open with a double click, play animations,
+  save as PNG, convert PNG/JPEG/GIF/WebP by dragging them in): Windows installer (`.exe`/`.msi`),
+  macOS (`.dmg`, Apple Silicon and Intel) and Linux (`.deb`, `.AppImage`). See
+  [`desktop/README.md`](desktop/README.md) (in Spanish).
+- **Command line** (`tesela encode` / `decode`) for Linux x86-64, Windows x86-64 and macOS
+  (Apple Silicon and Intel), with `SHA256SUMS.txt` to check the downloads.
+
+The apps are **not code-signed**. On Windows, SmartScreen will warn you: click *More info → Run
+anyway*. On macOS, right-click the app → *Open* (on macOS 15+, *System Settings → Privacy &
+Security → Open Anyway*), or run `xattr -dr com.apple.quarantine /Applications/Tesela.app`.
+
 ## Try it on your computer
 
 **Comparator with your photos.** You only need Git and Python 3; Rust is not required.
