@@ -40,7 +40,7 @@ frozen, it may change.
 **Comparator with your photos.** You only need Git and Python 3; Rust is not required.
 
 ```sh
-git clone -b ccr-17dbeae9-yi88ht https://github.com/davidpalmerojara/FVD.git tesela
+git clone https://github.com/davidpalmerojara/FVD.git tesela
 cd tesela
 python web/serve.py        # on macOS/Linux/WSL it may be python3
 ```
@@ -574,3 +574,7 @@ To retrain the initial probabilities (with images other than the evaluation ones
 - **Data licenses.** The test images (Kodak, DIV2K) and training images (BSD100) are not
   redistributed, except `web/compare/sample.png` (kodim23). The screenshots and illustrations are
   generated with `bench/gen_synthetic.js`.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.

@@ -41,7 +41,7 @@ LABELS = {"jpeg": "JPEG", "webp": "WebP", "avif": "AVIF", "jxl": "JPEG XL", "tes
 
 def encode(codec, img_path, param, out):
     if codec == "tesela":
-        subprocess.run([TESELA, "encode", img_path, out, "-q", f"{param:.2f}"], check=True, capture_output=True)
+        subprocess.run([TESELA, "encode", img_path, out, "-q", f"{param:.2f}", "--sin-metadatos"], check=True, capture_output=True)
         return
     im = Image.open(img_path).convert("RGB")
     if codec == "jpeg":
@@ -49,7 +49,7 @@ def encode(codec, img_path, param, out):
     elif codec == "webp":
         im.save(out, "WEBP", quality=int(param), method=6)
     elif codec == "avif":
-        im.save(out, "AVIF", quality=int(param), speed=4, subsampling="4:2:0")
+        im.save(out, "AVIF", quality=int(param), speed=4, subsampling="4:4:4")
     elif codec == "jxl":
         import imagecodecs
 

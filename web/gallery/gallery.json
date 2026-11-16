@@ -29,10 +29,10 @@
    {
     "codec": "avif",
     "label": "AVIF",
-    "param": 51,
-    "bytes": 16235,
-    "ssimulacra2": 69.6,
-    "psnr": 36.61
+    "param": 49,
+    "bytes": 16296,
+    "ssimulacra2": 70.0,
+    "psnr": 36.92
    },
    {
     "codec": "jxl",
@@ -45,10 +45,10 @@
    {
     "codec": "tesela",
     "label": "Tesela",
-    "param": 77.27423095703125,
-    "bytes": 16374,
-    "ssimulacra2": 72.3,
-    "psnr": 37.26
+    "param": 78.76068115234375,
+    "bytes": 16384,
+    "ssimulacra2": 73.2,
+    "psnr": 37.6
    }
   ]
  },
@@ -56,7 +56,7 @@
   "name": "captura",
   "width": 1440,
   "height": 900,
-  "budget": 14336,
+  "budget": 18432,
   "crop": [
    40,
    170,
@@ -66,42 +66,42 @@
    {
     "codec": "jpeg",
     "label": "JPEG",
-    "param": 5,
-    "bytes": 13225,
-    "ssimulacra2": -8.0,
-    "psnr": 26.69
+    "param": 4,
+    "bytes": 17007,
+    "ssimulacra2": -18.3,
+    "psnr": 24.36
    },
    {
     "codec": "webp",
     "label": "WebP",
-    "param": 5,
-    "bytes": 14304,
-    "ssimulacra2": 31.5,
-    "psnr": 31.63
+    "param": 1,
+    "bytes": 17482,
+    "ssimulacra2": 40.6,
+    "psnr": 29.22
    },
    {
     "codec": "avif",
     "label": "AVIF",
-    "param": 46,
-    "bytes": 14285,
-    "ssimulacra2": 73.8,
-    "psnr": 39.57
+    "param": 41,
+    "bytes": 18372,
+    "ssimulacra2": 78.0,
+    "psnr": 38.34
    },
    {
     "codec": "jxl",
     "label": "JPEG XL",
-    "param": 20.14522705078125,
-    "bytes": 14325,
-    "ssimulacra2": 42.5,
-    "psnr": 28.76
+    "param": 21.427447509765628,
+    "bytes": 18430,
+    "ssimulacra2": 5.1,
+    "psnr": 24.91
    },
    {
     "codec": "tesela",
     "label": "Tesela",
-    "param": 82.2230224609375,
-    "bytes": 14322,
-    "ssimulacra2": 90.5,
-    "psnr": 49.7
+    "param": 77.642822265625,
+    "bytes": 18429,
+    "ssimulacra2": 87.0,
+    "psnr": 45.19
    }
   ]
  },
@@ -135,10 +135,10 @@
    {
     "codec": "avif",
     "label": "AVIF",
-    "param": 59,
-    "bytes": 12274,
-    "ssimulacra2": 84.1,
-    "psnr": 42.27
+    "param": 54,
+    "bytes": 12020,
+    "ssimulacra2": 85.0,
+    "psnr": 46.5
    },
    {
     "codec": "jxl",
@@ -151,10 +151,10 @@
    {
     "codec": "tesela",
     "label": "Tesela",
-    "param": 82.1142578125,
-    "bytes": 12275,
-    "ssimulacra2": 85.7,
-    "psnr": 49.14
+    "param": 83.75177001953125,
+    "bytes": 12105,
+    "ssimulacra2": 86.1,
+    "psnr": 49.25
    }
   ]
  }

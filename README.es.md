@@ -40,7 +40,7 @@ congele, puede cambiar.
 **Comparador con tus fotos.** Solo necesitas Git y Python 3; no hace falta Rust.
 
 ```sh
-git clone -b ccr-17dbeae9-yi88ht https://github.com/davidpalmerojara/FVD.git tesela
+git clone https://github.com/davidpalmerojara/FVD.git tesela
 cd tesela
 python web/serve.py        # en macOS/Linux/WSL puede ser python3
 ```
@@ -581,3 +581,7 @@ Para reentrenar las probabilidades iniciales (con imágenes que no sean las de e
 - **Licencias de los datos.** Las imágenes de prueba (Kodak, DIV2K) y de entrenamiento (BSD100) no
   se redistribuyen, salvo `web/compare/sample.png` (kodim23). Las capturas e ilustraciones se
   generan con `bench/gen_synthetic.js`.
+
+## Licencia
+
+Doble licencia, a elegir: [Apache 2.0](LICENSE-APACHE) o [MIT](LICENSE-MIT).

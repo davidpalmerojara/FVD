@@ -2,6 +2,9 @@
 name = "tesela"
 version = "0.1.0"
 edition = "2024"
+description = "Tesela: an experimental lossy/lossless image format with a Rust encoder and a WebAssembly decoder"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/davidpalmerojara/tesela"
 
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
