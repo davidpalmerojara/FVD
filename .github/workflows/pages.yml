@@ -1,10 +1,9 @@
 # Publica web/ (portada, comparador y demo) en GitHub Pages.
-# Activar una vez en Settings → Pages → Source: "GitHub Actions".
+# La web se sirve desde Cloudflare Pages (tesela.davidpalmero.dev), así que este
+# flujo solo se lanza a mano. Para usarlo: Settings → Pages → Source: "GitHub Actions".
 name: Pages
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
