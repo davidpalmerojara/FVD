@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Convertir y abrir · Tesela</title>
+  <link rel="canonical" href="https://tesela.davidpalmero.dev/app/">
+  <meta name="description" content="Convierte tus imágenes a Tesela (.tsl) y abre archivos .tsl en el navegador, sin instalar nada. Todo se procesa en tu dispositivo.">
+  <meta property="og:title" content="Convertir y abrir · Tesela">
+  <meta property="og:description" content="Convierte JPG, PNG, WebP o AVIF a .tsl y abre archivos Tesela en el navegador. Nada se sube a ningún servidor.">
+  <meta property="og:url" content="https://tesela.davidpalmero.dev/app/">
+  <meta name="theme-color" content="#09090a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="../style.css?v=3">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <a class="skip" href="#main">Saltar al contenido</a>
+  <header class="top">
+    <div class="wrap">
+      <a class="dp" href="https://davidpalmero.dev/" title="David Palmero, portafolio" aria-label="David Palmero, portafolio"><svg viewBox="0 0 64 64" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><path d="M32 11V53"/><path d="M32 16h3a9.5 9.5 0 0 1 0 19h-3"/><path d="M32 48h-3a9.5 9.5 0 0 1 0-19h3"/></g></svg></a>
+      <a class="brand" href="../index.html"><span class="logo"><i></i><i></i><i></i></span>Tesela</a>
+      <nav class="links">
+        <a href="../index.html">Visión general</a>
+        <a href="../docs/index.html">Documentación</a>
+        <a href="../app/index.html" aria-current="page">Convertir y abrir</a>
+        <a href="../compare/index.html">Comparador</a>
+        <a href="../demo/index.html">Demo</a>
+        <a class="ext" href="https://github.com/davidpalmerojara/FVD">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap app" id="main" tabindex="-1">
+    <div class="intro">
+      <div>
+        <p class="eyebrow">Sin instalar nada</p>
+        <h1>Convierte y abre imágenes Tesela</h1>
+        <p class="lead">Pasa tus fotos a <code>.tsl</code> o abre archivos Tesela directamente en el navegador.
+          Todo ocurre en tu dispositivo: nada se sube a ningún servidor.</p>
+      </div>
+      <div class="install" id="install" hidden>
+        <button class="btn" id="install-btn" type="button">Instalar la aplicación</button>
+        <p class="muted">Así podrás abrir los <code>.tsl</code> con doble clic desde tu ordenador.</p>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Herramienta">
+      <button role="tab" id="tab-convert" aria-controls="panel-convert" aria-selected="true" type="button">Convertir a .tsl</button>
+      <button role="tab" id="tab-open" aria-controls="panel-open" aria-selected="false" tabindex="-1" type="button">Abrir .tsl</button>
+    </div>
+
+    <!-- ============================================================ Convertir -->
+    <section role="tabpanel" id="panel-convert" aria-labelledby="tab-convert" class="panel">
+      <div class="cols">
+        <div class="side">
+          <div class="drop card" id="drop-convert">
+            <svg class="drop-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <button class="btn primary" type="button" id="pick-images">Elegir imágenes</button>
+            <p class="muted">o arrástralas aquí: JPG, PNG, WebP, AVIF o GIF. Puedes elegir varias.</p>
+            <input type="file" id="file-images" accept="image/*,.avif,.webp" multiple hidden>
+          </div>
+
+          <section class="card settings" aria-labelledby="settings-h">
+            <h2 id="settings-h" class="mini">Ajustes</h2>
+            <div class="field">
+              <label for="quality" class="row"><span>Calidad</span><output id="quality-val" for="quality" class="num">85</output></label>
+              <input type="range" id="quality" min="1" max="100" step="1" value="85" aria-describedby="quality-hint">
+              <p class="hint muted" id="quality-hint"></p>
+            </div>
+            <details>
+              <summary>Más opciones</summary>
+              <label class="row" for="effort"><span>Velocidad</span>
+                <select id="effort">
+                  <option value="4" selected>Normal (mejor compresión)</option>
+                  <option value="2">Rápida</option>
+                </select>
+              </label>
+              <label class="row" for="maxdim"><span>Tamaño máximo</span>
+                <select id="maxdim">
+                  <option value="0" selected>Original</option>
+                  <option value="3840">3840 px</option>
+                  <option value="2560">2560 px</option>
+                  <option value="1920">1920 px</option>
+                  <option value="1280">1280 px</option>
+                </select>
+              </label>
+            </details>
+            <p class="hint muted">La transparencia se conserva. Los metadatos (EXIF, ubicación) no se copian.</p>
+            <button class="btn small" type="button" id="reconvert" hidden>Volver a convertir</button>
+          </section>
+          <p class="hint muted" id="engine"></p>
+        </div>
+
+        <div class="results">
+          <div class="summary card" id="summary" hidden>
+            <div class="sum-text">
+              <p class="sum-main num" id="sum-main"></p>
+              <p class="muted num" id="sum-sub"></p>
+            </div>
+            <div class="sum-actions">
+              <button class="btn primary small" type="button" id="zip" disabled>Descargar todo (.zip)</button>
+              <button class="btn small" type="button" id="clear">Vaciar</button>
+            </div>
+            <div class="bar" aria-hidden="true"><i id="sum-bar"></i></div>
+          </div>
+          <div class="empty card" id="convert-empty">
+            <p><b>Elige una o varias imágenes para empezar.</b></p>
+            <p class="muted">Verás cuánto ocupa cada una en <code>.tsl</code> y podrás descargarlas una a una o todas juntas en un .zip.
+              Con calidad 85, una foto suele ocupar entre un 40 y un 70 % menos que en JPEG.</p>
+          </div>
+          <ul class="files" id="files" aria-label="Imágenes convertidas"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ Abrir -->
+    <section role="tabpanel" id="panel-open" aria-labelledby="tab-open" class="panel" hidden>
+      <div class="cols">
+        <div class="side">
+          <div class="drop card" id="drop-open">
+            <svg class="drop-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 5a1 1 0 0 1 1-1h5v7H4zM13 4h6a1 1 0 0 1 1 1v3h-7zM13 11h7v8a1 1 0 0 1-1 1h-6zM4 14h6v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            <button class="btn primary" type="button" id="pick-tsl">Elegir archivos .tsl</button>
+            <p class="muted">o arrástralos a cualquier parte de la página.</p>
+            <input type="file" id="file-tsl" accept=".tsl,image/x-tesela" multiple hidden>
+          </div>
+          <div class="card samples">
+            <p class="muted">¿No tienes ninguno? Prueba un ejemplo:</p>
+            <div class="sample-btns">
+              <button class="btn small" type="button" data-sample="../demo/kodim23.tsl">Foto</button>
+              <button class="btn small" type="button" data-sample="../demo/terminal.tsl">Animación</button>
+              <button class="btn small" type="button" data-sample="../demo/alpha.tsl">Transparencia</button>
+            </div>
+          </div>
+          <ul class="opened" id="opened" aria-label="Archivos abiertos"></ul>
+        </div>
+
+        <div class="viewer-col">
+          <div class="empty card" id="open-empty">
+            <p><b>Abre un archivo .tsl para verlo.</b></p>
+            <p class="muted">Se muestran sus dimensiones, su tamaño y, si es una animación, sus fotogramas. Puedes guardarlo como PNG.</p>
+          </div>
+          <div id="viewer" hidden>
+            <div class="vhead">
+              <h2 id="v-name"></h2>
+              <dl class="facts num" id="v-facts"></dl>
+            </div>
+            <div class="toolbar">
+              <div class="seg" role="group" aria-label="Zoom">
+                <button type="button" data-zoom="fit" aria-pressed="true">Ajustar</button>
+                <button type="button" data-zoom="1" aria-pressed="false">100 %</button>
+              </div>
+              <div class="anim" id="anim" hidden>
+                <button type="button" class="icon" id="prev" aria-label="Fotograma anterior">‹</button>
+                <button type="button" id="play" aria-pressed="false">Reproducir</button>
+                <button type="button" class="icon" id="next" aria-label="Fotograma siguiente">›</button>
+                <span class="muted num" id="frame" aria-live="off"></span>
+              </div>
+              <button class="btn primary small" type="button" id="save-png">Guardar como PNG</button>
+            </div>
+            <div class="stage card fit" id="stage" tabindex="0" role="region" aria-label="Imagen (desplázate con las flechas a 100 %)">
+              <canvas id="canvas" role="img"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <p class="foot muted">Tesela es un formato experimental: ningún navegador lo abre por sí solo todavía. Para usar
+      los <code>.tsl</code> en tu web, mira la <a href="../docs/index.html#web">guía</a>; para compararlo con WebP y AVIF,
+      el <a href="../compare/index.html">comparador</a>.</p>
+  </main>
+
+  <div class="dropover" id="dropover" hidden aria-hidden="true"><p>Suelta para convertir imágenes o abrir archivos .tsl</p></div>
+  <p class="sr-only" id="live" aria-live="polite" role="status"></p>
+  <div class="toast" id="alert" role="alert" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
