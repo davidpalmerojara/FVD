@@ -38,6 +38,23 @@ la v1). Añade particiones rectangulares y tablas de probabilidad nuevas. Sus di
 están en [`docs/especificacion-v2-borrador.md`](docs/especificacion-v2-borrador.md). Hasta que se
 congele, puede cambiar.
 
+## Descargas
+
+Binarios listos, sin necesidad de Rust, en la
+[página de versiones](https://github.com/davidpalmerojara/tesela/releases):
+
+- **Aplicación de escritorio** (visor y conversor de `.tsl`: se abre con doble clic, reproduce
+  animaciones, guarda como PNG y convierte PNG/JPEG/GIF/WebP arrastrándolos): instalador para
+  Windows (`.exe`/`.msi`), macOS (`.dmg`, Apple Silicon e Intel) y Linux (`.deb`, `.AppImage`).
+  Ver [`desktop/README.md`](desktop/README.md).
+- **Línea de órdenes** (`tesela encode` / `decode`) para Linux x86-64, Windows x86-64 y macOS
+  (Apple Silicon e Intel), con `SHA256SUMS.txt` para comprobar las descargas.
+
+Las aplicaciones **no están firmadas**. En Windows, SmartScreen avisará: pulsa *Más información →
+Ejecutar de todas formas*. En macOS, clic derecho sobre la app → *Abrir* (en macOS 15 o posterior,
+*Configuración del Sistema → Privacidad y seguridad → Abrir igualmente*), o
+`xattr -dr com.apple.quarantine /Applications/Tesela.app` en Terminal.
+
 ## Pruébalo en tu ordenador
 
 **Comparador con tus fotos.** Solo necesitas Git y Python 3; no hace falta Rust.

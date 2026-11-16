@@ -1,0 +1,241 @@
+# Binarios descargables: la línea de órdenes (4 plataformas) y la aplicación de
+# escritorio (desktop/, Tauri) para Windows, macOS y Linux, en un borrador de
+# GitHub Release con sus sumas SHA-256.
+#
+# - Al subir una etiqueta vX.Y.Z (p. ej. `git tag v0.1.0 && git push origin v0.1.0`).
+# - O a mano (Actions → Release → Run workflow), con la etiqueta que tendrá la
+#   versión; si se deja vacía, «v» + la versión de Cargo.toml. La etiqueta no
+#   tiene que existir: GitHub la crea al publicar el borrador.
+#
+# El borrador no se publica solo: revísalo en Releases y pulsa «Publish release».
+#
+# Sin firma de código (no hay certificados ni secretos): Windows mostrará
+# SmartScreen y macOS pedirá abrir la app con clic derecho → Abrir. Los pasos
+# para firmar están comentados más abajo; ver desktop/README.md.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Etiqueta de la versión (p. ej. v0.1.0; vacío = v + versión de Cargo.toml)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    name: Versión
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Etiqueta y versiones coherentes
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          app=$(python3 -c 'import json; print(json.load(open("desktop/tauri.conf.json"))["version"])')
+          appcrate=$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/Cargo.toml | head -1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; else tag="${INPUT_TAG:-v$crate}"; fi
+          version="${tag#v}"
+          echo "etiqueta $tag · Cargo.toml $crate · desktop/Cargo.toml $appcrate · tauri.conf.json $app"
+          for v in "$crate" "$appcrate" "$app"; do
+            if [ "$v" != "$version" ]; then
+              echo "::error::La etiqueta $tag no coincide con las versiones ($crate, $appcrate, $app). Cambia las tres antes de etiquetar."
+              exit 1
+            fi
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  cli:
+    name: CLI ${{ matrix.target }}
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04: glibc más antigua, así el binario funciona en más distribuciones.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Compilar
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Empaquetar (con README y licencias)
+        shell: bash
+        run: |
+          name="tesela-${{ needs.meta.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          exe=target/${{ matrix.target }}/release/tesela
+          [ -f "$exe.exe" ] && exe="$exe.exe"
+          cp "$exe" README.md README.es.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -rf "$name"
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  desktop:
+    name: Escritorio ${{ matrix.name }}
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            args: --bundles deb,appimage
+            out: desktop/target/release/bundle
+          - name: Windows
+            os: windows-latest
+            args: --bundles msi,nsis
+            out: desktop/target/release/bundle
+          - name: macOS
+            os: macos-latest
+            # Binario universal: Apple Silicon e Intel en el mismo .dmg.
+            args: --bundles app,dmg --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            out: desktop/target/universal-apple-darwin/release/bundle
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - name: Dependencias de WebKitGTK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # La CLI de Tauri desde npm (binario precompilado): mucho más rápido
+      # que `cargo install tauri-cli`. No hay package.json ni paso de
+      # compilación del frontend: desktop/ui/ se incrusta tal cual.
+      - name: CLI de Tauri
+        run: npm install --global @tauri-apps/cli@2
+
+      # ---------------------------------------------------------------------
+      # FIRMA DE CÓDIGO (desactivada: no hay certificados).
+      #
+      # Windows (Authenticode). Con un certificado .pfx guardado en secretos:
+      #   1. Secretos WINDOWS_CERTIFICATE (el .pfx en base64) y
+      #      WINDOWS_CERTIFICATE_PASSWORD.
+      #   2. Importarlo antes de compilar:
+      # - name: Importar certificado de Windows
+      #   if: runner.os == 'Windows'
+      #   shell: pwsh
+      #   env:
+      #     WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      #     WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      #   run: |
+      #     [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+      #     Import-PfxCertificate -FilePath cert.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force)
+      #   3. En desktop/tauri.conf.json → bundle.windows: "certificateThumbprint"
+      #      (huella del certificado), "digestAlgorithm": "sha256" y
+      #      "timestampUrl": "http://timestamp.digicert.com".
+      #   Con Azure Trusted Signing se usa en su lugar bundle.windows.signCommand.
+      #
+      # macOS (Developer ID + notarización). La CLI de Tauri firma y notariza
+      # sola si encuentra estas variables en el paso «Compilar y empaquetar»:
+      #   APPLE_CERTIFICATE (el .p12 en base64), APPLE_CERTIFICATE_PASSWORD,
+      #   APPLE_SIGNING_IDENTITY ("Developer ID Application: Nombre (EQUIPO)"),
+      #   APPLE_ID, APPLE_PASSWORD (contraseña de aplicación) y APPLE_TEAM_ID.
+      #   Y en tauri.conf.json, bundle.macOS.signingIdentity deja de ser "-"
+      #   (firma ad hoc, la que se usa ahora) o se elimina.
+      # ---------------------------------------------------------------------
+      - name: Compilar y empaquetar
+        working-directory: desktop
+        shell: bash
+        # env:
+        #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        #   APPLE_ID: ${{ secrets.APPLE_ID }}
+        #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: tauri build --ci ${{ matrix.args }} -- --locked
+      - name: Reunir los instaladores
+        shell: bash
+        run: |
+          mkdir dist
+          find "${{ matrix.out }}" -maxdepth 2 -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' -o -name '*.dmg' \) \
+            -exec cp {} dist/ \;
+          ls -la dist
+          [ -n "$(ls dist)" ] || { echo "::error::No se generó ningún instalador"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Borrador de la versión
+    needs: [meta, cli, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Sumas SHA-256
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Tesela ${{ needs.meta.outputs.version }}
+          draft: true
+          fail_on_unmatched_files: true
+          files: dist/*
+          body: |
+            Tesela ${{ needs.meta.outputs.version }}: formato de imagen experimental.
+
+            **Aplicación de escritorio** (visor y conversor de `.tsl`):
+            - Windows: `Tesela_${{ needs.meta.outputs.version }}_x64-setup.exe` (o el `.msi`).
+            - macOS (Apple Silicon e Intel): `Tesela_${{ needs.meta.outputs.version }}_universal.dmg`.
+            - Linux: `.deb` (Debian/Ubuntu, asocia los `.tsl`) o `.AppImage`.
+
+            **Línea de órdenes** (`tesela encode` / `decode`): un archivo por plataforma, con README y licencias.
+
+            Las aplicaciones **no están firmadas**: Windows muestra SmartScreen («Más información → Ejecutar de todas formas») y macOS pide abrirla con clic derecho → Abrir (o *Configuración del Sistema → Privacidad y seguridad → Abrir igualmente*). Detalles en [desktop/README.md](https://github.com/${{ github.repository }}/blob/${{ needs.meta.outputs.tag }}/desktop/README.md).
+
+            Comprueba las descargas con `SHA256SUMS.txt` (`sha256sum -c SHA256SUMS.txt --ignore-missing`).
