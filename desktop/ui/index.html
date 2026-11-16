@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tesela</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <span class="brand"><span class="logo" aria-hidden="true"><i></i><i></i><i></i></span>Tesela</span>
+    <nav class="tabs" role="tablist" aria-label="Secciones">
+      <button role="tab" id="tab-visor" aria-controls="visor" aria-selected="true">Visor</button>
+      <button role="tab" id="tab-conv" aria-controls="conv" aria-selected="false" tabindex="-1">Convertir</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Visor -->
+    <section id="visor" class="panel" role="tabpanel" aria-labelledby="tab-visor">
+      <div class="toolbar" role="toolbar" aria-label="Visor">
+        <button class="btn primary" id="abrir" title="Abrir un .tsl (Ctrl+O)">Abrir…</button>
+        <div class="group">
+          <button class="btn icon" id="anterior" title="Anterior .tsl de la carpeta (←)" aria-label="Anterior" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+          <button class="btn icon" id="siguiente" title="Siguiente .tsl de la carpeta (→)" aria-label="Siguiente" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button>
+        </div>
+        <div class="group">
+          <button class="btn" id="ajustar" title="Ajustar a la ventana (0)" aria-pressed="true" disabled>Ajustar</button>
+          <button class="btn" id="real" title="Tamaño real (1)" aria-pressed="false" disabled>Tamaño real</button>
+          <button class="btn icon" id="alejar" title="Alejar (−)" aria-label="Alejar" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+          <span class="zoom mono" id="zoom" aria-live="polite">—</span>
+          <button class="btn icon" id="acercar" title="Acercar (+)" aria-label="Acercar" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M12 6v12"/></svg></button>
+        </div>
+        <div class="group" id="anim" hidden>
+          <button class="btn" id="play" title="Reproducir o pausar (espacio)">Pausa</button>
+          <span class="mono faint" id="fotograma"></span>
+        </div>
+        <button class="btn" id="guardar" title="Guardar como PNG (Ctrl+S)" disabled>Guardar como PNG</button>
+      </div>
+
+      <div class="stage" id="stage" tabindex="0" aria-label="Imagen">
+        <canvas id="lienzo" hidden></canvas>
+        <div class="empty" id="vacio">
+          <span class="logo big" aria-hidden="true"><i></i><i></i><i></i></span>
+          <p>Arrastra aquí un archivo <b>.tsl</b> o pulsa <b>Abrir…</b></p>
+          <p class="faint mono">Ctrl+O abrir · ← → carpeta · 0 ajustar · 1 tamaño real · rueda zoom</p>
+        </div>
+        <div class="busy" id="ocupado" hidden><span class="spinner" aria-hidden="true"></span>Decodificando…</div>
+      </div>
+
+      <footer class="info mono" id="info" aria-live="polite"></footer>
+    </section>
+
+    <!-- Conversor -->
+    <section id="conv" class="panel" role="tabpanel" aria-labelledby="tab-conv" hidden>
+      <div class="conv-grid">
+        <div class="card opts">
+          <p class="eyebrow">Opciones</p>
+          <label class="field" for="calidad">
+            <span>Calidad <output id="calidad-v" class="mono" for="calidad">85</output></span>
+            <input type="range" id="calidad" min="0" max="100" step="1" value="85">
+          </label>
+          <label class="check"><input type="checkbox" id="sinperdida"> Sin pérdida (exacto bit a bit)</label>
+
+          <fieldset class="field">
+            <legend>Destino</legend>
+            <label class="check"><input type="radio" name="destino" value="junto" checked> Junto al original</label>
+            <label class="check"><input type="radio" name="destino" value="carpeta"> En otra carpeta</label>
+            <div class="folder">
+              <button class="btn small" id="elegir-carpeta">Elegir carpeta…</button>
+              <span class="mono faint" id="carpeta">Ninguna elegida</span>
+            </div>
+          </fieldset>
+          <p class="note">Si ya existe un .tsl con el mismo nombre, se guarda como «nombre (2).tsl».</p>
+        </div>
+
+        <div class="drop card" id="zona" tabindex="0" role="button" aria-describedby="zona-txt">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v4h16v-4"/></svg>
+          <p id="zona-txt">Arrastra imágenes aquí o pulsa para elegirlas<br><span class="faint mono">PNG · JPEG · GIF · WebP (también animados)</span></p>
+        </div>
+      </div>
+
+      <div class="conv-actions">
+        <button class="btn primary" id="convertir" disabled>Convertir</button>
+        <button class="btn" id="vaciar" disabled>Vaciar lista</button>
+        <span class="mono faint" id="resumen" aria-live="polite"></span>
+      </div>
+
+      <ul class="lista" id="lista" aria-label="Imágenes para convertir"></ul>
+    </section>
+  </main>
+
+  <div class="dropveil" id="velo" hidden><p>Suelta para abrir o convertir</p></div>
+  <div class="toast" id="aviso" role="status" aria-live="polite"></div>
+</body>
+</html>
