@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tesela en la web</title>
   <link rel="canonical" href="https://tesela.davidpalmero.dev/demo/">
-  <link rel="stylesheet" href="../style.css?v=3">
+  <link rel="stylesheet" href="../style.css?v=4">
   <script type="module" src="../tesela.js"></script>
   <style>
     main { padding: 32px 0 64px; }
@@ -36,6 +36,7 @@
         <a href="../demo/index.html" aria-current="page">Demo</a>
         <a class="ext" href="https://github.com/davidpalmerojara/FVD">GitHub</a>
       </nav>
+      <script>{const n=document.querySelector('nav.links'),a=n&&n.querySelector('[aria-current]');if(n){if(a&&n.scrollWidth>n.clientWidth)n.scrollLeft=a.offsetLeft-(n.clientWidth-a.offsetWidth)/2;n.addEventListener('focusin',(e)=>e.target.scrollIntoView({block:'nearest',inline:'nearest'}))}}</script>
     </div>
   </header>
   <main class="wrap">

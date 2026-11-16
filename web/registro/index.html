@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Registro del comparador · Tesela</title>
-  <link rel="stylesheet" href="../style.css?v=3">
+  <link rel="stylesheet" href="../style.css?v=4">
   <style>
     .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0 24px; }
     .stat { padding: 14px 16px; }
@@ -33,6 +33,7 @@
         <a href="../compare/index.html">Comparador</a>
         <a href="../registro/index.html" aria-current="page">Registro</a>
       </nav>
+      <script>{const n=document.querySelector('nav.links'),a=n&&n.querySelector('[aria-current]');if(n){if(a&&n.scrollWidth>n.clientWidth)n.scrollLeft=a.offsetLeft-(n.clientWidth-a.offsetWidth)/2;n.addEventListener('focusin',(e)=>e.target.scrollIntoView({block:'nearest',inline:'nearest'}))}}</script>
     </div>
   </header>
 

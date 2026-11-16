@@ -106,7 +106,7 @@ button.icon { width: 34px; height: 34px; padding: 0; display: inline-grid; place
 .opened .os { color: var(--muted); font-size: 13px; flex: none; }
 .opened .err .os { color: var(--bad); }
 
-#viewer { scroll-margin-top: 90px; }
+#viewer { scroll-margin-top: 76px; } /* bajo la cabecera fija */
 .vhead { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px 18px; flex-wrap: wrap; }
 .vhead h2 { margin: 0; font-size: 22px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; font-size: 13.5px; }
@@ -159,7 +159,6 @@ button.icon { width: 34px; height: 34px; padding: 0; display: inline-grid; place
   .summary { grid-template-columns: minmax(0, 1fr); }
   .toolbar #save-png { margin-left: 0; }
   .stage { max-height: 64vh; }
-  #viewer { scroll-margin-top: 210px; } /* la cabecera fija ocupa dos o tres líneas */
 }
 
 @media (prefers-reduced-motion: reduce) {
