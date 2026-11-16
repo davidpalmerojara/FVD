@@ -12,3 +12,11 @@
 /*.wasm
   Content-Type: application/wasm
   Cache-Control: public, max-age=86400
+
+# Conversor instalable (/app/): el manifiesto con su tipo, y el service worker
+# siempre revalidado para que las actualizaciones lleguen enseguida.
+/app/manifest.webmanifest
+  Content-Type: application/manifest+json
+
+/app/sw.js
+  Cache-Control: no-cache

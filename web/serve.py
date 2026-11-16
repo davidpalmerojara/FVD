@@ -39,6 +39,7 @@ MAX_POST = 200 * 2**20
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -47,6 +48,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".js": "text/javascript",
         ".mjs": "text/javascript",
         ".wasm": "application/wasm",
+        ".webmanifest": "application/manifest+json",
     }
 
     def end_headers(self):
