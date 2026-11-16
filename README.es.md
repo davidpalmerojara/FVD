@@ -3,12 +3,15 @@
 # Tesela
 
 **Tesela** es un formato de imagen escrito desde cero en Rust. Divide cada imagen en *teselas*
-de tamaño adaptativo, como un mosaico. A igual calidad ocupa menos que WebP, AVIF y JPEG XL en todos los
-tipos de contenido probados: fotos pequeñas y grandes, capturas de pantalla e ilustraciones. En
+de tamaño adaptativo, como un mosaico. En los bancos de abajo (a igual SSIMULACRA2,
+BD-rate) ocupa menos que WebP, AVIF y JPEG XL en todos los tipos de contenido probados: fotos pequeñas y grandes, capturas de pantalla e ilustraciones. En
 fotos decodifica de 3 a 4 veces más rápido que AVIF, y funciona en cualquier navegador gracias a
 WebAssembly.
 
 Admite canal alfa, modo sin pérdida y una vista previa progresiva opcional.
+
+Es un proyecto independiente y experimental: no es un estándar y ningún navegador lo trae de
+serie (se decodifica con WebAssembly). El codificador es más lento que el de JPEG XL o WebP.
 
 **Web y comparador en línea: [tesela.davidpalmero.dev](https://tesela.davidpalmero.dev/)**
 ([comparador](https://tesela.davidpalmero.dev/compare/)).
