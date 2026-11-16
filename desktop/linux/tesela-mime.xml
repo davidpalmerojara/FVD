@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tipo MIME de los archivos .tsl (lo registra update-mime-database al instalar el .deb). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/x-tesela">
+    <comment>Tesela image</comment>
+    <comment xml:lang="es">Imagen Tesela</comment>
+    <glob pattern="*.tsl"/>
+    <magic priority="50">
+      <match type="string" value="TSL" offset="0"/>
+    </magic>
+  </mime-type>
+</mime-info>

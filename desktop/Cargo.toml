@@ -1,0 +1,28 @@
+[package]
+name = "tesela-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Tesela: visor y conversor de imágenes .tsl"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/davidpalmerojara/tesela"
+publish = false
+
+# Crate aparte (con su propio Cargo.lock y target/): así las compilaciones del
+# códec y de WebAssembly (web/build.sh) no arrastran Tauri ni WebKitGTK.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+# Mismos formatos de entrada que la línea de órdenes (Cargo.toml de la raíz).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+tesela = { path = "..", default-features = false, features = ["parallel"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

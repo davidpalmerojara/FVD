@@ -1,0 +1,101 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tesela",
+  "mainBinaryName": "tesela-desktop",
+  "version": "0.1.0",
+  "identifier": "dev.davidpalmero.tesela",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tesela",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 640,
+        "minHeight": 460,
+        "backgroundColor": "#09090a",
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "deb",
+      "appimage",
+      "msi",
+      "nsis",
+      "dmg",
+      "app"
+    ],
+    "publisher": "David Palmero",
+    "copyright": "David Palmero · MIT o Apache-2.0",
+    "category": "GraphicsAndDesign",
+    "shortDescription": "Visor y conversor de imágenes .tsl",
+    "longDescription": "Abre, reproduce y convierte imágenes en el formato experimental Tesela (.tsl). El códec se ejecuta de forma nativa, sin conexión.",
+    "homepage": "https://github.com/davidpalmerojara/tesela",
+    "license": "MIT OR Apache-2.0",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "tsl"
+        ],
+        "name": "Imagen Tesela",
+        "description": "Imagen Tesela",
+        "role": "Viewer",
+        "rank": "Owner",
+        "mimeType": "image/x-tesela",
+        "exportedType": {
+          "identifier": "dev.davidpalmero.tesela.tsl",
+          "conformsTo": [
+            "public.image",
+            "public.data"
+          ]
+        }
+      }
+    ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/tesela.desktop",
+        "files": {
+          "/usr/share/mime/packages/tesela.xml": "linux/tesela-mime.xml"
+        }
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
+    "windows": {
+      "nsis": {
+        "languages": [
+          "Spanish",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      },
+      "wix": {
+        "language": [
+          "es-ES"
+        ]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    }
+  }
+}
