@@ -124,7 +124,18 @@ pub unsafe extern "C" fn tsl_header(
     give(&codec::assemble(&hd, &[])[..codec::HEADER_SIZE])
 }
 
+/// Opciones de `tsl_encode_ex` y `tsl_encode_animation` (bits de `flags`).
+pub const FLAG_LOSSLESS: u32 = 1;
+
+fn params_ex(quality: f32, effort: u32, tune: u32, flags: u32) -> Params {
+    Params {
+        lossless: flags & FLAG_LOSSLESS != 0,
+        ..params(quality, effort, tune)
+    }
+}
+
 /// Codifica una imagen RGBA completa. Devuelve el archivo .tsl.
+/// (Igual que `tsl_encode_ex` con `flags = 0`; se mantiene por compatibilidad.)
 ///
 /// # Safety
 /// `rgba` debe apuntar a `w*h*4` bytes válidos.
@@ -137,14 +148,76 @@ pub unsafe extern "C" fn tsl_encode(
     effort: u32,
     tune: u32,
 ) -> *mut u8 {
+    unsafe { tsl_encode_ex(rgba, w, h, quality, effort, tune, 0) }
+}
+
+/// Como `tsl_encode`, con opciones en `flags` (`FLAG_LOSSLESS`: sin pérdida,
+/// como `tesela encode --lossless`; entonces `quality` no se usa).
+///
+/// # Safety
+/// `rgba` debe apuntar a `w*h*4` bytes válidos.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tsl_encode_ex(
+    rgba: *const u8,
+    w: u32,
+    h: u32,
+    quality: f32,
+    effort: u32,
+    tune: u32,
+    flags: u32,
+) -> *mut u8 {
     let (w, h) = (w as usize, h as usize);
     let e = codec::encode_rgba(
         unsafe { slice(rgba, w * h * 4) },
         w,
         h,
-        &params(quality, effort, tune),
+        &params_ex(quality, effort, tune, flags),
     );
     give(&e.bytes)
+}
+
+/// Codifica una animación: `n` lienzos RGBA completos de `w × h` seguidos en
+/// `frames` (`n*w*h*4` bytes), la duración de cada uno en ms en `durations`
+/// (`n` u32 en little endian) y las repeticiones en `loops` (0 = sin fin).
+/// Mismas opciones que `tsl_encode_ex`. Devuelve el archivo .tsl, o nulo con
+/// el error en `tsl_last_error`.
+///
+/// # Safety
+/// `frames` debe apuntar a `n*w*h*4` bytes y `durations` a `n*4` bytes válidos.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn tsl_encode_animation(
+    frames: *const u8,
+    durations: *const u8,
+    n: u32,
+    w: u32,
+    h: u32,
+    loops: u32,
+    quality: f32,
+    effort: u32,
+    tune: u32,
+    flags: u32,
+) -> *mut u8 {
+    let (n, w, h) = (n as usize, w as usize, h as usize);
+    let size = w * h * 4;
+    let Some(total) = size.checked_mul(n) else {
+        set_error("animación demasiado grande");
+        return std::ptr::null_mut();
+    };
+    let px = unsafe { slice(frames, total) };
+    let list: Vec<Vec<u8>> = px.chunks_exact(size.max(1)).map(<[u8]>::to_vec).collect();
+    let ms: Vec<u32> = unsafe { slice(durations, n * 4) }
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let loops = loops.min(u16::MAX as u32) as u16;
+    match codec::encode_animation(&list, &ms, w, h, loops, &params_ex(quality, effort, tune, flags)) {
+        Ok(bytes) => give(&bytes),
+        Err(e) => {
+            set_error(&e);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Codifica una tesela RGBA (`tw × th`) con la cabecera de su imagen

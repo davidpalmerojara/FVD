@@ -101,6 +101,40 @@ export class Core {
     }
   }
 
+  /**
+   * Como `encode`, con opciones: { lossless } (sin pérdida; `quality` no se usa).
+   * Necesita un tesela.wasm con `tsl_encode_ex`.
+   */
+  encodeEx(rgba, w, h, quality, effort, tune, { lossless = false } = {}) {
+    const r = this.put(rgba);
+    try {
+      return this.take(this.ex.tsl_encode_ex(r[0], w, h, quality, effort, tune, lossless ? FLAG_LOSSLESS : 0));
+    } finally {
+      this.free(r);
+    }
+  }
+
+  /**
+   * Codifica una animación. `frames`: lienzos RGBA completos de `w × h`
+   * (Uint8Array cada uno); `durations`: ms de cada fotograma; `loops`:
+   * repeticiones (0 = sin fin). Los fotogramas iguales al anterior alargan su
+   * duración en vez de guardarse.
+   */
+  encodeAnimation(frames, durations, w, h, { loops = 0, quality = 85, effort = 4, tune = 0, lossless = false } = {}) {
+    const size = w * h * 4;
+    const f = [this.ex.tsl_alloc(size * frames.length), size * frames.length];
+    const d = [this.ex.tsl_alloc(4 * frames.length), 4 * frames.length];
+    try {
+      frames.forEach((fr, i) => this.mem().set(fr.subarray(0, size), f[0] + i * size));
+      const dv = new DataView(this.ex.memory.buffer);
+      durations.forEach((ms, i) => dv.setUint32(d[0] + 4 * i, Math.max(0, Math.round(ms)), true));
+      return this.take(this.ex.tsl_encode_animation(f[0], d[0], frames.length, w, h, loops, quality, effort, tune, lossless ? FLAG_LOSSLESS : 0));
+    } finally {
+      this.free(f);
+      this.free(d);
+    }
+  }
+
   /** Decodifica un .tsl completo a { width, height, rgba }. */
   decode(bytes) {
     const d = this.put(bytes);
@@ -147,6 +181,8 @@ export class Core {
 }
 
 export const TUNES = { balanced: 0, perceptual: 1, psnr: 2 };
+/** Opciones de `tsl_encode_ex` y `tsl_encode_animation`. */
+export const FLAG_LOSSLESS = 1;
 
 /** Versiones del flujo de bits que entiende este decodificador. */
 export const MIN_VERSION = 1;
