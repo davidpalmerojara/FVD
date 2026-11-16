@@ -59,7 +59,7 @@
           <div class="drop card" id="drop-convert">
             <svg class="drop-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <button class="btn primary" type="button" id="pick-images">Elegir imágenes</button>
-            <p class="muted">o arrástralas aquí: JPG, PNG, WebP, AVIF o GIF. Puedes elegir varias.</p>
+            <p class="muted">o arrástralas aquí: JPG, PNG, WebP, AVIF o GIF (también animados). Puedes elegir varias.</p>
             <input type="file" id="file-images" accept="image/*,.avif,.webp" multiple hidden>
           </div>
 
@@ -70,8 +70,11 @@
               <input type="range" id="quality" min="1" max="100" step="1" value="85" aria-describedby="quality-hint">
               <p class="hint muted" id="quality-hint"></p>
             </div>
-            <details>
+            <details id="more">
               <summary>Más opciones</summary>
+              <label class="row" for="lossless"><span>Sin pérdida</span>
+                <input type="checkbox" id="lossless" role="switch" class="switch" aria-describedby="lossless-hint"></label>
+              <p class="hint muted" id="lossless-hint">Guarda los píxeles exactos. Ocupa más: útil para capturas, logos y gráficos.</p>
               <label class="row" for="effort"><span>Velocidad</span>
                 <select id="effort">
                   <option value="4" selected>Normal (mejor compresión)</option>

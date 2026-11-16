@@ -166,3 +166,18 @@ button.icon { width: 34px; height: 34px; padding: 0; display: inline-grid; place
   .fprog i { animation: none; width: 100%; opacity: 0.5; }
   .summary .bar i, .drop { transition: none; }
 }
+
+/* Interruptor (checkbox con role="switch"). */
+input.switch {
+  appearance: none; -webkit-appearance: none; flex: none; margin: 0; cursor: pointer;
+  width: 42px; height: 24px; border-radius: 999px; position: relative;
+  background: var(--surface-2); border: 1px solid var(--border-strong); transition: background 0.15s;
+}
+input.switch::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--muted); transition: transform 0.15s, background 0.15s;
+}
+input.switch:checked { background: var(--tesela-soft); border-color: var(--tesela); }
+input.switch:checked::after { transform: translateX(18px); background: var(--tesela); }
+input[type='range']:disabled { opacity: 0.4; }
+@media (prefers-reduced-motion: reduce) { input.switch, input.switch::after { transition: none; } }

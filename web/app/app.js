@@ -96,18 +96,24 @@ const settings = () => ({
   quality: Number($('quality').value),
   effort: Number($('effort').value),
   maxdim: Number($('maxdim').value),
+  lossless: $('lossless').checked,
 });
-const sameSettings = (a, b) => a && b && a.quality === b.quality && a.effort === b.effort && a.maxdim === b.maxdim;
+const sameSettings = (a, b) =>
+  a && b && a.effort === b.effort && a.maxdim === b.maxdim && a.lossless === b.lossless && (a.lossless || a.quality === b.quality);
 function updateSettingsUi() {
   const q = Number($('quality').value);
-  $('quality-val').textContent = q;
-  $('quality-hint').textContent = HINTS.find(([min]) => q >= min)[1];
   const st = settings();
+  $('quality-val').textContent = st.lossless ? '—' : q;
+  $('quality').disabled = st.lossless;
+  $('quality-hint').textContent = st.lossless
+    ? 'Sin pérdida activado: la calidad no se usa.'
+    : HINTS.find(([min]) => q >= min)[1];
   const stale = items.some((it) => it.settings && !sameSettings(it.settings, st));
   $('reconvert').hidden = !stale;
-  $('reconvert').textContent = `Volver a convertir con calidad ${q}`;
+  $('reconvert').textContent = st.lossless ? 'Volver a convertir sin pérdida' : `Volver a convertir con calidad ${q}`;
 }
-for (const id of ['quality', 'effort', 'maxdim']) $(id).addEventListener('input', updateSettingsUi);
+for (const id of ['quality', 'effort', 'maxdim', 'lossless']) $(id).addEventListener('input', updateSettingsUi);
+$('lossless').addEventListener('change', updateSettingsUi);
 
 // ------------------------------------------------------------ Codificación
 
@@ -123,6 +129,14 @@ const ENC_BYTES_PER_PX = 48;
 const MEMORY_BUDGET = Math.min(navigator.deviceMemory || 4, 8) * 0.3 * 2 ** 30;
 const MAX_PIXELS = 24e6;
 const RECYCLE_BYTES = 256 * 2 ** 20;
+// Animaciones: como mucho MAX_FRAMES fotogramas y MAX_ANIM_PIXELS píxeles en
+// total (el límite con que el decodificador de la web las abre enteras); si
+// no caben, se reducen y se avisa.
+const MAX_FRAMES = 500;
+const MAX_ANIM_PIXELS = 2 ** 25;
+// Por píxel de la animación entera: el RGBA en la página y dos copias en el
+// módulo; el codificador trabaja además con un fotograma cada vez.
+const ANIM_BYTES_PER_PX = 12;
 
 let engineThreads = ISOLATED ? Math.max(2, Math.min(8, CORES)) : 1;
 function updateEngine() {
@@ -161,7 +175,7 @@ function encodeOnWorker(item, msg) {
       finish(true);
       reject(new Error('cancelado'));
     };
-    w.postMessage({ id: item.id, ...msg }, [msg.rgba.buffer]);
+    w.postMessage({ id: item.id, ...msg }, msg.frames ? msg.frames.map((f) => f.buffer) : [msg.rgba.buffer]);
   });
 }
 
@@ -261,21 +275,109 @@ function gifFrames(b) {
   return Math.max(1, n);
 }
 
-/** ¿Tiene la imagen varios fotogramas (GIF, APNG o WebP animados)? */
-async function isAnimated(file) {
-  if (/gif$/i.test(file.type) || /\.gif$/i.test(file.name)) {
-    return gifFrames(new Uint8Array(await file.arrayBuffer())) > 1;
-  }
-  if (!/png|webp|avif/i.test(file.type) || typeof ImageDecoder === 'undefined') return false;
+/** ImageDecoder para el archivo (con los fotogramas sin premultiplicar), o null. */
+async function imageDecoder(file) {
+  if (typeof ImageDecoder === 'undefined' || !file.type) return null;
   try {
-    if (!(await ImageDecoder.isTypeSupported(file.type))) return false;
-    const dec = new ImageDecoder({ data: file.stream(), type: file.type });
-    await dec.tracks.ready;
-    const n = dec.tracks.selectedTrack?.frameCount ?? 1;
-    dec.close();
-    return n > 1;
+    if (!(await ImageDecoder.isTypeSupported(file.type))) return null;
+    const dec = new ImageDecoder({ data: file.stream(), type: file.type, premultiplyAlpha: 'none' });
+    await dec.completed;
+    return dec;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+/**
+ * Fotogramas de la imagen (GIF, APNG o WebP animados): { n, readable }.
+ * `readable`: el navegador puede leerlos uno a uno (ImageDecoder); si no,
+ * solo se sabe que es animada (GIF) y se convierte el primero.
+ */
+async function frameInfo(file) {
+  if (/png|webp|gif|avif/i.test(file.type)) {
+    const dec = await imageDecoder(file);
+    if (dec) {
+      const n = dec.tracks.selectedTrack?.frameCount ?? 1;
+      dec.close();
+      return { n, readable: true };
+    }
+  }
+  if (/gif$/i.test(file.type) || /\.gif$/i.test(file.name)) {
+    return { n: gifFrames(new Uint8Array(await file.arrayBuffer())), readable: false };
+  }
+  return { n: 1, readable: false };
+}
+
+/** Copia un VideoFrame RGBA/BGRA sin premultiplicar a un RGBA compacto; null si es de otro formato. */
+async function frameRgba(frame, w, h) {
+  const bgra = frame.format === 'BGRA' || frame.format === 'BGRX';
+  if (!bgra && frame.format !== 'RGBA' && frame.format !== 'RGBX') return null;
+  const opaque = frame.format.endsWith('X');
+  const buf = new Uint8Array(frame.allocationSize());
+  const [plane] = await frame.copyTo(buf);
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const src = plane.offset + y * plane.stride;
+    for (let x = 0; x < w; x++) {
+      const i = src + x * 4;
+      const o = (y * w + x) * 4;
+      out[o] = buf[i + (bgra ? 2 : 0)];
+      out[o + 1] = buf[i + 1];
+      out[o + 2] = buf[i + (bgra ? 0 : 2)];
+      out[o + 3] = opaque ? 255 : buf[i + 3];
+    }
+  }
+  return out;
+}
+
+/**
+ * Lee una animación: lienzos RGBA completos, duraciones en ms (como la línea
+ * de comandos: al menos 10 ms) y repeticiones (0 = sin fin). Limita el número
+ * de fotogramas y el tamaño (ver MAX_FRAMES y MAX_ANIM_PIXELS).
+ */
+async function readFrames(it, maxdim, onProgress) {
+  const dec = await imageDecoder(it.file);
+  if (!dec) return null;
+  try {
+    const track = dec.tracks.selectedTrack;
+    const total = track.frameCount;
+    const n = Math.min(total, MAX_FRAMES);
+    const first = (await dec.decode({ frameIndex: 0 })).image;
+    const sw = first.displayWidth;
+    const sh = first.displayHeight;
+    first.close();
+    let s = 1;
+    if (maxdim && Math.max(sw, sh) > maxdim) s = maxdim / Math.max(sw, sh);
+    let capped = false;
+    if (n * sw * sh * s * s > MAX_ANIM_PIXELS) {
+      s = Math.sqrt(MAX_ANIM_PIXELS / (n * sw * sh));
+      capped = true;
+    }
+    const w = Math.max(1, Math.round(sw * s));
+    const h = Math.max(1, Math.round(sh * s));
+    const frames = [];
+    const durations = [];
+    let ctx = null;
+    for (let i = 0; i < n; i++) {
+      const frame = (await dec.decode({ frameIndex: i })).image;
+      let rgba = s === 1 ? await frameRgba(frame, w, h) : null;
+      if (!rgba) {
+        ctx ??= makeCanvas(w, h).getContext('2d', { willReadFrequently: true });
+        ctx.clearRect(0, 0, w, h);
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(frame, 0, 0, w, h);
+        rgba = new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer);
+      }
+      frames.push(rgba);
+      durations.push(frame.duration == null ? 100 : Math.max(10, Math.round(frame.duration / 1000)));
+      frame.close();
+      if (i % 10 === 9) onProgress?.(i + 1, n);
+    }
+    const rep = track.repetitionCount;
+    const loops = rep === Infinity ? 0 : Math.min(65535, Math.round(rep) + 1);
+    return { frames, durations, loops, w, h, sw, sh, total, capped };
+  } finally {
+    dec.close();
   }
 }
 
@@ -313,7 +415,11 @@ async function addImages(files) {
       c.getContext('2d').drawImage(bmp, (t - bmp.width * s) / 2, (t - bmp.height * s) / 2, bmp.width * s, bmp.height * s);
       bmp.close?.();
       it.thumb = URL.createObjectURL(await canvasBlob(c, 'image/png'));
-      if (await isAnimated(it.file)) it.animated = true;
+      const fi = await frameInfo(it.file);
+      if (fi.n > 1) {
+        it.frames = fi.n;
+        it.animated = fi.readable ? 'anim' : 'first';
+      }
     } catch {
       it.status = 'error';
       it.error = IMAGE_EXT.test(it.name) || it.file.type.startsWith('image/')
@@ -333,6 +439,10 @@ function itemBytes(it) {
   const st = it.pending || settings();
   let px = (it.srcW || 1000) * (it.srcH || 1000);
   if (st.maxdim) px = Math.min(px, st.maxdim * st.maxdim);
+  if (it.animated === 'anim') {
+    const n = Math.min(it.frames, MAX_FRAMES);
+    return Math.min(n * px, MAX_ANIM_PIXELS) * ANIM_BYTES_PER_PX + Math.min(px, MAX_ANIM_PIXELS / n) * ENC_BYTES_PER_PX;
+  }
   return Math.min(px, MAX_PIXELS) * ENC_BYTES_PER_PX;
 }
 
@@ -362,12 +472,31 @@ async function convert(it) {
   it.startedAt = performance.now();
   renderItem(it);
   try {
-    const px = await readPixels(it.file, st.maxdim);
+    const opts = { quality: st.quality, effort: st.effort, lossless: st.lossless };
+    let msg;
+    it.anim = null;
+    if (it.animated === 'anim') {
+      const a = await readFrames(it, st.maxdim, (k, n) => {
+        if (it.run === run) it.reading = `${k} de ${n} fotogramas leídos`;
+      });
+      it.reading = null;
+      if (a) {
+        it.anim = { n: a.frames.length, total: a.total, ms: a.durations.reduce((x, y) => x + y, 0), loops: a.loops };
+        it.capped = a.capped;
+        it.w = a.w;
+        it.h = a.h;
+        msg = { frames: a.frames, durations: a.durations, loops: a.loops, width: a.w, height: a.h, ...opts };
+      }
+    }
+    if (!msg) {
+      const px = await readPixels(it.file, st.maxdim);
+      it.w = px.w;
+      it.h = px.h;
+      it.capped = px.capped;
+      msg = { rgba: px.rgba, width: px.w, height: px.h, ...opts };
+    }
     if (it.run !== run || !items.includes(it)) return;
-    it.w = px.w;
-    it.h = px.h;
-    it.capped = px.capped;
-    const res = await encodeOnWorker(it, { rgba: px.rgba, width: px.w, height: px.h, quality: st.quality, effort: st.effort });
+    const res = await encodeOnWorker(it, msg);
     if (it.run !== run) return;
     it.tsl = res.bytes;
     it.ms = performance.now() - it.startedAt;
@@ -493,19 +622,30 @@ function renderItem(it) {
   meta.className = 'fmeta num';
   const notes = [];
   if (it.status === 'queued') meta.textContent = `En cola · ${bytes(it.origBytes)}`;
-  else if (it.status === 'encoding') meta.textContent = `Convirtiendo… ${secs(performance.now() - it.startedAt)}`;
+  else if (it.status === 'encoding') meta.textContent = `${it.reading ? `Leyendo… ${it.reading}` : 'Convirtiendo…'} ${secs(performance.now() - it.startedAt)}`;
   else if (it.status === 'error') {
     meta.className = 'ferr';
     meta.textContent = it.error;
   } else if (it.status === 'done') {
     const cls = it.tsl.length <= it.origBytes ? 'saved' : 'bigger';
     meta.innerHTML = `<b>${bytes(it.origBytes)} → ${bytes(it.tsl.length)}</b> · <span class="${cls}">${delta(it.tsl.length, it.origBytes)}</span> · ${it.w}×${it.h} · ${secs(it.ms)}`;
-    if (it.tsl.length > it.origBytes) notes.push('Ocupa más que el original: prueba con menos calidad.');
-    if (it.capped) notes.push(`Reducida a ${it.w}×${it.h} para no agotar la memoria del navegador.`);
+    if (it.anim) {
+      notes.push(`Animación: ${it.anim.n} fotogramas, ${secs(it.anim.ms)}${it.anim.loops ? `, ${it.anim.loops} ${it.anim.loops === 1 ? 'vez' : 'veces'}` : ', en bucle'}.`);
+      if (it.anim.total > it.anim.n) notes.push(`Solo se guardan los ${it.anim.n} primeros de ${it.anim.total} fotogramas.`);
+    }
+    if (it.settings?.lossless) notes.push('Sin pérdida.');
+    if (it.tsl.length > it.origBytes) {
+      notes.push(it.settings?.lossless ? 'Sin pérdida ocupa más que el original (es normal si era un JPEG).' : 'Ocupa más que el original: prueba con menos calidad.');
+    }
+    if (it.capped) {
+      notes.push(it.anim
+        ? `Reducida a ${it.w}×${it.h} para que la animación quepa en memoria (máx. ${fmt0.format(MAX_ANIM_PIXELS / 1e6)} millones de píxeles en total).`
+        : `Reducida a ${it.w}×${it.h} para no agotar la memoria del navegador.`);
+    }
     else if (it.srcW && (it.w !== it.srcW || it.h !== it.srcH)) notes.push(`Reducida desde ${it.srcW}×${it.srcH}.`);
   }
-  if (it.animated && it.status !== 'error') {
-    notes.push('Imagen animada: se convierte el primer fotograma. Para animaciones, usa la línea de comandos (tesela encode).');
+  if (it.animated === 'first' && it.status !== 'error') {
+    notes.push('Imagen animada: este navegador no deja leer sus fotogramas, así que se convierte el primero. Prueba con Chrome o Edge, o con la línea de comandos (tesela encode).');
   }
   note.textContent = notes.join(' ');
   note.hidden = !notes.length;
